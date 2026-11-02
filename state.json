@@ -12,15 +12,40 @@
   "BRENT": "2026-11-02 20:40:00+00:00"
  },
  "fpos": {},
- "seq": 14,
+ "seq": 15,
  "lswin": {
   "WTI": "KXWTI15M-26NOV021515-15",
   "BRENT": "KXBRENT15M-26NOV021545-45",
   "NATGAS": "KXNATGAS15M-26NOV021730-30",
-  "HYPE": "KXHYPE15M-26NOV021730-30"
+  "HYPE": "KXHYPE15M-26NOV021730-30",
+  "BNB": "KXBNB15M-26NOV021745-45"
  },
- "skipslot": "2026-11-02 17:16",
- "lpos": {},
+ "skipslot": "2026-11-02 17:31",
+ "lpos": {
+  "BNB": {
+   "side": 1,
+   "entry": 697.1612333355689,
+   "stop": 0,
+   "tgt": 0,
+   "best": 697.1612333355689,
+   "n": 0,
+   "t0": 1793658661.0183158,
+   "kind": "drift",
+   "k": {
+    "ticker": "KXBNB15M-26NOV021745-45",
+    "side": "YES",
+    "cost": 0.48,
+    "k": 697.26,
+    "close": "2026-11-02 22:45:00+00:00"
+   },
+   "tp": 0.792,
+   "bail": 0.24,
+   "parent": null,
+   "id": 15,
+   "at": "5:31 PM",
+   "at_px": "$697.16"
+  }
+ },
  "skipped": {
   "2:30\u20132:45": [
    "BRENT",
@@ -54,6 +79,22 @@
   "5:15\u20135:30": [
    "BRENT",
    "WTI"
+  ],
+  "5:30\u20135:45": [
+   "BRENT",
+   "BTC",
+   "DOGE",
+   "ETH",
+   "EURUSD",
+   "GBPUSD",
+   "HYPE",
+   "NATGAS",
+   "NEAR",
+   "SOL",
+   "USDJPY",
+   "WTI",
+   "XRP",
+   "ZEC"
   ]
  },
  "ihm_day": {
@@ -62,7 +103,7 @@
  "mode": "night",
  "regime": {
   "EURUSD": "HIGH",
-  "USDJPY": "HIGH"
+  "USDJPY": "NORMAL"
  },
  "thin": {
   "BRENT": true,
