@@ -1483,6 +1483,17 @@ def discover2():
     print("BENCH_AT", r.status_code, r.text[:300])
 
 
+def nighttest():
+    """One dry overnight pass (no pushes): checks every data pipe for all 8 markets."""
+    os.environ["NTFY_TOPIC"] = ""; st, nh, yc = {}, {}, {}
+    t0 = time.time(); ch, boards = night_tick(st, load_params(), {}, nh, yc)
+    for mkt in ALL:
+        c = k15(mkt); b = boards.get(mkt)
+        print("NT", mkt, "| live px", b and round(b[1], 4), "| yahoo bars", len(yc[mkt][1]) if mkt in yc else 0,
+              "| 15m", c and (c["ticker"], c["k"], c["ya"], c["na"]), "| skip?", b and skip_reasons(mkt, b[0], b[1], b[2])[0][:2])
+    print("NT gold kraken", kraken_gold(), "| pass took", round(time.time() - t0, 1), "s")
+
+
 def selftest():
     rng = np.random.default_rng(1); n = 3000
     vol = np.where((np.arange(n) // 150) % 2, 0.003, 0.012)
@@ -1499,5 +1510,5 @@ if __name__ == "__main__":
     cmds = dict(scan=scan, brief=brief, optimize=optimize, doctor=doctor, selftest=selftest,
                 testnotify=lambda: [notify(f"{m} test alert", f"Color check for {m} ({MARKETS[m][1]}). Data: "
                                        + ("Alpaca real-time" if ALPACA else "Yahoo delayed"), "high", m) for m in MARKETS],
-                live=live, livetest=lambda: (os.environ.update(LIVE_MAX_MIN='2', GIT_PERSIST='', STATE_FILE='/tmp/st.json'), live()), audit=audit, calibrate=calibrate_only, discover2=discover2, kalshi=kalshi_discover, kcheck=kcheck, loop=lambda: [(scan(), time.sleep(int(os.getenv("LOOP_SEC", 120)))) for _ in iter(int, 1)])
+                live=live, nighttest=nighttest, livetest=lambda: (os.environ.update(LIVE_MAX_MIN='2', GIT_PERSIST='', STATE_FILE='/tmp/st.json'), live()), audit=audit, calibrate=calibrate_only, discover2=discover2, kalshi=kalshi_discover, kcheck=kcheck, loop=lambda: [(scan(), time.sleep(int(os.getenv("LOOP_SEC", 120)))) for _ in iter(int, 1)])
     cmds.get((sys.argv[1:] or ["scan"])[0], lambda: print(__doc__))()
