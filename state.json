@@ -18,31 +18,8 @@
   "BRENT": "KXBRENT15M-26NOV021545-45",
   "NATGAS": "KXNATGAS15M-26NOV021545-45"
  },
- "skipslot": "2026-11-02 15:31",
+ "skipslot": "2026-11-02 15:37",
  "lpos": {
-  "NATGAS": {
-   "side": -1,
-   "entry": 9.02,
-   "stop": 0,
-   "tgt": 0,
-   "best": 9.02,
-   "n": 0,
-   "t0": 1793651460.1996868,
-   "kind": "ihm",
-   "k": {
-    "ticker": "KXNATGAS15M-26NOV021545-45",
-    "side": "NO",
-    "cost": 0.47,
-    "k": 2.86964,
-    "close": "2026-11-02 20:45:00+00:00"
-   },
-   "tp": 0.788,
-   "bail": 0.235,
-   "parent": null,
-   "id": 10,
-   "at": "3:31 PM",
-   "at_px": "$2.869"
-  },
   "BRENT": {
    "side": -1,
    "entry": 66.13,
