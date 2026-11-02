@@ -2,13 +2,19 @@
 
 Sends phone alerts **before** and **at the start of** big moves in `BZ=F`, `CL=F`, `NG=F`.
 
-| Alert | Meaning | Action |
-|---|---|---|
-| 👀 Squeeze building | Volatility coiled (Bollinger inside Keltner ≥6 bars) | Get ready, no trade yet |
-| 🚀 ENTRY LONG/SHORT | Squeeze released + momentum + 50-EMA trend + volume | Enter; stop/targets included |
-| 🔔 TAKE PARTIAL | Hit T1 (2×ATR) | Sell half, stop → breakeven |
-| 🔔 EXIT | Stop, T2 (4×ATR), 3×ATR trailing stop, or momentum flip | Close |
-| ⚠️ Event soon | EIA crude (Wed 10:30 ET) / gas storage (Thu 10:30 ET) / your OPEC dates | Expect spikes |
+Colors: 🟢 Brent (BNO) · 🟠 WTI (USO) · 🔵 NatGas (UNG)
+
+| Alert | Meaning |
+|---|---|
+| 🚀 BUY / SELL SHORT now | Entry with stop, target, trailing stop, max hold, share size (1% risk) and backtest stats |
+| 🔔 EXIT | Stop, target, trail or time limit hit, with % result |
+| 👀 coiling | Volatility squeeze: breakout likely soon |
+| ⚠️ Event soon | EIA crude (Wed 10:30 ET) / gas storage (Thu 10:30 ET) / `EXTRA_EVENTS` |
+| 📊 Energy brief | ~7:40am and ~1:50pm ET weekdays: price, trend, RSI, expected move, range, open trades |
+
+Each market uses the strategy the weekly optimizer picked (breakout, squeeze, fade, RSI-2 pullback; 15m or 1h),
+trained on 70% of history and accepted only if it also profits on the unseen 30%. See `params.json`.
+Set repo **variables** `ACCOUNT_SIZE` (default 10000) and `RISK_PCT` (default 1) for position sizing.
 
 ## Setup (5 min, free)
 1. Install the **ntfy** app on your phone and subscribe to a hard-to-guess topic, e.g. `oil-alerts-x7k2q`.
