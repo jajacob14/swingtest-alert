@@ -26,8 +26,8 @@ HOLD = {"15m": 32, "1h": 40, "1d": 20}  # max bars in a trade (time stop)
 DEFAULT = dict(interval="1h", strategy="squeeze", min_sq=6, trend=1, stop=1.5, tgt=3.0, trail=2.5, hold=40)
 EXTRA_EVENTS = [e for e in os.getenv("EXTRA_EVENTS", "").split(",") if e]  # "2026-11-30 OPEC+ meeting"
 ALPACA = bool(os.getenv("ALPACA_KEY"))
-COLOR = {"BRENT": ("🔵", "large_blue_circle", 0x1E88E5), "WTI": ("🟠", "orange_circle", 0xFB8C00),
-         "NATGAS": ("🟢", "green_circle", 0x43A047)}
+COLOR = {"BRENT": ("🟢", "green_circle", 0x43A047), "WTI": ("🟠", "orange_circle", 0xFB8C00),
+         "NATGAS": ("🔵", "large_blue_circle", 0x1E88E5)}
 
 
 # ---------------- data ----------------
