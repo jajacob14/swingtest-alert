@@ -1,29 +1,40 @@
 name: commodity-scan
 on:
-  schedule: [{cron: "5,35 * * * 0-5"}]   # every 30 min, Sun-Fri (futures hours)
+  schedule:
+    - cron: "*/15 * * * 0-5"   # scan every 15 min (futures week)
+    - cron: "40 12 * * 1-5"    # morning brief ~7:40 ET
+    - cron: "50 18 * * 1-5"    # afternoon brief ~1:50 ET
+    - cron: "17 22 * * 6"      # weekly re-optimize (Sat)
   workflow_dispatch:
     inputs:
-      cmd: {description: 'scan | backtest | testnotify', default: scan}
+      cmd: {description: "scan | brief | optimize | doctor | testnotify", default: scan}
 permissions: {contents: write}
+concurrency: {group: swing, cancel-in-progress: false}
 jobs:
-  scan:
+  run:
     runs-on: ubuntu-latest
+    timeout-minutes: 30
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
         with: {python-version: "3.12", cache: pip}
-      - run: pip install -r requirements.txt
-      - run: python swing_alert.py ${{ inputs.cmd || 'scan' }}
+      - run: pip install -q -r requirements.txt
+      - run: python swing_alert.py "$CMD"
         env:
+          CMD: ${{ inputs.cmd || (github.event.schedule == '17 22 * * 6' && 'optimize') || (contains(github.event.schedule, '1-5') && github.event.schedule != '*/15 * * * 0-5' && 'brief') || 'scan' }}
+          ALPACA_KEY: ${{ secrets.ALPACA_KEY }}
+          ALPACA_SECRET: ${{ secrets.ALPACA_SECRET }}
           NTFY_TOPIC: ${{ secrets.NTFY_TOPIC }}
           TELEGRAM_TOKEN: ${{ secrets.TELEGRAM_TOKEN }}
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
           DISCORD_WEBHOOK: ${{ secrets.DISCORD_WEBHOOK }}
-          ALPACA_KEY: ${{ secrets.ALPACA_KEY }}
-          ALPACA_SECRET: ${{ secrets.ALPACA_SECRET }}
           EIA_API_KEY: ${{ secrets.EIA_API_KEY }}
           EXTRA_EVENTS: ${{ vars.EXTRA_EVENTS }}
-      - name: persist state (open signals / dedupe)
+          ACCOUNT_SIZE: ${{ vars.ACCOUNT_SIZE }}
+          RISK_PCT: ${{ vars.RISK_PCT }}
+      - name: save state
         run: |
           git config user.name bot; git config user.email bot@users.noreply.github.com
-          git add state.json; git commit -m "state" || exit 0; git push
+          git add -A state.json params.json 2>/dev/null || true
+          git commit -qm "bot: update state" || exit 0
+          git pull -q --rebase origin main && git push -q
