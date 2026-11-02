@@ -1369,25 +1369,24 @@ def audit():
 
 
 def discover2():
-    """List Pyth commodity/metal feeds; test latest price + 1-min history for the ones Kalshi uses."""
     allf = []
     for at in ("commodities", "metal"):
         allf += requests.get("https://hermes.pyth.network/v2/price_feeds", params={"asset_type": at}, timeout=20).json()
-    want = re.compile(r"(?i)PYTHOIL|BRENT|UKOIL|NATGAS/|GOLD/|SILVER/|COPPER/|PLATINUM|PALLADIUM|COFFEE|XPT|XPD")
-    hits = [(f["attributes"].get("symbol"), f["id"]) for f in allf if want.search(f["attributes"].get("symbol", ""))]
-    print("PYALL", len(allf), "feeds;", "matches:", [h[0] for h in hits])
+    pick = {f["attributes"]["symbol"]: f for f in allf}
+    f = pick.get("Commodities.Index.PYTHOIL/USD"); print("ATTR", json.dumps(f["attributes"])[:400])
+    g = pick.get("Metal.Index.GOLD/USD"); print("ATTR", json.dumps(g["attributes"])[:400]) if g else None
+    for fid in (f["id"], "0x" + f["id"]):
+        r = requests.get("https://hermes.pyth.network/v2/updates/price/latest", params={"ids[]": fid, "parsed": "true"}, timeout=20)
+        print("LATEST", fid[:10], r.status_code, r.text[:300])
     now = int(time.time())
-    for sym, fid in hits[:20]:
-        try:
-            lp = requests.get("https://hermes.pyth.network/v2/updates/price/latest", params={"ids[]": fid, "parsed": "true"}, timeout=20).json()
-            p = lp["parsed"][0]["price"]; px = int(p["price"]) * 10 ** p["expo"]; age = now - p["publish_time"]
-        except Exception as e: px, age = None, str(e)[:40]
-        try:
-            j = requests.get("https://benchmarks.pyth.network/v1/shims/tradingview/history",
-                             params={"symbol": sym, "resolution": 1, "from": now - 86400 * 3, "to": now}, timeout=30)
-            jj = j.json(); n = len(jj.get("c") or []); last = (jj.get("c") or [None])[-1]
-        except Exception: n, last = 0, f"err {j.status_code} {j.text[:60]}"
-        print("PYFEED", sym, "| id", fid[:16], "| latest", px, "age", age, "s | 1m bars 3d:", n, "last", last)
+    for sym in ("Commodities.Index.PYTHOIL/USD", "Commodities.PYTHOIL/USD", "PYTHOIL/USD", "Metal.Index.GOLD/USD", "Metal.XAU/USD", "Crypto.BTC/USD"):
+        r = requests.get("https://benchmarks.pyth.network/v1/shims/tradingview/history",
+                         params={"symbol": sym, "resolution": "1", "from": now - 7200, "to": now}, timeout=30)
+        print("HIST", sym, r.status_code, r.text[:160])
+    r = requests.get("https://benchmarks.pyth.network/v1/shims/tradingview/symbols", params={"symbol": "Commodities.Index.PYTHOIL/USD"}, timeout=30)
+    print("SYMINFO", r.status_code, r.text[:300])
+    r = requests.get(f"https://benchmarks.pyth.network/v1/updates/price/{now - 600}", params={"ids": f["id"], "parsed": "true"}, timeout=30)
+    print("BENCH_AT", r.status_code, r.text[:300])
 
 
 def selftest():
