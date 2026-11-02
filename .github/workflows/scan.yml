@@ -26,6 +26,7 @@ jobs:
         env:
           CMD: ${{ inputs.cmd || (github.event.schedule == '17 22 * * 6' && 'optimize') || ((github.event.schedule == '15 13 * * 1-5' || github.event.schedule == '45 18 * * 1-5') && 'live') || 'brief' }}
           LIVE_MAX_MIN: "340"
+          PYTHONUNBUFFERED: "1"
           GIT_PERSIST: "1"
           PULSE_MIN: ${{ vars.PULSE_MIN }}
           ALPACA_KEY: ${{ secrets.ALPACA_KEY }}
