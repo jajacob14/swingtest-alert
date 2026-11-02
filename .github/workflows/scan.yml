@@ -10,7 +10,9 @@ on:
     inputs:
       cmd: {description: "live | scan | brief | optimize | doctor | testnotify", default: live}
 permissions: {contents: write}
-concurrency: {group: swing-${{ github.event.schedule == '15 13 * * 1-5' || github.event.schedule == '45 18 * * 1-5' || inputs.cmd == 'live' }}, cancel-in-progress: false}
+concurrency:
+  group: swing-${{ github.event.schedule == '15 13 * * 1-5' || github.event.schedule == '45 18 * * 1-5' || inputs.cmd == 'live' }}
+  cancel-in-progress: false
 jobs:
   run:
     runs-on: ubuntu-latest
