@@ -666,7 +666,7 @@ def kalshi_discover():
     ser = requests.get(f"{KALSHI}/series", timeout=30).json().get("series", [])
     for x in ser:
         t = (x.get("title") or "").lower()
-        if re.search(r"(natural gas|natgas|brent|wti)", t) and x.get("frequency") in ("daily", "weekly", "hourly"):
+        if re.search(r"(natural gas|natgas|brent|wti|crude|oil)", t) and x.get("frequency") not in ("annual", "monthly", "quarterly", "custom", "one_off", "weekly", "daily"):
             ms = requests.get(f"{KALSHI}/markets", params={"series_ticker": x["ticker"], "status": "open", "limit": 200}, timeout=30).json().get("markets", [])
             print("SERIES", x["ticker"], "|", x.get("title"), "|", x.get("frequency"), "| open markets:", len(ms))
             if ms:
