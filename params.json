@@ -207,21 +207,24 @@
    "test_trades": 0,
    "test_roi": 0,
    "test_win": 0.0,
-   "active": false
+   "active": false,
+   "setups": 24
   },
   "WTI": {
    "table": {},
    "test_trades": 0,
    "test_roi": 0,
    "test_win": 0.0,
-   "active": false
+   "active": false,
+   "setups": 54
   },
   "NATGAS": {
    "table": {},
    "test_trades": 0,
    "test_roi": 0,
    "test_win": 0.0,
-   "active": false
+   "active": false,
+   "setups": 54
   }
  }
 }
