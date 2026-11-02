@@ -1061,12 +1061,13 @@ def k15_call(mkt, m, px, st, lv, cal, night=False):
     kind = "ls" if turning else "fav"
     up = (bdir > 0) if kind == "ls" else (bdir < 0); side = "YES" if up else "NO"
     cost = c["ya"] if up else c["na"]; p = cell[1] if kind == "ls" else 1 - cell[1]
-    xe = regime_extra(st, mkt)
+    xe = regime_extra(st, mkt) + (0.02 if st.get("thin", {}).get(mkt) else 0)
     if kind == "ls" and (xe or not (0 < cost <= LS_MAX_COST and p - cost - kfee(cost) >= LS_MIN_EDGE)): return False
     if kind == "fav" and not (0 < cost < 0.92 and p - cost - kfee(cost) >= FAV_MIN_EDGE + xe): return False
     where = "below" if bdir > 0 else "above"
     why = (f"• Price is {where} the start and {'turning back toward it' if kind == 'ls' else 'still pushing away'}\n"
            + ctx_bullets(cx, up, lv) + (f"\n• 🌙 {SESS_TXT[sname]}" if night else "")
+           + ("\n• ⚠️ Futures on break: Kalshi prices only, context is stale" if st.get("thin", {}).get(mkt) else "")
            + f"\n• Last 30 days{' in this session' if night else ''}: {cell[0]} setups like this → "
            f"{'bounced back' if kind == 'ls' else 'kept going'} {p:.0%}")
     open_call(st, mkt, kind, side, c, lv, px, odds_line(p, cost), why,
@@ -1259,17 +1260,22 @@ def ident(mkt):
 
 
 def market_mode(now):
-    """'day' = US stock hours (fund prices, Alpaca); 'night' = futures open otherwise; 'closed' = weekend / 5-6pm break."""
-    wd, t = now.weekday(), now.time()
-    if wd == 5 or (wd == 4 and t >= dt.time(17)) or (wd == 6 and t < dt.time(18)) or dt.time(17) <= t < dt.time(18): return "closed"
-    return "day" if wd < 5 and LIVE_OPEN <= t <= LIVE_CLOSE else "night"
+    """'day' = US stock hours (fund prices via Alpaca for oil & gas); otherwise 'night' (Kalshi-price engine).
+    Each market is then switched on/off by whether Kalshi has a live 15-min contract for it."""
+    return "day" if now.weekday() < 5 and LIVE_OPEN <= now.time() <= LIVE_CLOSE else "night"
 
 
 def night_tick(st, params, cool, nh, yc, only=None):
     """Overnight: Kalshi real-time price + delayed futures context → longshots / edge picks / skip board / watch board."""
     now = dt.datetime.now(ET); minute = now.replace(second=0, microsecond=0); changed = False; boards = {}
-    for mkt in (only or ALL):
+    mkts = list(only or ALL); openm = []
+    for mkt in mkts:
       try:
+        c0 = k15(mkt)
+        if not c0 or not (c0["ya"] > 0 or c0["na"] > 0):  # no live 15-min contract → this market is closed now
+            changed |= manage_ls(mkt, 0.0, st, ident(mkt)) if mkt in st.get("lpos", {}) and not c0 else False
+            continue
+        openm.append(mkt)
         if yc.get(mkt, (None,))[0] != minute:
             try: yc[mkt] = (minute, night_bars(mkt))
             except Exception as e: print("night bars", mkt, e); continue
@@ -1291,9 +1297,24 @@ def night_tick(st, params, cool, nh, yc, only=None):
             changed |= (ihm_call(mkt, m, kp, st, lv, cal_) or drift_call(mkt, m.iloc[:-1], kp, st, lv, cal_)
                         or k15_call(mkt, m.iloc[:-1], kp, st, lv, cal_, night=True))
         regime_update(st, mkt, y); boards[mkt] = (m, kp, lv)  # volatility from one clean source
+        st.setdefault("thin", {})[mkt] = bool(len(y) and pd.Timestamp.now(tz="UTC") - y.index[-1] > pd.Timedelta(minutes=25))
       except Exception as e:
         print("night", mkt, "error:", e)
+    announce_open(st, mkts, openm)
     return changed, boards
+
+
+def announce_open(st, mkts, openm):
+    """One message when markets open/close on Kalshi (their 15-min contracts appear/disappear)."""
+    prev = st.setdefault("open", {}); opened, closed = [], []
+    for k in mkts:
+        now_open = k in openm
+        if prev.get(k) is None: prev[k] = now_open; continue  # first sight: just record
+        if now_open != prev[k]: (opened if now_open else closed).append(k); prev[k] = now_open
+    if opened or closed:
+        lines = [f"🔓 {COLOR[k][0]} {NAME[k]}: 15-min markets OPEN, watching for calls" for k in opened] + \
+                [f"🔒 {COLOR[k][0]} {NAME[k]}: 15-min markets CLOSED, paused until they reopen" for k in closed]
+        notify("🔁 Market hours update", "\n".join(lines), "default")
 
 
 def night_boards(st, boards, night=True):
@@ -1322,6 +1343,8 @@ def night_boards(st, boards, night=True):
             if c: line += f"\n    15-min ({c['close'].tz_convert(ET):%-I:%M}): start {money(mkt, c['k'])} · YES {c['ya'] * 100:.0f}¢ / NO {c['na'] * 100:.0f}¢"
             op = next((st[k][mkt] for k in ("lpos",) if mkt in st.get(k, {})), None)
             lines.append(line + (f"\n    open: call #{op.get('id', '?')}" if op else "\n    watching"))
+        shut = [k for k, v in st.get("open", {}).items() if v is False and k not in boards]
+        if shut: lines.append("⏸ Closed now: " + ", ".join(f"{COLOR[k][0]} {NAME[k]}" for k in shut))
         if lines: notify(f"{'🌙' if night else '👀'} Watching{'' if night else ' metals'} · {now:%-I:%M %p} · {SESS_TXT[session(now)]}", "\n".join(lines), "default")
 
 
@@ -1338,7 +1361,7 @@ MODE_TXT = {
     "day": "☀️ Day mode: real-time fund prices for oil & gas (Alpaca); metals on Kalshi prices. Fast calls on.",
     "night": "🌙 Overnight mode: live prices from Kalshi, context from futures (≈10 min delayed). Fast calls paused; "
              "edge picks, long shots, drift calls and skip boards continue.",
-    "closed": "⏸ Market break (5–6 PM ET daily, or weekend): no new calls. Open calls still get their results.",
+    "closed": "⏸ No markets open: no new calls. Open calls still get their results.",
     "night*": "⚠️ Day data isn't updating (holiday, early close or outage) → switched oil & gas to overnight mode. Rechecking every 5 min."}
 
 
@@ -1433,6 +1456,7 @@ def live():
         for mkt, (_, etf) in MARKETS.items():
           try:
             if etf not in data or not px.get(etf): continue
+            if not k15(mkt): continue  # Kalshi closed this market's 15-min contracts
             regime_update(st, mkt, data[etf])
             m = data[etf]; m = m[m.index + pd.Timedelta(minutes=1) <= pd.Timestamp.now(tz="UTC")]
             cur = pd.Timestamp.now(tz="UTC").floor("min"); p_ = float(px[etf])
@@ -1468,12 +1492,18 @@ def live():
                 except Exception as e: print("alpaca recheck:", e)
         try:
             st = load_state()
-            if st.get("mode") != shown:  # announce each mode switch once (survives run handoffs)
+            if st.get("mode") != shown and not (st.get("mode") == "idle" and shown == "night"):  # announce once
                 notify(f"🔁 Mode: {'NIGHT (day data down)' if shown == 'night*' else shown.upper()}", MODE_TXT[shown], "default")
                 st["mode"] = shown; nh.clear(); yc.clear()
-            if mode == "closed": changed = settle_only(st)
-            elif mode == "night":
+            if mode == "night":
                 changed, boards = night_tick(st, S["params"], cool, nh, yc); night_boards(st, boards)
+                if not boards:  # every market closed (e.g. weekend): idle, still report results
+                    changed |= settle_only(st)
+                    if st.get("mode") != "idle":
+                        notify("🔁 Mode: IDLE", "⏸ No Kalshi commodity 15-min markets are open right now. Waiting for the reopen; "
+                               "open calls still get their results.", "default"); st["mode"] = "idle"
+                    mode = "closed"
+                elif st.get("mode") == "idle": st["mode"] = None
             else: changed = day_tick(st, now)
             prune_state(st); json.dump(st, open(STATE_FILE, "w"), indent=1, default=float)
             if changed or time.time() - S["saved"] > 600: persist("bot: live"); S["saved"] = time.time()
