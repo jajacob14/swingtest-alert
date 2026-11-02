@@ -1202,7 +1202,8 @@ def night_bars(mkt):
     """~10-min-delayed 1-min futures bars (context) from Yahoo."""
     import yfinance as yf
     df = yf.Ticker(ALL[mkt][0]).history(period="2d", interval="1m", auto_adjust=False)
-    return df[["Open", "High", "Low", "Close", "Volume"]].dropna()
+    df = df[["Open", "High", "Low", "Close", "Volume"]].dropna()
+    df.index = df.index.tz_convert("UTC"); return df
 
 
 PYSYM = {"WTI": "Commodities.Index.PYTHOIL/USD", "BRENT": "Commodities.Index.BRENT/USD", "NATGAS": "Commodities.Index.NATGAS/USD",
