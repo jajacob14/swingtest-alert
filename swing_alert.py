@@ -544,7 +544,7 @@ def snapshots():
 def live():
     """Watch prices every TICK_SEC (15s): instant alerts on events; strategy on each closed bar; check-in on the clock."""
     if not ALPACA: sys.exit("live mode needs ALPACA_KEY / ALPACA_SECRET")
-    t0, maxmin = time.time(), float(os.getenv("LIVE_MAX_MIN") or 1e9)
+    t0, maxmin = time.time(), float(os.getenv("LIVE_MAX_MIN") or 1e9); nt = 0
     pulse_min, tick = int(os.getenv("PULSE_MIN") or 30), int(os.getenv("TICK_SEC") or 15)
     cool, data, params = {}, {}, load_params()
     last_min = last_hour = last_pulse = None
@@ -575,7 +575,7 @@ def live():
                             had = mkt in st.get("pos", {}); process(mkt, indicators(b), p, st, sent)
                             changed |= had != (mkt in st.get("pos", {}))
                 st["sent"] = sorted(sent)[-300:]
-            px = snapshots()  # every tick: live price → spike/dip, trend, stop/target checks
+            px = snapshots(); nt += 1  # every tick: live price → spike/dip, trend, stop/target checks
             for mkt, (_, etf) in MARKETS.items():
                 if etf not in data or not px.get(etf): continue
                 m = data[etf]; m = m[m.index + pd.Timedelta(minutes=1) <= pd.Timestamp.now(tz="UTC")]
@@ -596,7 +596,7 @@ def live():
         except Exception as e:
             print("live error:", e)
         time.sleep(max(1, tick - time.time() % tick))
-    persist()
+    print(f"live ended after {nt} price checks"); persist()
 
 
 def kalshi_discover():
@@ -639,5 +639,5 @@ if __name__ == "__main__":
     cmds = dict(scan=scan, brief=brief, optimize=optimize, doctor=doctor, selftest=selftest,
                 testnotify=lambda: [notify(f"{m} test alert", f"Color check for {m} ({MARKETS[m][1]}). Data: "
                                        + ("Alpaca real-time" if ALPACA else "Yahoo delayed"), "high", m) for m in MARKETS],
-                live=live, kalshi=kalshi_discover, kcheck=kcheck, loop=lambda: [(scan(), time.sleep(int(os.getenv("LOOP_SEC", 120)))) for _ in iter(int, 1)])
+                live=live, livetest=lambda: (os.environ.update(LIVE_MAX_MIN='2', GIT_PERSIST='', STATE_FILE='/tmp/st.json'), live()), kalshi=kalshi_discover, kcheck=kcheck, loop=lambda: [(scan(), time.sleep(int(os.getenv("LOOP_SEC", 120)))) for _ in iter(int, 1)])
     cmds.get((sys.argv[1:] or ["scan"])[0], lambda: print(__doc__))()
