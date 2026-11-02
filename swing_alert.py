@@ -437,6 +437,8 @@ def events(now=None, hours=3):
 # ---------------- notify ----------------
 def notify(title, body, priority="default", mkt=None):
     dot, tag, hexc = COLOR.get(mkt, ("⚪", "white_circle", 0x9E9E9E))
+    if "🟩" in title: hexc = 0x2E7D32
+    elif "🟦" in title: hexc = 0x1565C0
     title = f"{dot} {title}" if mkt else title
     print(f"\n=== {title}\n{body}")
     if t := os.getenv("NTFY_TOPIC"):
@@ -541,6 +543,14 @@ TRADES_ONLY = os.getenv("ALERTS", "trades") == "trades"
 MAIN_ON = os.getenv("MAIN_SIGNALS", "0") == "1"  # slow signals use hourly/daily contracts → off; only 15-min calls  # set ALERTS=all for extra heads-up alerts
 
 
+BIG_X = float(os.getenv("BIG_X") or 10)  # payout multiple that counts as a big-payout (green) bet
+
+
+def badge(cost):
+    """🟩 big payout (≥10× back) vs 🟦 normal bet."""
+    return "🟩 BIG PAYOUT" if cost and 1 / cost >= BIG_X else "🟦"
+
+
 def new_trade(st, mkt, pos, lv, px):
     st["seq"] = st.get("seq", 0) + 1
     pos.update(id=st["seq"], at=dt.datetime.now(ET).strftime("%-I:%M %p"), at_px=lv(px))
@@ -552,7 +562,7 @@ def busy(st, mkt): return any(mkt in st.get(k, {}) for k in ("pos", "fpos", "lpo
 
 def sell_msg(mkt, pos, title, px, lv, extra=""):
     entry = lv(pos["entry"]); now = lv(px); worked = s_pnl(pos, px) > 0
-    notify(f"#{pos.get('id', '?')} {NAME[mkt]} · {title}",
+    notify(f"{badge((pos.get('k') or {}).get('cost'))} #{pos.get('id', '?')} {NAME[mkt]} · {title}",
            f"Closes signal #{pos.get('id', '?')}: {'BUY UP' if pos['side'] > 0 else 'BUY DOWN'} at {pos.get('at_px', entry)} ({pos.get('at', '')})\n"
            f"Price now {now} · {'✅ signal worked' if worked else '❌ signal failed'}"
            + (contract_value(pos.get("k")) or "") + extra, "urgent", mkt)
@@ -831,7 +841,7 @@ def fast_entry(mkt, d1, fp, st, cool):
     t = fp.get("test")
     txt, pos["k"] = pick15(mkt, up, lv, r.Close)
     n = new_trade(st, mkt, pos, lv, r.Close); aim = r.Close + (1 if up else -1) * 2 * r.atr
-    notify(f"#{n} {NAME[mkt]} · {'BUY signal ⬆️ spike starting' if up else 'BUY signal ⬇️ drop starting'}",
+    notify(f"{badge((pos.get('k') or {}).get('cost'))} #{n} {NAME[mkt]} · {'BUY signal ⬆️ spike starting' if up else 'BUY signal ⬇️ drop starting'}",
            f"{txt}\n🎯 Exit expected near {lv(aim)} (could run further)\n🛑 Exit early if price hits {lv(pos['stop'])}\n"
            f"⏱ Fast move: minutes, not hours. #{n} SELL signal will follow."
            + (f"\n📊 Past: {t['win']:.0%} wins, profitable overall" if t else "\n⚠️ Untested pattern: small size only"), "urgent", mkt)
@@ -917,8 +927,9 @@ def k15_call(mkt, m, px, st, lv, cal):
     st.setdefault("lpos", {})[mkt] = pos; n = new_trade(st, mkt, pos, lv, px)
     end = c["close"].tz_convert(ET).strftime("%-I:%M"); tested = cal.get(f"{kind}_ok")
     where = "BELOW" if bdir > 0 else "ABOVE"
-    head = (f"#{n} {NAME[mkt]} · 🎯 LONGSHOT {side} {cost * 100:.0f}¢ → pays {1 / cost:.1f}×" if kind == "ls"
-            else f"#{n} {NAME[mkt]} · 💪 EDGE PICK {side} {cost * 100:.0f}¢ → +{(1 - cost) * 100:.0f}¢ if right")
+    head = (f"{badge(cost)} #{n} {NAME[mkt]} · 🎯 LONGSHOT {side} {cost * 100:.0f}¢ → pays {1 / cost:.1f}×" if kind == "ls"
+            else f"{badge(cost)} #{n} {NAME[mkt]} · 💪 EDGE PICK {side} {cost * 100:.0f}¢ → +{(1 - cost) * 100:.0f}¢ if right")
+    if 1 / cost >= BIG_X: head += f" · $5 → ${5 / cost:.0f}"
     goal = min(0.95, max(2.5 * cost, cost + 0.25)) if kind == "ls" else None
     notify(head,
            f"Price {lv(px)} is {where} the {end} start {money(mkt, c['k'])} · {T:.0f} min left\n"
@@ -953,7 +964,7 @@ def ihm_call(mkt, m, px, st, lv, cal):
     pos = dict(side=1 if up else -1, entry=px, stop=0, tgt=0, best=px, n=0, t0=time.time(), kind="ihm",
                k=dict(ticker=c["ticker"], side=side, cost=cost, k=c["k"], close=str(c["close"])))
     st.setdefault("lpos", {})[mkt] = pos; n = new_trade(st, mkt, pos, lv, px)
-    notify(f"#{n} {NAME[mkt]} · 📈 CLOSE-MOMENTUM {side} {cost * 100:.0f}¢",
+    notify(f"{badge(cost)} #{n} {NAME[mkt]} · 📈 CLOSE-MOMENTUM {side} {cost * 100:.0f}¢",
            f"{'3rd half-hour (EIA day)' if wed else 'First half-hour (incl. overnight)'} was {sig * 100:+.2f}% → "
            f"last half-hour tends to {'FOLLOW' if ih.get('dir') == 'follow' else 'REVERSE'} it\n👉 Kalshi 15-min ({c['close'].tz_convert(ET):%-I:%M}): BUY {side} at ≤{cost * 100 + 2:.0f}¢\n"
            f"📊 {ih['n']} days tested: same direction {p:.0%} (recent {ih['hit_recent']:.0%}) vs cost {cost * 100:.0f}¢ + fee\n"
