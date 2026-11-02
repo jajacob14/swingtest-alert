@@ -416,7 +416,7 @@ def brief():
         lines.append(f"{COLOR[mkt][0]} {NAME[mkt]}  {lv(r.Close)}  {'▲' if chg >= 0 else '▼'}{abs(chg):.1f}%\n"
                      f"    Trend: {trend}\n    Usual daily swing: ±{rng:.1f}%"
                      + ("\n    ⚡ Quiet → big move likely" if r.sq else "")
-                     + (f"\n    You have an {'UP' if pos['side'] > 0 else 'DOWN'} bet open" if pos else ""))
+                     + (f"\n    You have an open {'UP' if pos['side'] > 0 else 'DOWN'} bet" if pos else ""))
     ev = events(hours=14)
     notify(f"📋 Market check · {dt.datetime.now(ET):%-I:%M %p}", "\n\n".join(lines + ([f"📅 Today: " + "; ".join(ev)] if ev else [])))
 
@@ -595,6 +595,15 @@ def kalshi_discover():
                 print("   EVENTS", sorted({z["event_ticker"] for z in ms})[:6])
 
 
+def kcheck():
+    for mkt in MARKETS:
+        for ml in (8, 180):
+            b = kalshi_book(mkt, ml)
+            if b: print("KCHK", mkt, ml, b["event"], b["close"], "implied", round(b["px"], 3),
+                        [(r["k"], r["yb"], r["ya"]) for r in b["rows"] if abs(r["k"] - b["px"]) < b["px"] * 0.01][:6])
+        dd = fetch(mkt, "1d", 10); print("KCHK", mkt, "ETF daily closes", [(str(i.date()), round(v, 2)) for i, v in dd.Close.tail(4).items()])
+
+
 def selftest():
     rng = np.random.default_rng(1); n = 3000
     vol = np.where((np.arange(n) // 150) % 2, 0.003, 0.012)
@@ -611,5 +620,5 @@ if __name__ == "__main__":
     cmds = dict(scan=scan, brief=brief, optimize=optimize, doctor=doctor, selftest=selftest,
                 testnotify=lambda: [notify(f"{m} test alert", f"Color check for {m} ({MARKETS[m][1]}). Data: "
                                        + ("Alpaca real-time" if ALPACA else "Yahoo delayed"), "high", m) for m in MARKETS],
-                live=live, kalshi=kalshi_discover, loop=lambda: [(scan(), time.sleep(int(os.getenv("LOOP_SEC", 120)))) for _ in iter(int, 1)])
+                live=live, kalshi=kalshi_discover, kcheck=kcheck, loop=lambda: [(scan(), time.sleep(int(os.getenv("LOOP_SEC", 120)))) for _ in iter(int, 1)])
     cmds.get((sys.argv[1:] or ["scan"])[0], lambda: print(__doc__))()
