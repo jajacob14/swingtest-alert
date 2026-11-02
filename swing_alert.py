@@ -1369,28 +1369,25 @@ def audit():
 
 
 def discover2():
-    """Kalshi intraday commodity series + Pyth free real-time feeds + Pyth 1-min history test."""
-    ser = requests.get(f"{KALSHI}/series", timeout=30).json().get("series", [])
-    for x in ser:
-        t = (x.get("title") or "") + " " + (x.get("category") or "")
-        if x.get("frequency") in ("fifteen_min", "hourly") and re.search(
-                r"(?i)gold|silver|copper|platinum|palladium|corn|wheat|soy|coffee|sugar|cocoa|cattle|hog|oil|gas|brent|wti|commodit", t):
-            ms = requests.get(f"{KALSHI}/markets", params={"series_ticker": x["ticker"], "status": "open", "limit": 3}, timeout=20).json().get("markets", [])
-            print("KSER", x["ticker"], "|", x.get("title"), "|", x.get("frequency"), "|", x.get("category"), "|",
-                  [z.get("name") for z in (x.get("settlement_sources") or [])], "| open:", len(ms),
-                  "|", (ms[0].get("rules_primary") or "")[:160].replace("\n", " ") if ms else "")
-    for q in ("oil", "gas", "gold", "silver", "copper", "platinum", "corn", "wheat", "soy"):
-        try:
-            fs = requests.get("https://hermes.pyth.network/v2/price_feeds", params={"query": q}, timeout=20).json()
-            print("PYTH", q, [(f["attributes"].get("symbol"), f["id"][:12]) for f in fs][:8])
-        except Exception as e: print("PYTH", q, "error", e)
+    """List Pyth commodity/metal feeds; test latest price + 1-min history for the ones Kalshi uses."""
+    allf = []
+    for at in ("commodities", "metal"):
+        allf += requests.get("https://hermes.pyth.network/v2/price_feeds", params={"asset_type": at}, timeout=20).json()
+    want = re.compile(r"(?i)PYTHOIL|BRENT|UKOIL|NATGAS/|GOLD/|SILVER/|COPPER/|PLATINUM|PALLADIUM|COFFEE|XPT|XPD")
+    hits = [(f["attributes"].get("symbol"), f["id"]) for f in allf if want.search(f["attributes"].get("symbol", ""))]
+    print("PYALL", len(allf), "feeds;", "matches:", [h[0] for h in hits])
     now = int(time.time())
-    for sym in ("Commodities.USOILSPOT", "Commodities.UKOILSPOT", "Metal.XAU/USD", "Metal.XAG/USD"):
+    for sym, fid in hits[:20]:
+        try:
+            lp = requests.get("https://hermes.pyth.network/v2/updates/price/latest", params={"ids[]": fid, "parsed": "true"}, timeout=20).json()
+            p = lp["parsed"][0]["price"]; px = int(p["price"]) * 10 ** p["expo"]; age = now - p["publish_time"]
+        except Exception as e: px, age = None, str(e)[:40]
         try:
             j = requests.get("https://benchmarks.pyth.network/v1/shims/tradingview/history",
-                             params={"symbol": sym, "resolution": 1, "from": now - 7200, "to": now}, timeout=20).json()
-            print("PYHIST", sym, j.get("s"), len(j.get("c") or []), (j.get("c") or [None])[-1:], "last t", (j.get("t") or [None])[-1:])
-        except Exception as e: print("PYHIST", sym, "error", e)
+                             params={"symbol": sym, "resolution": 1, "from": now - 86400 * 3, "to": now}, timeout=30)
+            jj = j.json(); n = len(jj.get("c") or []); last = (jj.get("c") or [None])[-1]
+        except Exception: n, last = 0, f"err {j.status_code} {j.text[:60]}"
+        print("PYFEED", sym, "| id", fid[:16], "| latest", px, "age", age, "s | 1m bars 3d:", n, "last", last)
 
 
 def selftest():
