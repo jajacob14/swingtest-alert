@@ -1261,7 +1261,7 @@ def action_line(mkt, a):
             if want_up != fc_up:  # forecast move won't cross the start → the current leader stays favored
                 parts.append(f"{'bounce' if fc_up else 'dip'} likely but probably not past the start {money(mkt, a['start'])}, "
                              f"{'DOWN (NO)' if not want_up else 'UP (YES)'} still favored")
-                return ". ".join(parts) + "."
+                return ". ".join(x[0].upper() + x[1:] for x in parts) + "."
             parts.append(f"Lean BUY {'UP (YES)' if want_up else 'DOWN (NO)'}, ends {'above' if want_up else 'below'} {money(mkt, a['start'])}" if cost < 0.8
                          else f"{'UP (YES)' if want_up else 'DOWN (NO)'} is already priced in, skip")
         else:
@@ -1273,7 +1273,7 @@ def action_line(mkt, a):
                 parts.append(f"HIGH CONFIDENCE: {'UP (YES)' if lead_up else 'DOWN (NO)'} {lead:.0%} so far ({T:.0f} min left)")
             elif T < 4: parts.append(f"window ends in {T:.0f} min, wait for the next one")
             else: parts.append("wait")
-    return ". ".join(parts) + "."
+    return ". ".join(x[0].upper() + x[1:] for x in parts if x) + "."
 
 
 def fc_conflict(st, mkt, up):
