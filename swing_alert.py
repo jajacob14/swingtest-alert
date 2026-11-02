@@ -292,6 +292,7 @@ def session(ts_et):
     return "US" if 570 <= m < 960 else "EVE" if 960 <= m < 1200 else "EU" if 180 <= m < 570 else "ASIA"
 
 
+SH_SESS = {'US': 'US day', 'EVE': 'evening', 'ASIA': 'Asia', 'EU': 'Europe'}
 SESS_TXT = {"US": "US day session", "EVE": "Evening session (after settlement, 6pm reopen)",
             "ASIA": "Asian session (thin trading)", "EU": "European session (London digests overnight news)"}
 
@@ -901,18 +902,16 @@ def fast_checks(mkt, m, st, cool):
 
 
 def pulse(data, st):
+    """Day board for oil & gas: one line per market."""
     lines = []
     for mkt, (_, etf) in MARKETS.items():
         if (m := data.get(etf)) is None or len(m) < 20: continue
-        px = m.Close.iloc[-1]; lv = kconv(mkt, px); c = k15(mkt)
-        line = f"{COLOR[mkt][0]} {NAME[mkt]}  {lv(px)}"
-        if c:
-            line += (f"\n    15-min ({c['close'].tz_convert(ET):%-I:%M}): start {money(mkt, c['k'])} · "
-                     f"YES {c['ya'] * 100:.0f}¢ / NO {c['na'] * 100:.0f}¢")
-        op = next((st[k][mkt] for k in ("lpos", "fpos", "pos") if mkt in st.get(k, {})), None)
-        line += f"\n    open: signal #{op.get('id', '?')}" if op else "\n    no call yet: watching"
-        lines.append(line)
-    if lines: notify(f"👀 Watching · {dt.datetime.now(ET):%-I:%M %p}", "\n".join(lines), "default")
+        px = m.Close.iloc[-1]; lv = kconv(mkt, px); c = k15(mkt); op = (st.get("lpos") or {}).get(mkt)
+        kp = px * getattr(lv, "r", 1.0); arrow = "" if not c else (" ↑" if kp >= c["k"] else " ↓")
+        lines.append(f"{COLOR[mkt][0]} {NAME[mkt]} {lv(px)}{arrow}"
+                     + (f" · start {money(mkt, c['k'])} · Y{c['ya'] * 100:.0f}/N{c['na'] * 100:.0f}¢" if c else " · closed")
+                     + (f" · #{op.get('id', '?')} open" if op else ""))
+    if lines: notify(f"👀 Oil & gas · {dt.datetime.now(ET):%-I:%M %p}", "\n".join(lines) + "\n(↑/↓ = above/below the 15-min start)", "default")
 
 
 def s_pnl(pos, px): return pos["side"] * (px - pos["entry"]) / pos["entry"] * 100
@@ -983,6 +982,14 @@ def call_txt(mkt, k):
     return f"price ends {'AT/ABOVE' if k['side'] == 'YES' else 'BELOW'} {money(mkt, k['k'])} at {pd.Timestamp(k['close']).tz_convert(ET):%-I:%M}"
 
 
+def ctx_short(cx, up):
+    """One line: trend · flow · RSI."""
+    tr = "4h trend ↗️" if cx["trend"] > 0 else "4h trend ↘️"
+    fl = "buyers" if cx["flow"] > 0.1 else "sellers" if cx["flow"] < -0.1 else "balanced"
+    return (f"{tr} {'✓' if (cx['trend'] > 0) == up else '✗'} · {fl}"
+            f"{' ✓' if cx['flow'] * (1 if up else -1) > 0.1 else ' ✗' if abs(cx['flow']) > 0.1 else ''} · RSI {cx['rsi']:.0f}")
+
+
 def ctx_bullets(cx, up, lv):
     tr = "UP ↗️" if cx["trend"] > 0 else "DOWN ↘️"
     return "\n".join([
@@ -1006,11 +1013,15 @@ def open_call(st, mkt, kind, side, c, lv, px, odds, why, tested, parent=None):
     left = (c["close"] - pd.Timestamp.now(tz="UTC")).total_seconds() / 60
     title = f"{badge(cost)} #{n} {NAME[mkt]} · {sess(c['close'])} · BUY {side} {cost * 100:.0f}¢"
     if 1 / cost >= BIG_X: title += f" · $5 → ${5 / cost:.0f}"
+    up = side == "YES"
     notify(title,
-           f"{KIND[kind]}" + (f" (flip of #{parent})" if parent else "") + f"\nCall: {call_txt(mkt, k)}\n"
-           f"Now {lv(px)} · {left:.0f} min left\n{odds}\nWhy:\n{why}\n"
-           f"Plan: take profit ≈{tp * 100:.0f}¢ · wrong if ≤{bail * 100:.0f}¢ · else hold to $1\n"
-           + ("✅ tested edge" if tested else "🧪 unproven: small size"), "urgent", mkt)
+           f"{'📈 Expect HIGHER' if up else '📉 Expect LOWER'}: ends {'≥' if up else '<'} {money(mkt, k['k'])} at "
+           f"{pd.Timestamp(k['close']).tz_convert(ET):%-I:%M} · now {lv(px)}\n"
+           f"👉 BUY {side} ≤{cost * 100 + 2:.0f}¢ → pays $1 ({1 / cost:.1f}×) · {left:.0f} min left\n"
+           f"🎯 Sell ≥{tp * 100:.0f}¢ · 🛑 Out ≤{bail * 100:.0f}¢ · else hold to $1\n"
+           f"{odds}\nWhy: {why}\n"
+           f"{KIND[kind]}" + (f" (flip of #{parent})" if parent else "") + (" · ✅ tested" if tested else " · 🧪 small size"),
+           "urgent", mkt)
     return n
 
 
@@ -1023,13 +1034,14 @@ def sell_msg(mkt, pos, title, px, lv, extra=""):
 def follow_msg(mkt, pos, icon, action, extra=""):
     k = pos["k"]
     notify(f"{icon} #{pos.get('id', '?')} {NAME[mkt]} · {sess(k['close'])} · {action}",
-           f"Call #{pos.get('id', '?')}: BUY {k['side']} at {k['cost'] * 100:.0f}¢ ({call_txt(mkt, k)})" + extra, "urgent", mkt)
+           f"Was: BUY {k['side']} @{k['cost'] * 100:.0f}¢ · expected {'HIGHER ≥' if k['side'] == 'YES' else 'LOWER <'} "
+           f"{money(mkt, k['k'])}" + extra, "urgent", mkt)
 
 
 def odds_line(p, cost, label="Odds"):
     e = p - cost - kfee(cost)
-    return f"{label} ≈{p:.0%} vs {cost * 100:.0f}¢ + {kfee(cost) * 100:.0f}¢ fee → " + (
-        f"edge +{e * 100:.0f}¢ ✅" if e >= 0.03 else "≈ fair" if e > -0.03 else f"pricey ({e * 100:.0f}¢) ⚠️")
+    return f"📊 {label} {p:.0%} vs {cost * 100:.0f}¢+{kfee(cost) * 100:.0f}¢ fee → " + (
+        f"edge +{e * 100:.0f}¢ ✅" if e >= 0.03 else "≈ fair" if e > -0.03 else f"pricey {e * 100:.0f}¢ ⚠️")
 
 
 def fast_entry(mkt, d1, fp, st, cool):
@@ -1047,7 +1059,7 @@ def fast_entry(mkt, d1, fp, st, cool):
     cx = live_ctx(d1); cx["px"] = px
     fu = fair_up(px * lv.r, c["k"], left, cx["sig"]); p = (fu if up else 1 - fu) if fu is not None else 0.5
     t = fp.get("test") or {}
-    why = f"• 1-min {fp['strategy']} signal: momentum just turned {'UP' if up else 'DOWN'}\n" + ctx_bullets(cx, up, lv)
+    why = f"momentum just turned {'UP' if up else 'DOWN'} · " + ctx_short(cx, up)
     open_call(st, mkt, "fast", side, c, lv, px, odds_line(p, cost, "Odds now") +
               (f"\nPast: {t['win']:.0%} of these moves paid off" if t else ""), why, bool(t))
     cool[(mkt, "spike")] = time.time()
@@ -1085,11 +1097,9 @@ def k15_call(mkt, m, px, st, lv, cal, night=False):
     if kind == "ls" and (xe or not (0 < cost <= LS_MAX_COST and p - cost - kfee(cost) >= LS_MIN_EDGE)): return False
     if kind == "fav" and not (0 < cost < 0.92 and p - cost - kfee(cost) >= FAV_MIN_EDGE + xe): return False
     where = "below" if bdir > 0 else "above"
-    why = (f"• Price is {where} the start and {'turning back toward it' if kind == 'ls' else 'still pushing away'}\n"
-           + ctx_bullets(cx, up, lv) + (f"\n• 🌙 {SESS_TXT[sname]}" if night else "")
-           + ("\n• ⚠️ Futures on break: Kalshi prices only, context is stale" if st.get("thin", {}).get(mkt) else "")
-           + f"\n• Last 30 days{' in this session' if night else ''}: {cell[0]} setups like this → "
-           f"{'bounced back' if kind == 'ls' else 'kept going'} {p:.0%}")
+    why = (f"{where} start, {'turning back' if kind == 'ls' else 'still pushing'} · " + ctx_short(cx, up)
+           + f" · {'bounced' if kind == 'ls' else 'kept going'} {p:.0%} of {cell[0]} past"
+           + (f" · 🌙 {SH_SESS[sname]}" if night else "") + (" · ⚠️ futures on break" if st.get("thin", {}).get(mkt) else ""))
     open_call(st, mkt, kind, side, c, lv, px, odds_line(p, cost), why,
               cal.get(f"night_{kind}_ok" if night else f"{kind}_ok"))
     return True
@@ -1111,9 +1121,8 @@ def ihm_call(mkt, m, px, st, lv, cal):
     up = (sig > 0) == (ih.get("dir", "follow") == "follow"); side = "YES" if up else "NO"; cost = c["ya"] if up else c["na"]
     if not (0 < cost < 0.9 and ih["hit"] - cost - kfee(cost) >= 0.02): return False
     st["ihm_day"][mkt] = str(now.date()); cx = live_ctx(m); cx["px"] = px
-    why = (f"• {'10:30–11:00 (EIA day)' if wed else 'Overnight + first half-hour'} moved {sig * 100:+.2f}%\n"
-           f"• Last half-hour has {'FOLLOWED' if ih.get('dir') == 'follow' else 'REVERSED'} that {ih['hit']:.0%} of {ih['n']} days "
-           f"(recent {ih['hit_recent']:.0%})\n" + ctx_bullets(cx, up, lv))
+    why = (f"{'10:30–11:00 (EIA day)' if wed else 'overnight+open'} {sig * 100:+.2f}% → last 30 min "
+           f"{'follows' if ih.get('dir') == 'follow' else 'reverses'} {ih['hit']:.0%} of {ih['n']} days · " + ctx_short(cx, up))
     open_call(st, mkt, "ihm", side, c, lv, px, odds_line(ih["hit"], cost), why, True)
     st["ihm_day"][mkt] = str(now.date())
     return True
@@ -1133,9 +1142,8 @@ def drift_call(mkt, m, px, st, lv, cal):
     up = d["dir"] == "UP"; side = "YES" if up else "NO"; cost = c["ya"] if up else c["na"]
     if not (0 < cost < 0.8 and d["p"] - cost - kfee(cost) >= 0.02 + regime_extra(st, mkt)): return False
     cx = live_ctx(m); cx["px"] = px
-    why = (f"• {SESS_TXT[session(now)]}: {NAME[mkt]} ended {d['dir']} in {d['p']:.0%} of {d['n']} recent 15-min sessions\n"
-           f"• Older data {d['older']:.0%} · newer data {d['newer']:.0%} up: both agree\n• Price is still right at the start\n"
-           + ctx_bullets(cx, up, lv))
+    why = (f"{SH_SESS[session(now)]} sessions end {d['dir']} {d['p']:.0%} of {d['n']} (old+new data agree) · "
+           + ctx_short(cx, up))
     open_call(st, mkt, "drift", side, c, lv, px, odds_line(d["p"], cost), why, True)
     return True
 
@@ -1163,7 +1171,7 @@ def manage_ls(mkt, px, st, lv):
         if 0 < oa <= 0.85:  # momentum tends to continue within the window → flip
             p = min(0.97, 1 - bid)
             open_call(st, mkt, "flip", opp, c, lv, px, odds_line(p, oa, "Market odds"),
-                      f"• #{pos.get('id')} was wrong: price is going the other way\n• Within 15-min windows, moves tend to keep going",
+                      f"#{pos.get('id')} was wrong · moves tend to keep going within a window",
                       False, parent=pos.get("id"))
         return True
     if left < 1.25:
@@ -1199,6 +1207,13 @@ def skip_reasons(mkt, m, px, lv):
     return reasons, hard
 
 
+def short_reason(r):
+    """'Very quiet: last 30 min…' → 'very quiet'; keeps the key number for 'Already decided'."""
+    if r.startswith("Already decided"): return "already decided (" + r.split("costs ")[1].split("¢")[0] + "¢)"
+    if r.startswith("Coin flip"): return "50/50 + fee"
+    return r.split(": ")[0].replace("Trend not in favor", "no trend").replace("(", "").replace(")", "").lower()
+
+
 def skip_board(data, st, params):
     """Session preview at minute 1 and update at minute 7: which markets to SKIP (and why) vs in play."""
     now = dt.datetime.now(ET)
@@ -1217,8 +1232,8 @@ def skip_board(data, st, params):
         elif not why: play.append((mkt, "watching for a setup"))
     if not skips: return
     st.setdefault("skipped", {})[label] = sorted(done | {k for k, _ in skips})
-    body = "\n".join(f"{COLOR[k][0]} {NAME[k]}: SKIP\n" + "\n".join(f"   • {w}" for w in why) for k, why in skips)
-    if play: body += "\n\n✅ In play: " + ", ".join(f"{COLOR[k][0]} {NAME[k]} ({t})" for k, t in play)
+    body = "\n".join(f"⛔ {COLOR[k][0]} {NAME[k]}: " + "; ".join(short_reason(w) for w in why) for k, why in skips)
+    if play: body += "\n✅ In play: " + " ".join(f"{COLOR[k][0]}{NAME[k]}" for k, _ in play)
     notify(f"⛔ SKIP · {label} session" + (" (update)" if now.minute % 15 == 7 else ""), body, "default")
 
 
@@ -1373,16 +1388,17 @@ def night_boards(st, boards, night=True):
                 elif not why: play.append((mkt, "watching"))
             if skips:
                 st.setdefault("skipped", {})[label] = sorted(done | {k for k, _ in skips})
-                body = "\n".join(f"{COLOR[k][0]} {NAME[k]}: SKIP\n" + "\n".join(f"   • {w}" for w in why) for k, why in skips)
-                if play: body += "\n\n✅ In play: " + ", ".join(f"{COLOR[k][0]} {NAME[k]} ({t})" for k, t in play)
+                body = "\n".join(f"⛔ {COLOR[k][0]} {NAME[k]}: " + "; ".join(short_reason(w) for w in why) for k, why in skips)
+                if play: body += "\n✅ In play: " + " ".join(f"{COLOR[k][0]}{NAME[k]}" for k, _ in play)
                 notify(f"⛔ SKIP · {'🌙 ' if night else ''}{label} session" + (f" · {session(now)}" if night else " · metals"), body, "default")
     if now.minute % 10 == 0 and st.get("nightpulse") != now.strftime("%H:%M"):
         st["nightpulse"] = now.strftime("%H:%M"); lines = []
         for mkt, (m, kp, lv) in boards.items():
-            c = k15(mkt); line = f"{COLOR[mkt][0]} {NAME[mkt]}  {money(mkt, kp)}"
-            if c: line += f"\n    15-min ({c['close'].tz_convert(ET):%-I:%M}): start {money(mkt, c['k'])} · YES {c['ya'] * 100:.0f}¢ / NO {c['na'] * 100:.0f}¢"
-            op = next((st[k][mkt] for k in ("lpos",) if mkt in st.get(k, {})), None)
-            lines.append(line + (f"\n    open: call #{op.get('id', '?')}" if op else "\n    watching"))
+            c = k15(mkt); op = (st.get("lpos") or {}).get(mkt)
+            arrow = "" if not c else (" ↑" if kp >= c["k"] else " ↓")
+            lines.append(f"{COLOR[mkt][0]} {NAME[mkt]} {money(mkt, kp)}{arrow}"
+                         + (f" · start {money(mkt, c['k'])} · Y{c['ya'] * 100:.0f}/N{c['na'] * 100:.0f}¢" if c else "")
+                         + (f" · #{op.get('id', '?')} open" if op else ""))
         shut = [k for k, v in st.get("open", {}).items() if v is False and k not in boards]
         if shut: lines.append("⏸ Closed now: " + ", ".join(f"{COLOR[k][0]} {NAME[k]}" for k in shut))
         if lines: notify(f"{'🌙' if night else '👀'} Watching{'' if night else ' metals'} · {now:%-I:%M %p} · {SESS_TXT[session(now)]}", "\n".join(lines), "default")
