@@ -25,7 +25,7 @@ CRYPTO = {"BTC": ("BTC-USD", None), "ETH": ("ETH-USD", None), "SOL": ("SOL-USD",
           "DOGE": ("DOGE-USD", None), "BNB": ("BNB-USD", None), "HYPE": ("HYPE32196-USD", None), "NEAR": ("NEAR-USD", None),
           "ZEC": ("ZEC-USD", None)}
 FX = {"EURUSD": ("EURUSD=X", None), "GBPUSD": ("GBPUSD=X", None), "USDJPY": ("JPY=X", None)}
-EXTRA_ON = os.getenv("EXTRA_MARKETS", "1") == "1"  # crypto + FX 15-min markets (open 24/7)
+EXTRA_ON = os.getenv("EXTRA_MARKETS", "0") == "1"  # crypto + FX: OFF (commodities only); set EXTRA_MARKETS=1 to enable
 ALL = {**MARKETS, **METALS, **(CRYPTO if EXTRA_ON else {}), **(FX if EXTRA_ON else {})}
 COINBASE = {"BTC": "BTC-USD", "ETH": "ETH-USD", "SOL": "SOL-USD", "XRP": "XRP-USD", "DOGE": "DOGE-USD", "NEAR": "NEAR-USD", "ZEC": "ZEC-USD"}
 ET = ZoneInfo("America/New_York")
@@ -1474,8 +1474,11 @@ def live():
     pulse_min, tick = int(os.getenv("PULSE_MIN") or 10), int(os.getenv("TICK_SEC") or 10)
     cool, data, nh, yc = {}, {}, {}, {}
     S = dict(params=load_params(), last_min=None, last_hour=None, last_pulse=None, nt=0, errs=0, saved=time.time(), recheck=0)
-    if not MAIN_ON:
-        st0 = load_state(); st0["pos"] = {}; json.dump(st0, open(STATE_FILE, "w"), indent=1, default=float)
+    st0 = load_state()
+    if not MAIN_ON: st0["pos"] = {}
+    for key in ("lpos", "open", "regime", "thin", "lswin"):  # forget markets no longer tracked (e.g. crypto/FX)
+        if isinstance(st0.get(key), dict): st0[key] = {k: v for k, v in st0[key].items() if k in ALL}
+    json.dump(st0, open(STATE_FILE, "w"), indent=1, default=float)
     print(f"live supervisor: tick {tick}s · markets: {', '.join(ALL)}")
 
     def day_tick(st, now):
