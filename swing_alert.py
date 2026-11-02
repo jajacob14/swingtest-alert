@@ -764,6 +764,11 @@ def badge(cost):
     return "🟩 BIG PAYOUT" if cost and 1 / cost >= BIG_X else "🟦"
 
 
+def call_time(pos):
+    """How a call is referred to: by the time it was sent, e.g. '6:42 PM call'."""
+    return f"{pos.get('at', '?')} call"
+
+
 def new_trade(st, mkt, pos, lv, px):
     st["seq"] = st.get("seq", 0) + 1
     pos.update(id=st["seq"], at=dt.datetime.now(ET).strftime("%-I:%M %p"), at_px=lv(px))
@@ -925,7 +930,7 @@ def brief():
         lines.append(f"{COLOR[mkt][0]} {NAME[mkt]}  {lv(r.Close)}  {'▲' if chg >= 0 else '▼'}{abs(chg):.1f}%\n"
                      f"    Trend: {trend}\n    Usual daily swing: ±{rng:.1f}%"
                      + ("\n    Quiet, big move likely" if r.sq else "")
-                     + (f"\n    Open signal #{pos.get('id', '?')}: {'UP' if pos['side'] > 0 else 'DOWN'}" if pos else ""))
+                     + (f"\n    Open {call_time(pos)}: {'UP' if pos['side'] > 0 else 'DOWN'}" if pos else ""))
     ev = events(hours=14)
     notify(f"Market check {dt.datetime.now(ET):%-I:%M %p}", "\n\n".join(lines + (["Today: " + "; ".join(ev)] if ev else [])))
 
@@ -1144,7 +1149,7 @@ def open_call(st, mkt, kind, side, c, lv, px, odds, why, tested, parent=None, pr
             "ihm": "into the close"}.get(kind, "soon")
     tg = tier(prob) if prob else ""
     title = (f"{NAME[mkt]}: BUY {'UP (YES)' if up else 'DOWN (NO)'} · " + (f"{tg} {prob:.0%} · " if tg else "")
-             + f"{'rise' if up else 'drop'} expected {when} · #{n}" + (f" · BIG PAYOUT {1 / cost:.0f}x" if big else ""))
+             + f"{'rise' if up else 'drop'} expected {when}" + (f" · BIG PAYOUT {1 / cost:.0f}x" if big else ""))
     sig = _SIG.get(mkt); tl = max(left * 0.6, 1)
     tpx = level_for(k["k"], tp, up, tl, sig); bpx = level_for(k["k"], bail, up, tl, sig)
     pk = lambda x: money(mkt, x)
@@ -1157,7 +1162,7 @@ def open_call(st, mkt, kind, side, c, lv, px, odds, why, tested, parent=None, pr
            f"Buy {'UP (YES)' if up else 'DOWN (NO)'}: wins if {NAME[mkt].title()} ends {'at or above' if up else 'below'} "
            f"{money(mkt, k['k'])} at {pd.Timestamp(k['close']).tz_convert(ET):%-I:%M} ({left:.0f} min left). Now {lv(px)}.\n"
            f"{exits} {odds[0].upper() + odds[1:]}.\n"
-           f"Why: {why}." + ("" if tested else " Untested: small size.") + (f" Flip of call #{parent}." if parent else "")
+           f"Why: {why}." + ("" if tested else " Untested: small size.")
            + (f"\n{analysis_block(mkt, st['ana'][mkt])}" if (st.get("ana") or {}).get(mkt) else ""),
            "urgent", mkt)
     return n
@@ -1166,13 +1171,13 @@ def open_call(st, mkt, kind, side, c, lv, px, odds, why, tested, parent=None, pr
 def sell_msg(mkt, pos, title, px, lv, extra=""):
     """Legacy exits (slow/fast engines without a 15-min contract)."""
     if pos.get("k"): return follow_msg(mkt, pos, "🔔", title, extra)
-    notify(f"#{pos.get('id', '?')} {NAME[mkt]} · {title}", f"Price now {lv(px)}" + extra, "urgent", mkt)
+    notify(f"{NAME[mkt]} · {title} · {call_time(pos)}", f"Price now {lv(px)}" + extra, "urgent", mkt)
 
 
 def follow_msg(mkt, pos, icon, action, extra=""):
     k = pos["k"]
-    notify(f"{NAME[mkt]}: {action} · #{pos.get('id', '?')}",
-           f"Call #{pos.get('id', '?')} was BUY {'UP (YES)' if k['side'] == 'YES' else 'DOWN (NO)'}: needed {NAME[mkt].title()} "
+    notify(f"{NAME[mkt]}: {action} · {call_time(pos)}",
+           f"The {call_time(pos)} was BUY {'UP (YES)' if k['side'] == 'YES' else 'DOWN (NO)'}: needed {NAME[mkt].title()} "
            f"{'at or above' if k['side'] == 'YES' else 'below'} {money(mkt, k['k'])} at {pd.Timestamp(k['close']).tz_convert(ET):%-I:%M}." + extra,
            "urgent", mkt)
 
@@ -1236,7 +1241,7 @@ def board_line(mkt, a, st):
     """Two plain lines per market: what it's doing now, then what to do."""
     op = (st.get("lpos") or {}).get(mkt)
     l1 = (f"{COLOR[mkt][0]} {NAME[mkt]} {money(mkt, a['px'])}  {a['ch5'] * 100:+.2f}% in 5 min  {a['spark']}  {a['label']}"
-          + (f" ({a['score']:.0f}/100)" if a["score"] >= 45 else "") + (f"  [call #{op.get('id')} open]" if op else ""))
+          + (f" ({a['score']:.0f}/100)" if a["score"] >= 45 else "") + (f"  [{call_time(op)} open]" if op else ""))
     out = l1 + "\n    " + action_line(mkt, a)
     if a["score"] >= 45 or ("start" in a and max(a["p_up"], 1 - a["p_up"]) >= 0.75) or (a.get("fc_ok") and max(a.get("fc_p", .5), 1 - a.get("fc_p", .5)) >= 0.6):
         out += "\n    " + analysis_block(mkt, a).split("\n")[1]  # trend line for the markets that matter right now
@@ -1448,7 +1453,7 @@ def manage_ls(mkt, px, st, lv):
         opp = "NO" if k["side"] == "YES" else "YES"; oa = c["na"] if opp == "NO" else c["ya"]
         if 0 < oa <= 0.85:  # moves tend to continue within a window → flip
             open_call(st, mkt, "flip", opp, c, lv, px, odds_line(min(0.97, 1 - bid), oa),
-                      f"call #{pos.get('id')} was wrong, momentum runs the other way", False, parent=pos.get("id"))
+                      f"the {call_time(pos)} was wrong, momentum runs the other way", False, parent=pos.get("at"))
         return True
     if left < 1.25:
         if bid >= 0.5:
