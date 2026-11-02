@@ -1368,6 +1368,31 @@ def audit():
             print(f"{tag:5} {p['strategy']}/{p['interval']} last {days}d: {stats(simulate(dd, p, L, S))} | validated: {p.get('test')} chunks {p.get('chunks_ok')}")
 
 
+def discover2():
+    """Kalshi intraday commodity series + Pyth free real-time feeds + Pyth 1-min history test."""
+    ser = requests.get(f"{KALSHI}/series", timeout=30).json().get("series", [])
+    for x in ser:
+        t = (x.get("title") or "") + " " + (x.get("category") or "")
+        if x.get("frequency") in ("fifteen_min", "hourly") and re.search(
+                r"(?i)gold|silver|copper|platinum|palladium|corn|wheat|soy|coffee|sugar|cocoa|cattle|hog|oil|gas|brent|wti|commodit", t):
+            ms = requests.get(f"{KALSHI}/markets", params={"series_ticker": x["ticker"], "status": "open", "limit": 3}, timeout=20).json().get("markets", [])
+            print("KSER", x["ticker"], "|", x.get("title"), "|", x.get("frequency"), "|", x.get("category"), "|",
+                  [z.get("name") for z in (x.get("settlement_sources") or [])], "| open:", len(ms),
+                  "|", (ms[0].get("rules_primary") or "")[:160].replace("\n", " ") if ms else "")
+    for q in ("oil", "gas", "gold", "silver", "copper", "platinum", "corn", "wheat", "soy"):
+        try:
+            fs = requests.get("https://hermes.pyth.network/v2/price_feeds", params={"query": q}, timeout=20).json()
+            print("PYTH", q, [(f["attributes"].get("symbol"), f["id"][:12]) for f in fs][:8])
+        except Exception as e: print("PYTH", q, "error", e)
+    now = int(time.time())
+    for sym in ("Commodities.USOILSPOT", "Commodities.UKOILSPOT", "Metal.XAU/USD", "Metal.XAG/USD"):
+        try:
+            j = requests.get("https://benchmarks.pyth.network/v1/shims/tradingview/history",
+                             params={"symbol": sym, "resolution": 1, "from": now - 7200, "to": now}, timeout=20).json()
+            print("PYHIST", sym, j.get("s"), len(j.get("c") or []), (j.get("c") or [None])[-1:], "last t", (j.get("t") or [None])[-1:])
+        except Exception as e: print("PYHIST", sym, "error", e)
+
+
 def selftest():
     rng = np.random.default_rng(1); n = 3000
     vol = np.where((np.arange(n) // 150) % 2, 0.003, 0.012)
@@ -1384,5 +1409,5 @@ if __name__ == "__main__":
     cmds = dict(scan=scan, brief=brief, optimize=optimize, doctor=doctor, selftest=selftest,
                 testnotify=lambda: [notify(f"{m} test alert", f"Color check for {m} ({MARKETS[m][1]}). Data: "
                                        + ("Alpaca real-time" if ALPACA else "Yahoo delayed"), "high", m) for m in MARKETS],
-                live=live, livetest=lambda: (os.environ.update(LIVE_MAX_MIN='2', GIT_PERSIST='', STATE_FILE='/tmp/st.json'), live()), audit=audit, calibrate=calibrate_only, kalshi=kalshi_discover, kcheck=kcheck, loop=lambda: [(scan(), time.sleep(int(os.getenv("LOOP_SEC", 120)))) for _ in iter(int, 1)])
+                live=live, livetest=lambda: (os.environ.update(LIVE_MAX_MIN='2', GIT_PERSIST='', STATE_FILE='/tmp/st.json'), live()), audit=audit, calibrate=calibrate_only, discover2=discover2, kalshi=kalshi_discover, kcheck=kcheck, loop=lambda: [(scan(), time.sleep(int(os.getenv("LOOP_SEC", 120)))) for _ in iter(int, 1)])
     cmds.get((sys.argv[1:] or ["scan"])[0], lambda: print(__doc__))()
