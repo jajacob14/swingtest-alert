@@ -203,28 +203,94 @@
  "_updated": "2026-11-02T13:34-05:00",
  "_cal": {
   "BRENT": {
-   "table": {},
+   "table": {
+    "0.75": [
+     166,
+     0.253
+    ],
+    "1.25": [
+     218,
+     0.115
+    ],
+    "1.75": [
+     93,
+     0.022
+    ],
+    "2.5": [
+     50,
+     0.0
+    ],
+    "99": [
+     43,
+     0.023
+    ]
+   },
    "test_trades": 0,
    "test_roi": 0,
-   "test_win": 0.0,
+   "test_win": 0.18,
    "active": false,
-   "setups": 24
+   "setups": 815,
+   "src": "yahoo futures 30d"
   },
   "WTI": {
-   "table": {},
+   "table": {
+    "0.75": [
+     224,
+     0.259
+    ],
+    "1.25": [
+     242,
+     0.14
+    ],
+    "1.75": [
+     103,
+     0.049
+    ],
+    "2.5": [
+     57,
+     0.018
+    ],
+    "99": [
+     44,
+     0.023
+    ]
+   },
    "test_trades": 0,
    "test_roi": 0,
-   "test_win": 0.0,
+   "test_win": 0.156,
    "active": false,
-   "setups": 54
+   "setups": 958,
+   "src": "yahoo futures 30d"
   },
   "NATGAS": {
-   "table": {},
+   "table": {
+    "0.75": [
+     130,
+     0.185
+    ],
+    "1.25": [
+     185,
+     0.124
+    ],
+    "1.75": [
+     86,
+     0.081
+    ],
+    "2.5": [
+     55,
+     0.018
+    ],
+    "99": [
+     36,
+     0.056
+    ]
+   },
    "test_trades": 0,
    "test_roi": 0,
-   "test_win": 0.0,
+   "test_win": 0.114,
    "active": false,
-   "setups": 54
+   "setups": 703,
+   "src": "yahoo futures 30d"
   }
  }
 }
