@@ -269,7 +269,7 @@ def notify(title, body, priority="default", mkt=None):
     print(f"\n=== {title}\n{body}")
     if t := os.getenv("NTFY_TOPIC"):
         try:
-            requests.post("https://ntfy.sh/", timeout=15, json={"topic": t, "title": title, "message": body, "tags": [tag],
+            requests.post("https://ntfy.sh/", timeout=15, json={"topic": t, "title": title, "message": body,
                           "priority": {"low": 2, "default": 3, "high": 4, "urgent": 5}[priority]}).raise_for_status()
         except Exception as e: print("ntfy failed:", e)
     if (tok := os.getenv("TELEGRAM_TOKEN")) and (cid := os.getenv("TELEGRAM_CHAT_ID")):
@@ -301,7 +301,7 @@ KSERIES = {"BRENT": ["KXBRENTD"], "WTI": ["KXWTIH", "KXWTI"], "NATGAS": ["KXNATG
 NAME = {"BRENT": "BRENT", "WTI": "WTI", "NATGAS": "NAT GAS"}
 REASON = {"STOP": "hit your stop: cut the loss", "TARGET": "hit the target 🎯", "TIME": "idea timed out",
           "END OF DAY": "market closing soon"}
-_KC, _KR = {}, {}
+_KC, _KR, _PICK = {}, {}, {}
 
 
 def money(mkt, x): return f"${x:.3f}" if mkt == "NATGAS" else f"${x:.2f}"
@@ -330,7 +330,7 @@ def kalshi_book(mkt, min_left=8):
             if close - now < pd.Timedelta(minutes=min_left): continue
             f = lambda k: float(m.get(k) or 0)
             evs.setdefault((close, m["event_ticker"]), []).append(
-                dict(k=float(m["floor_strike"]), yb=f("yes_bid_dollars"), ya=f("yes_ask_dollars"), na=f("no_ask_dollars")))
+                dict(k=float(m["floor_strike"]), yb=f("yes_bid_dollars"), ya=f("yes_ask_dollars"), na=f("no_ask_dollars"), tk=m["ticker"]))
     for (close, ev), rows in sorted(evs.items()):
         rows.sort(key=lambda r: r["k"])
         if px := implied(rows):
@@ -340,10 +340,10 @@ def kalshi_book(mkt, min_left=8):
 def kconv(mkt, etf_now):
     """Function that turns a fund (ETF) price level into the matching Kalshi price."""
     b = kalshi_book(mkt) if os.getenv("KALSHI", "1") == "1" else None
-    if not b: return lambda x: money(mkt, x)
-    c = _KR.get(mkt)
-    if not c or c[0] != b["t"]: c = _KR[mkt] = (b["t"], b["px"] / etf_now)  # re-anchor only when Kalshi refreshes
-    return lambda x: money(mkt, x * c[1])
+    c = (0, 1.0) if not b else _KR.get(mkt)
+    if b and (not c or c[0] != b["t"]): c = _KR[mkt] = (b["t"], b["px"] / etf_now)  # re-anchor only when Kalshi refreshes
+    f = lambda x: money(mkt, x * c[1]); f.r = c[1]
+    return f
 
 
 def kalshi_pick(mkt, up, min_left=8):
@@ -353,7 +353,54 @@ def kalshi_pick(mkt, up, min_left=8):
     if up: r, side, cost = next(((r, "YES", r["ya"]) for r in b["rows"] if r["k"] > b["px"] and 0 < r["ya"] < 1), (None,) * 3)
     else: r, side, cost = next(((r, "NO", r["na"]) for r in reversed(b["rows"]) if r["k"] < b["px"] and 0 < r["na"] < 1), (None,) * 3)
     if not r: return "(no good Kalshi strike right now)"
+    _PICK[mkt] = dict(ticker=r["tk"], side=side, cost=cost)
     return f'👉 BUY {side} · "Above {money(mkt, r["k"])}" · {when}\n    cost {cost * 100:.0f}¢ → pays $1 if right'
+
+
+K15 = {"BRENT": "KXBRENT15M", "WTI": "KXWTI15M", "NATGAS": "KXNATGAS15M"}
+
+
+def k15(mkt):
+    """Current Kalshi 15-minute up/down contract for this market (cached 15s)."""
+    key = f"15|{mkt}"
+    if (c := _KC.get(key)) and time.time() - c["t"] < 15: return c
+    try:
+        ms = requests.get(f"{KALSHI}/markets", params={"series_ticker": K15[mkt], "status": "open", "limit": 5}, timeout=10).json().get("markets", [])
+    except Exception: return None
+    if not ms: return None
+    m = min(ms, key=lambda x: x["close_time"]); f = lambda k: float(m.get(k) or 0)
+    _KC[key] = dict(ticker=m["ticker"], k=float(m["floor_strike"]), close=pd.Timestamp(m["close_time"]), ya=f("yes_ask_dollars"),
+                    na=f("no_ask_dollars"), yb=f("yes_bid_dollars"), nb=f("no_bid_dollars"), t=time.time())
+    return _KC[key]
+
+
+def pick15(mkt, up, lv_now):
+    """Text + contract info for the 15-min Kalshi bet matching a fast call."""
+    c = k15(mkt)
+    if not c: return "(no 15-min Kalshi contract open right now)", None
+    left = (c["close"] - pd.Timestamp.now(tz="UTC")).total_seconds() / 60
+    end = c["close"].tz_convert(ET).strftime("%-I:%M")
+    side, cost = ("YES", c["ya"]) if up else ("NO", c["na"])
+    head = f"⏱ Kalshi 15-min ({end} close)\n    Start price {money(mkt, c['k'])} · now {lv_now}"
+    if left < 4:
+        return head + f"\n    Too late for this one ({left:.0f} min left).\n    👉 Next window: BUY {side} right when it opens", None
+    if not 0 < cost < 1: return head + "\n    (no price offered right now)", None
+    return (head + f"\n    👉 BUY {side} · {cost * 100:.0f}¢ → pays $1 if price ends {'at/above' if up else 'below'} start",
+            dict(ticker=c["ticker"], side=side, cost=cost, k=c["k"], close=str(c["close"])))
+
+
+def contract_value(info):
+    """What your Kalshi contract is worth now (best bid you can sell to)."""
+    if not info: return ""
+    try:
+        m = requests.get(f"{KALSHI}/markets/{info['ticker']}", timeout=10).json()["market"]
+    except Exception: return ""
+    paid = info["cost"] * 100
+    if m.get("result"):
+        won = m["result"].lower() == info["side"].lower()
+        return f"\nKalshi {info['side']}: window closed, {'YOU WON ✅ ($1 each)' if won else 'lost ❌'}"
+    bid = float(m.get("yes_bid_dollars" if info["side"] == "YES" else "no_bid_dollars") or 0) * 100
+    return f"\nKalshi {info['side']}: paid {paid:.0f}¢ → sell now for {bid:.0f}¢ ({bid - paid:+.0f}¢ each)"
 
 
 def hold_txt(p):
@@ -378,9 +425,10 @@ def process(mkt, d, p, st, sent):
             continue
         if p["status"] == "active" and (L[i] or S[i]) and i == len(d) - 1:
             side = 1 if L[i] else -1; pos = open_pos(side, r.Close, r.atr, p); pos["interval"] = iv; st["pos"][mkt] = pos
-            t = p.get("test") or {}
+            t = p.get("test") or {}; _PICK.pop(mkt, None)
+            pick = kalshi_pick(mkt, side > 0, min(p['hold'] * BARS[iv][1], 180)); pos["k"] = _PICK.get(mkt)
             notify(f"{NAME[mkt]}  {'⬆️ BET UP' if side > 0 else '⬇️ BET DOWN'}",
-                   f"Now: {lv(r.Close)}\n{kalshi_pick(mkt, side > 0, min(p['hold'] * BARS[iv][1], 180))}\n"
+                   f"Now: {lv(r.Close)}\n{pick}\n"
                    f"🎯 Profit zone: {lv(pos['tgt'])}\n🛑 Sell the bet if it hits {lv(pos['stop'])}\n"
                    f"⏱ Good for about {hold_txt(p)}"
                    + (f"\n📊 Past results: wins {t['win']:.0%}, winners bigger than losers" if t else ""), "urgent", mkt)
@@ -394,7 +442,7 @@ def process(mkt, d, p, st, sent):
 def exit_alert(mkt, pos, px, why, lv):
     pnl = s_pnl(pos, px); good = pnl > 0
     notify(f"{NAME[mkt]}  {'✅' if good else '🛑'} SELL YOUR {'UP' if pos['side'] > 0 else 'DOWN'} BET NOW",
-           f"Now: {lv(px)}\nWhy: {REASON.get(why, why.lower())}\nMove since entry: {pnl:+.2f}% {'👍' if good else '👎'}",
+           f"Now: {lv(px)}\nWhy: {REASON.get(why, why.lower())}" + (contract_value(pos.get("k")) or f"\nPrice moved {pnl:+.2f}% your way"),
            "urgent", mkt)
 
 
@@ -501,8 +549,8 @@ def fast_checks(mkt, m, st, cool):
     if abs(z) >= 2.5 and abs(r5) * 100 >= MINMOVE[mkt]:
         up, wild = r5 > 0, abs(z) > 4.5
         fire("spike", f"{'⚡ JUMPED' if up else '🩸 DROPPED'} {abs(r5) * 100:.1f}% in 5 min",
-             f"Now: {lv(px)}\n" + (f"Very stretched; it often snaps back. Don't chase.\nBounce idea:\n{kalshi_pick(mkt, not up)}"
-                                    if wild else f"Strong push; it may keep going.\nRide it:\n{kalshi_pick(mkt, up)}"), "urgent", 10)
+             f"Now: {lv(px)}\n" + (f"Very stretched; it often snaps back. Don't chase.\nBounce idea:\n{pick15(mkt, not up, lv(px))[0]}"
+                                    if wild else f"Strong push; it may keep going.\nRide it:\n{pick15(mkt, up, lv(px))[0]}"), "urgent", 10)
     b5 = resample(m, 5)
     if len(b5) > 60:
         d5 = indicators(b5); r, pr = d5.iloc[-1], d5.iloc[-2]; vr3 = m.Volume.tail(3).mean() / (m.Volume.tail(390).mean() + 1e-9)
@@ -511,11 +559,11 @@ def fast_checks(mkt, m, st, cool):
         if x_now != x_prev and x_now * r.mom > 0:
             up = x_now > 0
             fire("trend", f"{'↗️ TURNING UP' if up else '↘️ TURNING DOWN'}",
-                 f"Now: {lv(px)}\nShort-term trend just flipped {'up' if up else 'down'}.\nPossible bet:\n{kalshi_pick(mkt, up)}", "high", 20)
+                 f"Now: {lv(px)}\nShort-term trend just flipped {'up' if up else 'down'}.\nPossible bet:\n{pick15(mkt, up, lv(px))[0]}", "high", 20)
         bias = "UP" if r.mom > 0 and r.mom > pr.mom else "DOWN" if r.mom < 0 and r.mom < pr.mom else None
         if r.sq and r.sq_bars >= 6 and vr3 > 1.5 and bias:
             fire("premove", f"🎯 MOVE COMING · leaning {bias}",
-                 f"Now: {lv(px)}\nPrice coiled tight and buyers/sellers are waking up.\nGet ready:\n{kalshi_pick(mkt, bias == 'UP')}", "high", 30)
+                 f"Now: {lv(px)}\nPrice coiled tight and buyers/sellers are waking up.\nGet ready:\n{pick15(mkt, bias == 'UP', lv(px))[0]}", "high", 30)
     et = m.index.tz_convert(ET); today = m[et.date == et[-1].date()]
     if len(today) > 30:
         prev = today.iloc[:-1]
@@ -557,9 +605,9 @@ def fast_entry(mkt, d1, fp, st, cool):
     pos = open_pos(1 if up else -1, r.Close, r.atr, fp); pos.update(t0=time.time(), atr=r.atr, trail=fp["trail"], hold=fp["hold"])
     st.setdefault("fpos", {})[mkt] = pos; cool[(mkt, "spike")] = cool[(mkt, "trend")] = time.time()
     t = fp.get("test")
-    notify(f"{NAME[mkt]}  🚀 BUY IN NOW · {'spike starting UP' if up else 'drop starting DOWN'}",
-           f"Now: {lv(r.Close)}\n{kalshi_pick(mkt, up)}\n🛑 Sell right away if it hits {lv(pos['stop'])}\n"
-           f"I'll ping you when to sell (usually within {fp['hold']} min).\n"
+    txt, pos["k"] = pick15(mkt, up, lv(r.Close))
+    notify(f"{NAME[mkt]}  {'⬆️ BET UP NOW · rise starting' if up else '⬇️ BET DOWN NOW · drop starting'}",
+           f"{txt}\n🛑 Bail out if price hits {lv(pos['stop'])}\nI'll ping you when to sell.\n"
            + (f"📊 Past: wins {t['win']:.0%}, {t['n']} trades, profitable overall" if t else "⚠️ New pattern: keep this bet small"),
            "urgent", mkt)
     return True
@@ -579,11 +627,19 @@ def manage_fast(mkt, px, st):
         why = "LOCK" if s_ * (pos["stop"] - pos["entry"]) > 0 else "CUT"
     elif (px >= pos["tgt"]) if s_ > 0 else (px <= pos["tgt"]): why = "TARGET"
     elif time.time() - pos["t0"] > pos["hold"] * 60 or dt.datetime.now(ET).time() >= dt.time(15, 55): why = "DONE"
+    k = pos.get("k")
+    if not why and k and k.get("close") and (pd.Timestamp(k["close"]) - pd.Timestamp.now(tz="UTC")).total_seconds() < 75:
+        lv = kconv(mkt, px); kp = px * lv.r
+        win = (kp >= k["k"]) if k["side"] == "YES" else (kp < k["k"])
+        notify(f"{NAME[mkt]}  ⏱ 15-MIN WINDOW ENDING",
+               f"Now: {lv(px)} vs start {money(mkt, k['k'])}\n" + ("You're WINNING ✅ Hold to collect $1 each (or sell if it's close)."
+               if win else "You're LOSING ❌ Sell now to save what's left.") + contract_value(k), "urgent", mkt)
+        del st["fpos"][mkt]; return True
     if not why: return False
     lv, pnl, mins = kconv(mkt, px), s_pnl(pos, px), (time.time() - pos["t0"]) / 60
     title = {"LOCK": "💰 SELL NOW · lock in profit", "TARGET": "💰 SELL NOW · target hit 🎯",
              "CUT": "🛑 SELL NOW · cut the loss", "DONE": "⏱ SELL NOW · move is over"}[why]
-    notify(f"{NAME[mkt]}  {title}", f"Now: {lv(px)}\nMove since buy-in: {pnl:+.2f}% in {mins:.0f} min {'👍' if pnl > 0 else '👎'}",
+    notify(f"{NAME[mkt]}  {title}", f"Now: {lv(px)} ({mins:.0f} min after the call)" + (contract_value(pos.get("k")) or f"\nPrice moved {pnl:+.2f}% your way"),
            "urgent", mkt)
     del st["fpos"][mkt]; return True
 
