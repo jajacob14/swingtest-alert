@@ -22,6 +22,9 @@ import json, os, sys, datetime as dt
 from zoneinfo import ZoneInfo
 import numpy as np, pandas as pd, requests
 
+for _k, _v in list(os.environ.items()):  # tolerate secrets pasted with stray spaces/newlines
+    if _v != _v.strip(): os.environ[_k] = _v.strip()
+
 MARKETS = {"BRENT": "BZ=F", "WTI": "CL=F", "NATGAS": "NG=F"}
 INTERVAL, PERIOD = os.getenv("INTERVAL", "1h"), os.getenv("PERIOD", "60d")
 P = dict(bb_len=20, bb_k=2.0, kc_k=1.5, atr_len=14, ema_trend=50, vol_mult=1.2,
@@ -174,8 +177,12 @@ def upcoming_events(now=None, hours=3):
 def notify(title, body, priority="default"):
     print(f"\n=== {title}\n{body}")
     if t := os.getenv("NTFY_TOPIC"):
-        requests.post(f"https://ntfy.sh/{t}", data=body.encode(), timeout=15,
-                      headers={"Title": title, "Priority": priority, "Tags": "oil_drum"})
+        pr = {"min": 1, "low": 2, "default": 3, "high": 4, "urgent": 5}[priority]
+        try:  # JSON publish supports emoji in titles
+            requests.post("https://ntfy.sh/", timeout=15, json={"topic": t, "title": title, "message": body,
+                          "priority": pr, "tags": ["oil_drum"]}).raise_for_status()
+        except Exception as e:
+            print("ntfy failed:", e)
     if (tok := os.getenv("TELEGRAM_TOKEN")) and (cid := os.getenv("TELEGRAM_CHAT_ID")):
         requests.post(f"https://api.telegram.org/bot{tok}/sendMessage", timeout=15,
                       json={"chat_id": cid, "text": f"{title}\n{body}"})
