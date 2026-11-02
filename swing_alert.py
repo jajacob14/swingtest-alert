@@ -26,6 +26,8 @@ HOLD = {"15m": 32, "1h": 40, "1d": 20}  # max bars in a trade (time stop)
 DEFAULT = dict(interval="1h", strategy="squeeze", min_sq=6, trend=1, stop=1.5, tgt=3.0, trail=2.5, hold=40)
 EXTRA_EVENTS = [e for e in os.getenv("EXTRA_EVENTS", "").split(",") if e]  # "2026-11-30 OPEC+ meeting"
 ALPACA = bool(os.getenv("ALPACA_KEY"))
+COLOR = {"BRENT": ("🔵", "large_blue_circle", 0x1E88E5), "WTI": ("🟠", "orange_circle", 0xFB8C00),
+         "NATGAS": ("🟢", "green_circle", 0x43A047)}
 
 
 # ---------------- data ----------------
@@ -228,17 +230,19 @@ def events(now=None, hours=3):
 
 
 # ---------------- notify ----------------
-def notify(title, body, priority="default"):
+def notify(title, body, priority="default", mkt=None):
+    dot, tag, hexc = COLOR.get(mkt, ("⚪", "white_circle", 0x9E9E9E))
+    title = f"{dot} {title}" if mkt else title
     print(f"\n=== {title}\n{body}")
     if t := os.getenv("NTFY_TOPIC"):
         try:
-            requests.post("https://ntfy.sh/", timeout=15, json={"topic": t, "title": title, "message": body,
+            requests.post("https://ntfy.sh/", timeout=15, json={"topic": t, "title": title, "message": body, "tags": [tag],
                           "priority": {"low": 2, "default": 3, "high": 4, "urgent": 5}[priority]}).raise_for_status()
         except Exception as e: print("ntfy failed:", e)
     if (tok := os.getenv("TELEGRAM_TOKEN")) and (cid := os.getenv("TELEGRAM_CHAT_ID")):
         requests.post(f"https://api.telegram.org/bot{tok}/sendMessage", json={"chat_id": cid, "text": f"{title}\n{body}"}, timeout=15)
     if w := os.getenv("DISCORD_WEBHOOK"):
-        requests.post(w, json={"content": f"**{title}**\n{body}"}, timeout=15)
+        requests.post(w, json={"embeds": [{"title": title, "description": body, "color": hexc}]}, timeout=15)
 
 
 # ---------------- live ----------------
@@ -280,7 +284,7 @@ def scan():
                 if why:
                     pnl = pos["side"] * (px - pos["entry"]) / pos["entry"] * 100
                     notify(f"🔔 {mkt} EXIT {'LONG' if pos['side'] > 0 else 'SHORT'} ({why})",
-                           f"{etf} close @ ~{px:.2f}  →  {pnl:+.2f}%  (entry {pos['entry']:.2f})", "high")
+                           f"{etf} close @ ~{px:.2f}  →  {pnl:+.2f}%  (entry {pos['entry']:.2f})", "high", mkt)
                     del st["pos"][mkt]
                 continue
             if p["status"] == "active" and (L[i] or S[i]) and i == len(d) - 1:
@@ -289,10 +293,10 @@ def scan():
                 notify(f"🚀 {mkt} {'BUY' if side > 0 else 'SELL SHORT'} now",
                        f"{etf} ~{r.Close:.2f}  ({p['strategy']}, {iv} bars)\nStop {pos['stop']:.2f} (-{risk:.2f}%)\n"
                        f"Target {pos['tgt']:.2f} (+{rew:.2f}%)" + (f"\nTrail {p['trail']}×ATR" if p["trail"] else "")
-                       + f"\nMax hold {p['hold']} bars\n{size_txt(r.Close, pos['stop'])}\n{fmt_stats(p)}", "urgent")
+                       + f"\nMax hold {p['hold']} bars\n{size_txt(r.Close, pos['stop'])}\n{fmt_stats(p)}", "urgent", mkt)
             elif r.sq and r.sq_bars == 6 and (k := f"SQ|{mkt}|{bar}") not in sent:
                 sent.add(k); notify(f"👀 {mkt} coiling", f"{etf} {r.Close:.2f}: volatility squeezed {int(r.sq_bars)} bars. "
-                                    f"Breakout likely soon; watch for entry alert.", "low")
+                                    f"Breakout likely soon; watch for entry alert.", "low", mkt)
         st["last"][mkt] = str(d.index[-1])
         print(f"{mkt} {p['status']} {p['strategy']}/{iv}: {d.index[-1]} {d.Close.iloc[-1]:.2f} sq={bool(d.sq.iloc[-1])} "
               f"mom={d.mom.iloc[-1]:+.3f} rsi={d.rsi.iloc[-1]:.0f} pos={'yes' if mkt in st['pos'] else 'no'}")
@@ -350,6 +354,7 @@ def selftest():
 
 if __name__ == "__main__":
     cmds = dict(scan=scan, brief=brief, optimize=optimize, doctor=doctor, selftest=selftest,
-                testnotify=lambda: notify("✅ Swing alerts connected", "Test push. Data: " + ("Alpaca real-time" if ALPACA else "Yahoo delayed"), "high"),
+                testnotify=lambda: [notify(f"{m} test alert", f"Color check for {m} ({MARKETS[m][1]}). Data: "
+                                       + ("Alpaca real-time" if ALPACA else "Yahoo delayed"), "high", m) for m in MARKETS],
                 loop=lambda: [(scan(), time.sleep(int(os.getenv("LOOP_SEC", 120)))) for _ in iter(int, 1)])
     cmds.get((sys.argv[1:] or ["scan"])[0], lambda: print(__doc__))()
