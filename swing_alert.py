@@ -18,7 +18,10 @@ from numpy.lib.stride_tricks import sliding_window_view as swv
 for _k, _v in list(os.environ.items()):  # tolerate secrets pasted with stray spaces/newlines
     if _v != _v.strip(): os.environ[_k] = _v.strip()
 
-MARKETS = {"BRENT": ("BZ=F", "BNO"), "WTI": ("CL=F", "USO"), "NATGAS": ("NG=F", "UNG")}
+MARKETS = {"BRENT": ("BZ=F", "BNO"), "WTI": ("CL=F", "USO"), "NATGAS": ("NG=F", "UNG")}          # energy: day + night engines
+METALS = {"GOLD": ("GC=F", "GLD"), "SILVER": ("SI=F", "SLV"), "COPPER": ("HG=F", "CPER"),         # Kalshi 15-min metals:
+          "PLATINUM": ("PL=F", "PPLT"), "PALLADIUM": ("PA=F", "PALL")}                             # Kalshi-price engine 24/5
+ALL = {**MARKETS, **METALS}
 ET = ZoneInfo("America/New_York")
 STATE_FILE, PARAMS_FILE = os.getenv("STATE_FILE", "state.json"), "params.json"
 FEE = 0.03  # % per side: spread + slippage
@@ -29,13 +32,15 @@ FAST_DEFAULT = dict(strategy="ignite", z=2.5, look=30, vr=1.5, stop=1.5, tgt=8.0
 DEFAULT = dict(interval="1h", strategy="squeeze", min_sq=6, trend=1, stop=1.5, tgt=3.0, trail=2.5, hold=40)
 EXTRA_EVENTS = [e for e in os.getenv("EXTRA_EVENTS", "").split(",") if e]  # "2026-11-30 OPEC+ meeting"
 ALPACA = bool(os.getenv("ALPACA_KEY"))
-COLOR = {"BRENT": ("🟢", "green_circle", 0x43A047), "WTI": ("🟠", "orange_circle", 0xFB8C00),
+COLOR = {"GOLD": ("🟡", "", 0xFBC02D), "SILVER": ("⚪", "", 0x9E9E9E), "COPPER": ("🟤", "", 0x8D6E63),
+         "PLATINUM": ("🟣", "", 0x7E57C2), "PALLADIUM": ("🔴", "", 0xE53935),
+         "BRENT": ("🟢", "green_circle", 0x43A047), "WTI": ("🟠", "orange_circle", 0xFB8C00),
          "NATGAS": ("🔵", "large_blue_circle", 0x1E88E5)}
 
 
 # ---------------- data ----------------
 def fetch(mkt, interval, days):
-    fut, etf = MARKETS[mkt]
+    fut, etf = ALL[mkt]
     if ALPACA:
         try:
             return fetch_alpaca(etf, interval, days)
@@ -250,7 +255,7 @@ def fetch_fut_1m(mkt, days=29):
     out, end = [], dt.datetime.now(dt.timezone.utc)
     for k in range(0, days, 7):
         e = end - dt.timedelta(days=k); b = e - dt.timedelta(days=min(7, days - k))
-        df = yf.Ticker(MARKETS[mkt][0]).history(start=b, end=e, interval="1m", auto_adjust=False)
+        df = yf.Ticker(ALL[mkt][0]).history(start=b, end=e, interval="1m", auto_adjust=False)
         if len(df): out.append(df[["Open", "High", "Low", "Close", "Volume"]])
     d = pd.concat(out).sort_index(); return d[~d.index.duplicated()]
 
@@ -292,6 +297,14 @@ def event_window(mkt, now_et, mins_ahead=15):
     if hit(18 * 60, 18 * 60 + 30): return "6 PM reopen: thin, gappy trading"
     if mkt == "NATGAS" and (hit(23 * 60 + 15, 23 * 60 + 59) or hit(90, 150) or hit(5 * 60 + 15, 5 * 60 + 59)):
         return "Weather-model update (GFS/European): nat gas jumps on forecast changes"
+    if mkt in METALS:
+        if wd < 5 and hit(8 * 60 + 25, 8 * 60 + 45): return "8:30 AM US data (jobs/CPI/claims): metals jump on rate news"
+        if hit(20 * 60, 20 * 60 + 15): return "Shanghai open: Chinese buying/selling hits metals"
+        if hit(3 * 60, 3 * 60 + 15): return "London open: volatility spike as Europe trades overnight news"
+        if mkt in ("GOLD", "PLATINUM", "PALLADIUM") and (hit(5 * 60 + 25, 5 * 60 + 40) or hit(9 * 60 + 55, 10 * 60 + 10)):
+            return "London price fix: big orders cluster here"
+        if mkt == "SILVER" and hit(6 * 60 + 55, 7 * 60 + 10): return "London silver fix: big orders cluster here"
+        if hit(13 * 60 + 25, 13 * 60 + 40): return "COMEX settlement (1:30 PM): end-of-day positioning"
     return ""
 
 
@@ -346,15 +359,33 @@ def ihm_stats(mkt):
     return res
 
 
+def drift_stats(df):
+    """Per session: share of 15-min windows that ended UP. Edge only if older 70% and newer 30% agree (≥3.5 pts)."""
+    df = df.resample("1min").last().dropna(how="all"); c = df.Close; w = df.index.floor("15min")
+    g = pd.DataFrame({"start": c.shift(1).groupby(w).first(), "end": c.groupby(w).last(), "n": c.groupby(w).size()})
+    g = g[g.n >= 8].dropna(); g["up"] = g.end >= g.start
+    g["sess"] = [session(t.tz_convert(ET)) for t in g.index]; cut = int(len(g) * 0.7); out = {}
+    for sname, x in g.groupby("sess"):
+        tr, te = x[x.index < g.index[cut]], x[x.index >= g.index[cut]]
+        if len(tr) < 100 or len(te) < 60: continue
+        ptr, pte = tr.up.mean(), te.up.mean()
+        ok = bool((ptr - 0.5) * (pte - 0.5) > 0 and min(abs(ptr - 0.5), abs(pte - 0.5)) >= 0.035)
+        p = min(ptr, pte) if ptr > 0.5 else max(ptr, pte)  # conservative
+        out[sname] = dict(dir="UP" if p > 0.5 else "DOWN", p=round(float(p if p > 0.5 else 1 - p), 3),
+                          older=round(float(ptr), 3), newer=round(float(pte), 3), n=len(x), ok=ok)
+    return out
+
+
 def calibrate(mkt):
+    drift = {}
     try:
-        rows = ls_rows(fetch_fut_1m(mkt), rth=False); src = "yahoo futures 30d"
+        fdf = fetch_fut_1m(mkt); rows = ls_rows(fdf, rth=False); src = "yahoo futures 30d"; drift = drift_stats(fdf)
     except Exception as e:
         print(mkt, "futures 1m failed:", e); rows = ls_rows(fetch(mkt, "1m", 60)); src = "etf 60d"
     cut = int(len(rows) * 0.7); tr, te = rows.iloc[:cut], rows.iloc[cut:]
     tab = {k: [len(g), round(float(g.won.mean()), 3)] for k, g in tr.groupby("key") if len(g) >= 25}
     stab = {k: [len(g), round(float(g.won.mean()), 3)] for k, g in tr.groupby("skey") if len(g) >= 25}
-    res = dict(table=tab, stable=stab, setups=len(rows), src=src)
+    res = dict(table=tab, stable=stab, setups=len(rows), src=src, drift=drift)
     nt = te[~te.skey.str.startswith("US")]
     for typ in ("ls", "fav"):  # overnight validation on unseen 30%, session-aware table
         pnl = cost = n = 0
@@ -435,7 +466,7 @@ def optimize():
     with ProcessPoolExecutor(3) as ex:
         out = list(ex.map(opt_market, MARKETS))
     res = {m: p for m, p, _ in out}
-    res["_cal"] = {m: calibrate(m) for m in MARKETS}
+    res["_cal"] = {m: calibrate(m) for m in ALL}
     res["_fast"] = {m: ({**f, "status": "active"} if f else {**FAST_DEFAULT, "status": "unproven"}) for m, _, f in out}
     for m, p in res.items(): print(m, json.dumps(p))
     res["_updated"] = dt.datetime.now(ET).isoformat(timespec="minutes")
@@ -510,14 +541,17 @@ def size_txt(px, stop):
 
 # ---------------- Kalshi (all prices shown in Kalshi terms) ----------------
 KALSHI = "https://api.elections.kalshi.com/trade-api/v2"
-KSERIES = {"BRENT": ["KXBRENTD"], "WTI": ["KXWTIH", "KXWTI"], "NATGAS": ["KXNATGASD"]}
-NAME = {"BRENT": "BRENT", "WTI": "WTI", "NATGAS": "NAT GAS"}
+KSERIES = {"BRENT": ["KXBRENTD"], "WTI": ["KXWTIH", "KXWTI"], "NATGAS": ["KXNATGASD"], "GOLD": ["KXGOLDH"],
+           "SILVER": ["KXSILVERH"], "COPPER": [], "PLATINUM": ["KXPLATINUMH"], "PALLADIUM": ["KXPALLADIUMH"]}
+NAME = {"BRENT": "BRENT", "WTI": "WTI", "NATGAS": "NAT GAS", "GOLD": "GOLD", "SILVER": "SILVER", "COPPER": "COPPER",
+        "PLATINUM": "PLATINUM", "PALLADIUM": "PALLADIUM"}
+DEC = {"NATGAS": 3, "SILVER": 3, "COPPER": 4}
 REASON = {"STOP": "hit your stop: cut the loss", "TARGET": "hit the target 🎯", "TIME": "idea timed out",
           "END OF DAY": "market closing soon"}
 _KC, _KR, _PICK = {}, {}, {}
 
 
-def money(mkt, x): return f"${x:.3f}" if mkt == "NATGAS" else f"${x:.2f}"
+def money(mkt, x): return f"${x:,.{DEC.get(mkt, 2)}f}"
 
 
 def implied(rows):
@@ -601,7 +635,8 @@ def busy(st, mkt): return any(mkt in st.get(k, {}) for k in ("pos", "fpos", "lpo
 
 
 
-K15 = {"BRENT": "KXBRENT15M", "WTI": "KXWTI15M", "NATGAS": "KXNATGAS15M"}
+K15 = {"BRENT": "KXBRENT15M", "WTI": "KXWTI15M", "NATGAS": "KXNATGAS15M", "GOLD": "KXGOLD15M", "SILVER": "KXSILVER15M",
+       "COPPER": "KXCOPPER15M", "PLATINUM": "KXPLATINUM15M", "PALLADIUM": "KXPALLADIUM15M"}
 
 
 def k15(mkt):
@@ -918,7 +953,7 @@ def why_lines(mkt, cx, bdir, px, lv, cell, kind):
 
 
 # ---------------- unified 15-min calls: BUY → (TAKE PROFIT | WRONG → FLIP | HOLD) → RESULT ----------------
-KIND = {"fast": "⚡ Fast move", "ls": "🎯 Longshot", "fav": "💪 Edge pick", "ihm": "📈 Close pattern", "flip": "🔄 Flip"}
+KIND = {"drift": "📊 Session drift", "fast": "⚡ Fast move", "ls": "🎯 Longshot", "fav": "💪 Edge pick", "ihm": "📈 Close pattern", "flip": "🔄 Flip"}
 
 
 def sess(close):
@@ -981,7 +1016,7 @@ def odds_line(p, cost, label="Odds"):
 
 def fast_entry(mkt, d1, fp, st, cool):
     """1-min momentum signal → BUY on the 15-min contract in that direction."""
-    if busy(st, mkt): return False
+    if busy(st, mkt) or not fp.get("test"): return False  # only validated fast setups
     L, S = signals(d1, fp); bar = str(d1.index[-1])
     if not (L[-1] or S[-1]) or st.setdefault("flast", {}).get(mkt) == bar: return False
     st["flast"][mkt] = bar
@@ -1056,6 +1091,27 @@ def ihm_call(mkt, m, px, st, lv, cal):
            f"(recent {ih['hit_recent']:.0%})\n" + ctx_bullets(cx, up, lv))
     open_call(st, mkt, "ihm", side, c, lv, px, odds_line(ih["hit"], cost), why, True)
     st["ihm_day"][mkt] = str(now.date())
+    return True
+
+
+def drift_call(mkt, m, px, st, lv, cal):
+    """Early in a 15-min window, price still at the start: bet the session's validated up/down tendency."""
+    from math import log, sqrt
+    now = dt.datetime.now(ET); d = ((cal or {}).get("drift") or {}).get(session(now))
+    if not d or not d.get("ok") or busy(st, mkt) or len(m) < 120: return False
+    c = k15(mkt)
+    if not c or st.setdefault("lswin", {}).get(mkt) == c["ticker"]: return False
+    T = (c["close"] - pd.Timestamp.now(tz="UTC")).total_seconds() / 60
+    if not 10 <= T <= 14 or event_window(mkt, now, T): return False
+    sig = float(np.log(m.Close).diff().tail(390).std())
+    if not sig or abs(log(px * lv.r / c["k"])) / (sig * sqrt(T)) > 0.3: return False
+    up = d["dir"] == "UP"; side = "YES" if up else "NO"; cost = c["ya"] if up else c["na"]
+    if not (0 < cost < 0.8 and d["p"] - cost - kfee(cost) >= 0.02): return False
+    cx = live_ctx(m); cx["px"] = px
+    why = (f"• {SESS_TXT[session(now)]}: {NAME[mkt]} ended {d['dir']} in {d['p']:.0%} of {d['n']} recent 15-min sessions\n"
+           f"• Older data {d['older']:.0%} · newer data {d['newer']:.0%} up: both agree\n• Price is still right at the start\n"
+           + ctx_bullets(cx, up, lv))
+    open_call(st, mkt, "drift", side, c, lv, px, odds_line(d["p"], cost), why, True)
     return True
 
 
@@ -1144,20 +1200,51 @@ def skip_board(data, st, params):
 def night_bars(mkt):
     """~10-min-delayed 1-min futures bars (context) from Yahoo."""
     import yfinance as yf
-    df = yf.Ticker(MARKETS[mkt][0]).history(period="2d", interval="1m", auto_adjust=False)
+    df = yf.Ticker(ALL[mkt][0]).history(period="2d", interval="1m", auto_adjust=False)
     return df[["Open", "High", "Low", "Close", "Volume"]].dropna()
 
 
+PYSYM = {"WTI": "Commodities.Index.PYTHOIL/USD", "BRENT": "Commodities.Index.BRENT/USD", "NATGAS": "Commodities.Index.NATGAS/USD",
+         "GOLD": "Metal.Index.GOLD/USD", "SILVER": "Metal.Index.SILVER/USD", "COPPER": "Commodities.Index.COPPER/USD",
+         "PLATINUM": "Metal.XPT/USD", "PALLADIUM": "Metal.XPD/USD"}
+_PYID = {}
+
+
+def pyth_price(mkt):
+    """Kalshi's settlement source, live. Needs PYTH_API_KEY (Pyth now requires a key)."""
+    key = os.getenv("PYTH_API_KEY")
+    if not key: return None
+    try:
+        if not _PYID:
+            for at in ("commodities", "metal"):
+                for f in requests.get("https://hermes.pyth.network/v2/price_feeds", params={"asset_type": at}, timeout=15).json():
+                    _PYID[f["attributes"]["symbol"]] = f["id"]
+        r = requests.get("https://hermes.pyth.network/v2/updates/price/latest", headers={"Authorization": f"Bearer {key}"},
+                         params={"ids[]": _PYID[PYSYM[mkt]], "parsed": "true"}, timeout=10).json()
+        p = r["parsed"][0]["price"]; return int(p["price"]) * 10 ** p["expo"]
+    except Exception as e:
+        print("pyth", mkt, str(e)[:60]); return None
+
+
+def kraken_gold():
+    """PAXG (1 token = 1 oz gold) last trade from Kraken's free public API: live 24/7 gold proxy."""
+    try:
+        r = requests.get("https://api.kraken.com/0/public/Ticker", params={"pair": "PAXGUSD"}, timeout=10).json()["result"]
+        return float(next(iter(r.values()))["c"][0])
+    except Exception: return None
+
+
 def night_price(mkt, y):
-    """Real-time price from Kalshi: strike-book implied price, else backed out of the 15-min YES price."""
+    """Live price: Pyth (if key) → Kalshi strike book → backed out of the 15-min YES price → Kraken PAXG (gold)."""
     from math import exp, sqrt
     from statistics import NormalDist
-    b = kalshi_book(mkt)
+    if (p := pyth_price(mkt)) is not None: return p
+    b = kalshi_book(mkt) if KSERIES.get(mkt) else None
     if b: return b["px"]
     c = k15(mkt)
     if not c or len(y) < 60: return None
     mid = (c["ya"] + c["yb"]) / 2; T = (c["close"] - pd.Timestamp.now(tz="UTC")).total_seconds() / 60
-    if not 0.05 < mid < 0.95 or T <= 0: return None
+    if not 0.05 < mid < 0.95 or T <= 0: return kraken_gold() if mkt == "GOLD" else None
     sig = float(np.log(y.Close).diff().tail(390).std())
     return c["k"] * exp(NormalDist().inv_cdf(mid) * sig * sqrt(T))
 
@@ -1173,10 +1260,10 @@ def market_mode(now):
     return "day" if wd < 5 and LIVE_OPEN <= t <= LIVE_CLOSE else "night"
 
 
-def night_tick(st, params, cool, nh, yc):
+def night_tick(st, params, cool, nh, yc, only=None):
     """Overnight: Kalshi real-time price + delayed futures context → longshots / edge picks / skip board / watch board."""
     now = dt.datetime.now(ET); minute = now.replace(second=0, microsecond=0); changed = False; boards = {}
-    for mkt in MARKETS:
+    for mkt in (only or ALL):
         if yc.get(mkt, (None,))[0] != minute:
             try: yc[mkt] = (minute, night_bars(mkt))
             except Exception as e: print("night bars", mkt, e); continue
@@ -1188,13 +1275,15 @@ def night_tick(st, params, cool, nh, yc):
         m = pd.concat([y[y.index < hb.index[0]], hb]); m = m[~m.index.duplicated(keep="last")]
         _SIG[mkt] = float(np.log(y.Close).diff().tail(390).std()); lv = ident(mkt)
         changed |= manage_ls(mkt, kp, st, lv)
+        cal_ = (params.get("_cal") or {}).get(mkt)
         if now.time() < dt.time(15, 50) or now.time() > dt.time(16, 10):
-            changed |= k15_call(mkt, m.iloc[:-1], kp, st, lv, (params.get("_cal") or {}).get(mkt), night=True)
+            changed |= (ihm_call(mkt, m, kp, st, lv, cal_) or drift_call(mkt, m.iloc[:-1], kp, st, lv, cal_)
+                        or k15_call(mkt, m.iloc[:-1], kp, st, lv, cal_, night=True))
         boards[mkt] = (m, kp, lv)
     return changed, boards
 
 
-def night_boards(st, boards):
+def night_boards(st, boards, night=True):
     """Skip board (minute 1/7 of each session) + 10-min watch board for overnight."""
     now = dt.datetime.now(ET)
     if now.minute % 15 in (1, 7):
@@ -1212,7 +1301,7 @@ def night_boards(st, boards):
                 st.setdefault("skipped", {})[label] = sorted(done | {k for k, _ in skips})
                 body = "\n".join(f"{COLOR[k][0]} {NAME[k]}: SKIP\n" + "\n".join(f"   • {w}" for w in why) for k, why in skips)
                 if play: body += "\n\n✅ In play: " + ", ".join(f"{COLOR[k][0]} {NAME[k]} ({t})" for k, t in play)
-                notify(f"⛔ SKIP · 🌙 {label} session · {session(now)}", body, "default")
+                notify(f"⛔ SKIP · {'🌙 ' if night else ''}{label} session" + (f" · {session(now)}" if night else " · metals"), body, "default")
     if now.minute % 10 == 0 and st.get("nightpulse") != now.strftime("%H:%M"):
         st["nightpulse"] = now.strftime("%H:%M"); lines = []
         for mkt, (m, kp, lv) in boards.items():
@@ -1220,7 +1309,7 @@ def night_boards(st, boards):
             if c: line += f"\n    15-min ({c['close'].tz_convert(ET):%-I:%M}): start {money(mkt, c['k'])} · YES {c['ya'] * 100:.0f}¢ / NO {c['na'] * 100:.0f}¢"
             op = next((st[k][mkt] for k in ("lpos",) if mkt in st.get(k, {})), None)
             lines.append(line + (f"\n    open: call #{op.get('id', '?')}" if op else "\n    watching"))
-        if lines: notify(f"🌙 Watching · {now:%-I:%M %p} · {SESS_TXT[session(now)]}", "\n".join(lines), "default")
+        if lines: notify(f"{'🌙' if night else '👀'} Watching{'' if night else ' metals'} · {now:%-I:%M %p} · {SESS_TXT[session(now)]}", "\n".join(lines), "default")
 
 
 def snapshots():
@@ -1299,6 +1388,9 @@ def live():
                 row = pd.DataFrame({"Open": p_, "High": p_, "Low": p_, "Close": p_, "Volume": m.Volume.iloc[-1]}, index=[cur])
                 changed |= bool(fast_checks(mkt, pd.concat([m, row]), st, cool))
             skip_board(data, st, params)
+            try:
+                ch2, mb = night_tick(st, params, cool, nh, yc, only=METALS); changed |= ch2; night_boards(st, mb, night=False)
+            except Exception as e: print("metals error:", e)
             json.dump(st, open(STATE_FILE, "w"), indent=1, default=float)
             if changed: persist("bot: live trade")
             if now.minute < 3 and now.hour != last_hour:  # hourly: refresh params + 1h strategies
@@ -1341,7 +1433,9 @@ def kcheck():
 
 
 def calibrate_only():
-    p = load_params(); p["_cal"] = {m: calibrate(m) for m in MARKETS}; json.dump(p, open(PARAMS_FILE, "w"), indent=1)
+    from concurrent.futures import ThreadPoolExecutor
+    with ThreadPoolExecutor(4) as ex: cal = dict(zip(ALL, ex.map(calibrate, ALL)))
+    p = load_params(); p["_cal"] = cal; json.dump(p, open(PARAMS_FILE, "w"), indent=1)
 
 
 def audit():
