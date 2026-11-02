@@ -1607,6 +1607,18 @@ def nighttest():
     print("NT gold kraken", kraken_gold(), "| pass took", round(time.time() - t0, 1), "s")
 
 
+def kraw():
+    """Raw view of every Kalshi 15-min/hourly commodity series that has open markets right now."""
+    for ser in list(K15.values()) + ["KXGOLDH", "KXSILVERH", "KXPLATINUMH", "KXPALLADIUMH", "KXWTIH", "KXCOFFEE15M"]:
+        ms = requests.get(f"{KALSHI}/markets", params={"series_ticker": ser, "status": "open", "limit": 50}, timeout=20).json().get("markets", [])
+        print("KRAW", ser, "open:", len(ms))
+        for m in sorted(ms, key=lambda x: x["close_time"])[:3]:
+            print("   ", m["ticker"], "| close", m["close_time"], "| strike", m.get("floor_strike"), m.get("strike_type"),
+                  "| yes", m.get("yes_bid_dollars"), m.get("yes_ask_dollars"), "| no", m.get("no_bid_dollars"), m.get("no_ask_dollars"),
+                  "| status", m.get("status"), "| open_time", m.get("open_time"))
+    print("KRAW k15 view:", {k: (bool(k15(k)) and k15(k)["ticker"]) for k in ALL})
+
+
 def selftest():
     rng = np.random.default_rng(1); n = 3000
     vol = np.where((np.arange(n) // 150) % 2, 0.003, 0.012)
@@ -1623,5 +1635,5 @@ if __name__ == "__main__":
     cmds = dict(scan=scan, brief=brief, optimize=optimize, doctor=doctor, selftest=selftest,
                 testnotify=lambda: [notify(f"{m} test alert", f"Color check for {m} ({MARKETS[m][1]}). Data: "
                                        + ("Alpaca real-time" if ALPACA else "Yahoo delayed"), "high", m) for m in MARKETS],
-                live=live, nighttest=nighttest, livetest=lambda: (os.environ.update(LIVE_MAX_MIN='2', GIT_PERSIST='', STATE_FILE='/tmp/st.json'), live()), audit=audit, calibrate=calibrate_only, discover2=discover2, kalshi=kalshi_discover, kcheck=kcheck, loop=lambda: [(scan(), time.sleep(int(os.getenv("LOOP_SEC", 120)))) for _ in iter(int, 1)])
+                live=live, kraw=kraw, nighttest=nighttest, livetest=lambda: (os.environ.update(LIVE_MAX_MIN='2', GIT_PERSIST='', STATE_FILE='/tmp/st.json'), live()), audit=audit, calibrate=calibrate_only, discover2=discover2, kalshi=kalshi_discover, kcheck=kcheck, loop=lambda: [(scan(), time.sleep(int(os.getenv("LOOP_SEC", 120)))) for _ in iter(int, 1)])
     cmds.get((sys.argv[1:] or ["scan"])[0], lambda: print(__doc__))()
