@@ -228,6 +228,12 @@ LS_BUCKETS = (1.0, 2.0, 99)
 FAV_MIN_EDGE = float(os.getenv("FAV_MIN_EDGE") or 0.04)
 
 
+def kfee(p):
+    """Kalshi taker fee per contract ($): ceil(0.07 × P × (1−P)) to the cent."""
+    from math import ceil
+    return ceil(7 * p * (1 - p) - 1e-9) / 100
+
+
 def _phi(x):
     from math import erf, sqrt
     return 0.5 * (1 + erf(x / sqrt(2)))
@@ -249,19 +255,22 @@ def fetch_fut_1m(mkt, days=29):
     d = pd.concat(out).sort_index(); return d[~d.index.duplicated()]
 
 
-def ctx_features(c, vol, index):
-    """Market context per bar: 4h trend (EMA240 of 1-min), session VWAP, RSI."""
+def ctx_features(c, vol, index, o=None):
+    """Market context per bar: 4h trend (EMA240 of 1-min), session VWAP, RSI, 5-min order-flow pressure."""
     et = index.tz_convert(ET); day = pd.Series(et.date, index=index)
     v = vol.where(vol > 0, 1.0)
     vwap = (c * v).groupby(day).cumsum() / v.groupby(day).cumsum()
-    return np.sign(c - c.ewm(span=240, adjust=False).mean()), vwap, rsi(c, 14)
+    o = c.shift() if o is None else o
+    flow = (np.sign(c - o) * v).rolling(5).sum() / v.rolling(5).sum()  # +1 all buying … −1 all selling
+    return np.sign(c - c.ewm(span=240, adjust=False).mean()), vwap, rsi(c, 14), flow
 
 
-def ctx_key(dist, bdir, trend, px, vwap, turning):
-    """Cell key: stretch bucket | trend supports bounce | bounce heads toward VWAP | already turning."""
+def ctx_key(dist, bdir, trend, px, vwap, turning, flow=0.0):
+    """Cell key: stretch | trend backs bounce | bounce toward VWAP | order flow backs bounce | turning or running."""
     tr = "T+" if trend == bdir else "T-"
     vw = "V+" if (px < vwap if bdir > 0 else px > vwap) else "V-"
-    return f"{ls_bucket(dist)}|{tr}|{vw}|{'turn' if turning else 'run'}"
+    fl = "F+" if flow * bdir > 0 else "F-"
+    return f"{ls_bucket(dist)}|{tr}|{vw}|{fl}|{'turn' if turning else 'run'}"
 
 
 def ls_rows(df, rth=True):
@@ -276,14 +285,38 @@ def ls_rows(df, rth=True):
     T = 14 - (et.minute % 15)
     sig = np.log(c).diff().rolling(390, min_periods=60).std()
     z = np.log(c / start) / (sig * np.sqrt(np.maximum(T, 1)))
-    trend, vwap, r = ctx_features(c, df.Volume.fillna(0), df.index)
+    trend, vwap, r, flow = ctx_features(c, df.Volume.fillna(0), df.index, df.Open)
     bdir = -np.sign(z)                                       # bounce direction (back toward start)
     turning = ((bdir > 0) & (c > c.shift()) & (r < 45)) | ((bdir < 0) & (c < c.shift()) & (r > 55))
     ok = full & (T >= 3) & (T <= 12) & (z.abs() >= 0.5) & sig.notna()
     x = pd.DataFrame({"w": w, "dist": z.abs(), "won": np.where(bdir > 0, end >= start, end < start),
-                      "key": [ctx_key(a, b, t, p, v, u) for a, b, t, p, v, u in zip(z.abs(), bdir, trend, c, vwap, turning)],
+                      "key": [ctx_key(a, b, t, p, v, u, f) for a, b, t, p, v, u, f in zip(z.abs(), bdir, trend, c, vwap, turning, flow.fillna(0))],
                       "turn": turning})[ok]
     return x.groupby(["w", "turn"]).head(1)
+
+
+def ihm_stats(mkt):
+    """Wen et al. (2021/2023): first half-hour return (incl. overnight) predicts the last half-hour;
+    on EIA Wednesdays the third half-hour (10:30-11:00) does. Tested on ~3y of 15-min bars."""
+    try:
+        d = fetch(mkt, "15m", 1100)
+    except Exception as e:
+        return {"error": str(e)[:60]}
+    et = d.index.tz_convert(ET); d = d.assign(day=et.date, tod=et.hour * 60 + et.minute)
+    rows = []
+    days = sorted(set(d.day)); prev_close = None
+    for day in days:
+        g = d[d.day == day].set_index("tod").Close
+        if prev_close and all(k in g for k in (585, 615, 645, 915, 945)):  # bar starts 9:45,10:15,10:45,15:15,15:45
+            wed = pd.Timestamp(day).weekday() == 2 and mkt != "NATGAS"
+            sig = (g[645] / g[615] - 1) if wed else (g[585] / prev_close - 1)   # 3rd half-hour on EIA days
+            rows.append((np.sign(sig), np.sign(g[945] / g[915] - 1)))
+        if 945 in g: prev_close = g[945]
+    if len(rows) < 60: return {"n": len(rows)}
+    a = np.array(rows); hit = (a[:, 0] == a[:, 1]).astype(float); cut = int(len(hit) * 0.7)
+    res = dict(n=len(hit), hit=round(float(hit.mean()), 3), hit_recent=round(float(hit[cut:].mean()), 3))
+    res["ok"] = bool(res["hit"] >= 0.54 and res["hit_recent"] >= 0.53)
+    return res
 
 
 def calibrate(mkt):
@@ -302,13 +335,14 @@ def calibrate(mkt):
             fair_b = _phi(-r.dist)
             if typ == "ls" and r.turn:
                 price, p, won = fair_b + 0.02, cell[1], r.won
-                if price <= LS_MAX_COST and p - price >= LS_MIN_EDGE: pnl += won - price; cost += price; n += 1
+                if price <= LS_MAX_COST and p - price - kfee(price) >= LS_MIN_EDGE: pnl += won - price - kfee(price); cost += price; n += 1
             if typ == "fav" and not r.turn:
                 price, p, won = 1 - fair_b + 0.02, 1 - cell[1], not r.won
-                if price < 0.97 and p - price >= FAV_MIN_EDGE: pnl += won - price; cost += price; n += 1
+                if price < 0.97 and p - price - kfee(price) >= FAV_MIN_EDGE: pnl += won - price - kfee(price); cost += price; n += 1
         res[f"{typ}_test_n"], res[f"{typ}_test_roi"] = n, round(pnl / cost, 3) if cost else 0
         res[f"{typ}_ok"] = bool(n >= 15 and cost and pnl / cost > 0.03)
     res["active"] = True  # calls still require live Kalshi price < history odds; 'ok' flags mark tested edge
+    res["ihm"] = ihm_stats(mkt)
     best = sorted(((v[1] - _phi(-float(k.split("|")[0]) * 0.75), k, v) for k, v in tab.items() if k.endswith("turn")), reverse=True)[:3]
     print(mkt, "CAL", json.dumps({k: v for k, v in res.items() if k != "table"}), "| best bounce cells:", best, flush=True)
     return res
@@ -833,10 +867,10 @@ def manage_fast(mkt, px, st):
 
 def live_ctx(m):
     """Market/trend read on recent 1-min bars for the rationale."""
-    trend, vwap, r = ctx_features(m.Close, m.Volume, m.index)
+    trend, vwap, r, flow = ctx_features(m.Close, m.Volume, m.index, m.Open)
     c = m.Close; et = m.index.tz_convert(ET); y = c[et.date < et[-1].date()]
     day = (c.iloc[-1] / y.iloc[-1] - 1) * 100 if len(y) else 0
-    return dict(trend=int(trend.iloc[-1]), vwap=float(vwap.iloc[-1]), rsi=float(r.iloc[-1]), day=day,
+    return dict(trend=int(trend.iloc[-1]), vwap=float(vwap.iloc[-1]), rsi=float(r.iloc[-1]), day=day, flow=float(flow.fillna(0).iloc[-1]),
                 sig=float(np.log(c).diff().tail(390).std()))
 
 
@@ -846,7 +880,9 @@ def why_lines(mkt, cx, bdir, px, lv, cell, kind):
     vw_toward = (px < cx["vwap"]) if bdir > 0 else (px > cx["vwap"])
     lines = [f"• Bigger trend (4h): {tr}, {'backs' if supports else 'works against'} a bounce {'up' if bdir > 0 else 'down'}",
              f"• Today's avg price (VWAP) {lv(cx['vwap'])}: a bounce moves {'TOWARD' if vw_toward else 'away from'} it",
-             f"• Momentum RSI {cx['rsi']:.0f} ({'oversold' if cx['rsi'] < 30 else 'overbought' if cx['rsi'] > 70 else 'neutral'}) · today {cx['day']:+.1f}%"]
+             f"• Momentum RSI {cx['rsi']:.0f} ({'oversold' if cx['rsi'] < 30 else 'overbought' if cx['rsi'] > 70 else 'neutral'}) · today {cx['day']:+.1f}%",
+             f"• Last 5 min: {'BUYERS' if cx['flow'] > 0.1 else 'SELLERS' if cx['flow'] < -0.1 else 'balanced'} in control "
+             f"({'backs' if cx['flow'] * bdir > 0 else 'against'} the bounce)"]
     p = cell[1] if kind == "ls" else 1 - cell[1]
     lines.append(f"• Last 30 days, {cell[0]} setups like this: {'bounced back' if kind == 'ls' else 'kept going'} {p:.0%}")
     return "\n".join(lines)
@@ -864,14 +900,14 @@ def k15_call(mkt, m, px, st, lv, cal):
     if abs(z) < 0.5: return False
     bdir = -1 if z > 0 else 1; cl = m.Close
     turning = (px > cl.iloc[-1] and cx["rsi"] < 45) if bdir > 0 else (px < cl.iloc[-1] and cx["rsi"] > 55)
-    cell = cal["table"].get(ctx_key(abs(z), bdir, cx["trend"], px, cx["vwap"], turning))
+    cell = cal["table"].get(ctx_key(abs(z), bdir, cx["trend"], px, cx["vwap"], turning, cx["flow"]))
     if not cell: return False
     if turning:  # longshot on the bounce side
         kind, side = "ls", ("YES" if bdir > 0 else "NO"); cost = c["ya"] if side == "YES" else c["na"]; p = cell[1]
-        if not (0 < cost <= LS_MAX_COST and p - cost >= LS_MIN_EDGE): return False
+        if not (0 < cost <= LS_MAX_COST and p - cost - kfee(cost) >= LS_MIN_EDGE): return False
     else:        # edge pick on the side price is already on
         kind, side = "fav", ("NO" if bdir > 0 else "YES"); cost = c["ya"] if side == "YES" else c["na"]; p = 1 - cell[1]
-        if not (0 < cost < 0.97 and p - cost >= FAV_MIN_EDGE): return False
+        if not (0 < cost < 0.97 and p - cost - kfee(cost) >= FAV_MIN_EDGE): return False
     st["lswin"][mkt] = c["ticker"]
     pos = dict(side=bdir if kind == "ls" else -bdir, entry=px, stop=0, tgt=0, best=px, n=0, t0=time.time(), kind=kind,
                k=dict(ticker=c["ticker"], side=side, cost=cost, k=c["k"], close=str(c["close"])))
@@ -885,12 +921,40 @@ def k15_call(mkt, m, px, st, lv, cal):
            f"Price {lv(px)} is {where} the {end} start {money(mkt, c['k'])} · {T:.0f} min left\n"
            f"👉 Kalshi 15-min ({end}): BUY {side} at ≤{cost * 100 + 2:.0f}¢ · wins if price ends "
            f"{'at/above' if side == 'YES' else 'below'} {money(mkt, c['k'])}\n"
-           f"Odds ≈{p:.0%} vs cost {cost * 100:.0f}¢ → edge +{(p - cost) * 100:.0f}¢ "
+           f"Odds ≈{p:.0%} vs cost {cost * 100:.0f}¢ + {kfee(cost) * 100:.0f}¢ fee → edge +{(p - cost - kfee(cost)) * 100:.0f}¢ "
            f"{'✅ tested' if tested else '🧪 not yet proven on unseen data'}\n"
            f"Why:\n{why_lines(mkt, cx, bdir, px, lv, cell, kind)}\n"
            + (f"💰 Cash-out goal ~{goal * 100:.0f}¢ · #{n} SELL signal will follow" if kind == "ls"
               else f"Plan: usually hold to settle ($1). #{n} SELL signal if it turns against you.")
            + ("\n⚠️ Longshot: most lose, winners pay big. Small size." if kind == "ls" else ""), "urgent", mkt)
+    return True
+
+
+def ihm_call(mkt, m, px, st, lv, cal):
+    """3:30 PM ET: bet the last half-hour follows the first (or 3rd on EIA Wed), per Wen et al. Fires once/day."""
+    ih = (cal or {}).get("ihm") or {}
+    now = dt.datetime.now(ET)
+    if not ih.get("ok") or not (dt.time(15, 30, 20) <= now.time() <= dt.time(15, 33)) or busy(st, mkt): return False
+    if st.setdefault("ihm_day", {}).get(mkt) == str(now.date()): return False
+    et = m.index.tz_convert(ET); today = m[et.date == now.date()]; prev = m[et.date < now.date()]
+    if not len(prev) or not len(today): return False
+    tod = today.index.tz_convert(ET); at = lambda h, mi: today.Close[(tod.hour * 60 + tod.minute) < h * 60 + mi]
+    wed = now.weekday() == 2 and mkt != "NATGAS"
+    a, b = (at(10, 30), at(11, 0)) if wed else (prev.Close, at(10, 0))
+    if not len(a) or not len(b): return False
+    sig = b.iloc[-1] / a.iloc[-1] - 1; c = k15(mkt)
+    if not c or abs(sig) < 0.001: return False
+    up = sig > 0; side = "YES" if up else "NO"; cost = c["ya"] if up else c["na"]; p = ih["hit"]
+    if not (0 < cost < 0.9 and p - cost - kfee(cost) >= 0.02): return False
+    st["ihm_day"][mkt] = str(now.date())
+    pos = dict(side=1 if up else -1, entry=px, stop=0, tgt=0, best=px, n=0, t0=time.time(), kind="ihm",
+               k=dict(ticker=c["ticker"], side=side, cost=cost, k=c["k"], close=str(c["close"])))
+    st.setdefault("lpos", {})[mkt] = pos; n = new_trade(st, mkt, pos, lv, px)
+    notify(f"#{n} {NAME[mkt]} · 📈 CLOSE-MOMENTUM {side} {cost * 100:.0f}¢",
+           f"{'3rd half-hour (EIA day)' if wed else 'First half-hour (incl. overnight)'} was {sig * 100:+.2f}% → "
+           f"last half-hour tends to follow\n👉 Kalshi 15-min ({c['close'].tz_convert(ET):%-I:%M}): BUY {side} at ≤{cost * 100 + 2:.0f}¢\n"
+           f"📊 {ih['n']} days tested: same direction {p:.0%} (recent {ih['hit_recent']:.0%}) vs cost {cost * 100:.0f}¢ + fee\n"
+           f"Source: Wen et al. 2021/2023 oil intraday-momentum studies\nPlan: hold to settle. #{n} result will follow.", "urgent", mkt)
     return True
 
 
@@ -973,7 +1037,8 @@ def live():
                 cur = pd.Timestamp.now(tz="UTC").floor("min"); p_ = float(px[etf])
                 changed |= manage_fast(mkt, p_, st)
                 lv_ = kconv(mkt, p_); changed |= manage_ls(mkt, p_, st, lv_)
-                changed |= k15_call(mkt, m, p_, st, lv_, (params.get("_cal") or {}).get(mkt))
+                cal_ = (params.get("_cal") or {}).get(mkt)
+                changed |= ihm_call(mkt, m, p_, st, lv_, cal_) or k15_call(mkt, m, p_, st, lv_, cal_)
                 row = pd.DataFrame({"Open": p_, "High": p_, "Low": p_, "Close": p_, "Volume": m.Volume.iloc[-1]}, index=[cur])
                 changed |= bool(fast_checks(mkt, pd.concat([m, row]), st, cool))
             json.dump(st, open(STATE_FILE, "w"), indent=1, default=float)
