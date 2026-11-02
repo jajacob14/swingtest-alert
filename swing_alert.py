@@ -132,7 +132,10 @@ def fetch_alpaca(sym, period, interval):
 
 def fetch(sym, period=PERIOD, interval=INTERVAL):
     if os.getenv("ALPACA_KEY") and os.getenv("DATA_SOURCE", "alpaca") == "alpaca":
-        return fetch_alpaca(sym, period, interval)
+        try:
+            return fetch_alpaca(sym, period, interval)
+        except Exception as e:
+            print(f"Alpaca failed ({e.__class__.__name__}: {str(e)[:60]}), falling back to Yahoo")
     import yfinance as yf
     df = yf.Ticker(sym).history(period=period, interval=interval, auto_adjust=False)
     if df.empty:
@@ -182,7 +185,7 @@ def notify(title, body, priority="default"):
             requests.post("https://ntfy.sh/", timeout=15, json={"topic": t, "title": title, "message": body,
                           "priority": pr, "tags": ["oil_drum"]}).raise_for_status()
         except Exception as e:
-            print("ntfy failed:", e)
+            print("ntfy failed:", e, getattr(getattr(e, "response", None), "text", "")[:200])
     if (tok := os.getenv("TELEGRAM_TOKEN")) and (cid := os.getenv("TELEGRAM_CHAT_ID")):
         requests.post(f"https://api.telegram.org/bot{tok}/sendMessage", timeout=15,
                       json={"chat_id": cid, "text": f"{title}\n{body}"})
@@ -295,7 +298,21 @@ def selftest():
     print("events (Wed 08:00 ET):", upcoming_events(dt.datetime(2026, 11, 4, 8, 0, tzinfo=ET)))
 
 
+def doctor():
+    """Describe secret formats without revealing them."""
+    import re
+    for k in ["ALPACA_KEY", "ALPACA_SECRET", "NTFY_TOPIC"]:
+        v = os.getenv(k, "")
+        print(f"{k}: len={len(v)} starts_with={v[:2]!r} url={v.startswith('http')} spaces={' ' in v}")
+    t = os.getenv("NTFY_TOPIC", "")
+    print("NTFY_TOPIC valid:", bool(re.fullmatch(r"[-_A-Za-z0-9]{1,64}", t)))
+    try:
+        fetch_alpaca("CL=F", "5d", "1h"); print("Alpaca: OK")
+    except Exception as e:
+        print("Alpaca:", str(e)[:80])
+
+
 if __name__ == "__main__":
     {"scan": scan, "backtest": run_backtest, "selftest": selftest,
-     "testnotify": lambda: notify("✅ Swing alerts connected", "Test message. Data: " + ("Alpaca real-time" if os.getenv("ALPACA_KEY") else "Yahoo delayed"))}.get(
+     "doctor": doctor, "testnotify": lambda: notify("✅ Swing alerts connected", "Test message. Data: " + ("Alpaca real-time" if os.getenv("ALPACA_KEY") else "Yahoo delayed"))}.get(
         (sys.argv[1:] or ["scan"])[0], lambda: print(__doc__))()
