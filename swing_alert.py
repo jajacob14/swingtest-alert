@@ -4,7 +4,7 @@
 Commands:
   scan      check latest closed bars, send ENTRY / EXIT / SETUP / EVENT alerts   (cron: every 15 min)
   brief     market snapshot for all three to your phone                          (cron: weekday mornings)
-  optimize  grid-search strategies per market on ~2-4y data, walk-forward validate, write params.json (weekly)
+  optimize  grid-search 1m/5m/15m (1h fallback) per market, walk-forward validate, write params.json (daily)
   live      minute-by-minute: spike/dip, day high/low, instant stop/target, 15m strategy, pulse report
   doctor    check secrets + ntfy delivery;  testnotify  send a test push;  selftest  offline test;  loop  run scan forever
 Data: Alpaca real-time (ALPACA_KEY/ALPACA_SECRET, ETF proxies) else Yahoo futures (~10 min delayed).
@@ -22,8 +22,9 @@ MARKETS = {"BRENT": ("BZ=F", "BNO"), "WTI": ("CL=F", "USO"), "NATGAS": ("NG=F", 
 ET = ZoneInfo("America/New_York")
 STATE_FILE, PARAMS_FILE = os.getenv("STATE_FILE", "state.json"), "params.json"
 FEE = 0.03  # % per side: spread + slippage
-BARS = {"15m": ("15Min", 15), "1h": ("1Hour", 60), "1d": ("1Day", 1440)}
-HOLD = {"15m": 32, "1h": 40, "1d": 20}  # max bars in a trade (time stop)
+BARS = {"1m": ("1Min", 1), "5m": ("5Min", 5), "15m": ("15Min", 15), "1h": ("1Hour", 60), "1d": ("1Day", 1440)}
+INTRADAY = ("1m", "5m")  # flat by the close, never held overnight
+HOLD = {"1m": 60, "5m": 48, "15m": 32, "1h": 40, "1d": 20}  # max bars in a trade (time stop)
 DEFAULT = dict(interval="1h", strategy="squeeze", min_sq=6, trend=1, stop=1.5, tgt=3.0, trail=2.5, hold=40)
 EXTRA_EVENTS = [e for e in os.getenv("EXTRA_EVENTS", "").split(",") if e]  # "2026-11-30 OPEC+ meeting"
 ALPACA = bool(os.getenv("ALPACA_KEY"))
@@ -40,7 +41,7 @@ def fetch(mkt, interval, days):
         except Exception as e:
             print(f"Alpaca failed ({str(e)[:70]}), falling back to Yahoo")
     import yfinance as yf
-    days = min(days, 59 if interval == "15m" else 729 if interval == "1h" else 9000)
+    days = min(days, {"1m": 7, "5m": 59, "15m": 59, "1h": 729}.get(interval, 9000))
     df = yf.Ticker(fut).history(period=f"{days}d", interval=interval, auto_adjust=False)
     if df.empty: raise RuntimeError(f"no data for {fut}")
     return df[["Open", "High", "Low", "Close", "Volume"]].dropna()
@@ -114,6 +115,8 @@ def signals(d, p):
     else:  # rsi2 pullback in trend
         L = (c > ema) & (d.rsi2 < p["lo"])
         S = (c < ema) & (d.rsi2 > 100 - p["lo"])
+    if p.get("interval") in INTRADAY:  # no new intraday entries in the last 15 min of the session
+        late = pd.Series(d.index.tz_convert(ET).time >= dt.time(15, 45), index=d.index); L, S = L & ~late, S & ~late
     if p.get("volcap"):  # skip entries in extreme volatility spikes
         ok = ~(d.volp > p["volcap"]); L, S = L & ok, S & ok
     return L.to_numpy(bool), S.to_numpy(bool)
@@ -136,8 +139,15 @@ def step(pos, hi, lo, cl, atr, p):
     return None, None
 
 
+def eod_mask(index, iv):
+    if iv not in INTRADAY: return np.zeros(len(index), bool)
+    day = np.asarray(index.tz_convert(ET).date)
+    return np.r_[day[1:] != day[:-1], True]
+
+
 def simulate(d, p, L, S, a=0, b=None):
     c, h, l, atr = (d[k].to_numpy(float) for k in ("Close", "High", "Low", "atr"))
+    eod = eod_mask(d.index, p.get("interval"))
     b = len(c) if b is None else b
     sig = np.flatnonzero((L | S)[:b]); out = []; i = max(a, 60)
     while True:
@@ -147,6 +157,7 @@ def simulate(d, p, L, S, a=0, b=None):
         pos = open_pos(1 if L[i] else -1, c[i], atr[i], p)
         for j in range(i + 1, b):
             r, px = step(pos, h[j], l[j], c[j], atr[j], p)
+            if not r and eod[j]: r, px = "EOD", c[j]
             if r: out.append(pos["side"] * (px - pos["entry"]) / pos["entry"] * 100 - 2 * FEE); break
         else: break
         i = j + 1
@@ -171,30 +182,37 @@ ENTRIES += [{**e, "volcap": 0.95} for e in ENTRIES]
 EXITS = [dict(stop=s, tgt=g, trail=r) for s in (1.0, 1.5, 2.5) for g in (1.5, 2.5, 4.0) for r in (0, 2.5)]
 
 
+def opt_market(mkt):
+    best = None
+    for iv, days in (("1m", 60), ("5m", 250), ("15m", 700), ("1h", 1500)):
+        if best and iv == "1h": break  # 1h only as fallback when no fast setup validates
+        try:
+            d = indicators(fetch(mkt, iv, days))
+        except Exception as e:
+            print(mkt, iv, "data error:", e); continue
+        cut = int(len(d) * 0.7); cands = []
+        for e in ENTRIES:
+            L, S = signals(d, {**e, "interval": iv})
+            for x in EXITS:
+                p = {**e, **x, "interval": iv, "hold": HOLD[iv]}
+                tr = stats(simulate(d, p, L, S, 0, cut))
+                if tr["n"] >= 30 and tr["pf"] > 1.1: cands.append((tr["t"], p, tr, L, S))
+        for _, p, tr, L, S in sorted(cands, key=lambda z: -z[0])[:5]:  # top in-sample, confirm out-of-sample
+            te = stats(simulate(d, p, L, S, cut))
+            if te["n"] >= 15 and te["pf"] >= 1.15 and (best is None or te["t"] > best["test"]["t"]):
+                days_test = max(1, (d.index[-1] - d.index[cut]).days * 5 / 7)
+                best = {**p, "train": tr, "test": te, "trades_per_day": round(te["n"] / days_test, 1),
+                        "bars": len(d), "src": "alpaca" if ALPACA else "yahoo"}
+                break
+        print(f"{mkt} {iv}: {len(d)} bars, {len(cands)} candidates, best so far: {best and best['interval']}", flush=True)
+    return mkt, ({**best, "status": "active"} if best else {**DEFAULT, "status": "watch"})
+
+
 def optimize():
-    res = {}
-    for mkt in MARKETS:
-        best = None
-        for iv, days in (("15m", 700), ("1h", 1500)):
-            try:
-                d = indicators(fetch(mkt, iv, days))
-            except Exception as e:
-                print(mkt, iv, "data error:", e); continue
-            cut = int(len(d) * 0.7); cands = []
-            for e in ENTRIES:
-                L, S = signals(d, e)
-                for x in EXITS:
-                    p = {**e, **x, "interval": iv, "hold": HOLD[iv]}
-                    tr = stats(simulate(d, p, L, S, 0, cut))
-                    if tr["n"] >= 30 and tr["pf"] > 1.1: cands.append((tr["t"], p, tr, L, S))
-            for _, p, tr, L, S in sorted(cands, key=lambda z: -z[0])[:5]:  # top in-sample, confirm out-of-sample
-                te = stats(simulate(d, p, L, S, cut))
-                if te["n"] >= 10 and te["pf"] >= 1.15 and (best is None or te["t"] > best["test"]["t"]):
-                    best = {**p, "train": tr, "test": te, "bars": len(d), "src": "alpaca" if ALPACA else "yahoo"}
-                    break
-            print(f"{mkt} {iv}: {len(d)} bars, {len(cands)} in-sample candidates")
-        res[mkt] = {**best, "status": "active"} if best else {**DEFAULT, "status": "watch"}
-        print(mkt, json.dumps(res[mkt]))
+    from concurrent.futures import ProcessPoolExecutor
+    with ProcessPoolExecutor(3) as ex:
+        res = dict(ex.map(opt_market, MARKETS))
+    for m, p in res.items(): print(m, json.dumps(p))
     res["_updated"] = dt.datetime.now(ET).isoformat(timespec="minutes")
     json.dump(res, open(PARAMS_FILE, "w"), indent=1)
 
@@ -259,46 +277,54 @@ def fmt_stats(p):
 
 def size_txt(px, stop):
     acct = float(os.getenv("ACCOUNT_SIZE") or 10000); risk = float(os.getenv("RISK_PCT") or 1)
-    sh = int(acct * risk / 100 / abs(px - stop))
+    sh = int(min(acct * risk / 100 / abs(px - stop), acct / px))  # 1% risk, never more than the account
     return f"Size: {sh} shares (${sh * px:,.0f}) risks {risk:g}% of ${acct:,.0f}"
 
 
-def scan():
-    st = load_state(); st.setdefault("pos", {}); st.setdefault("last", {}); sent = set(st.get("sent", []))
-    params = load_params()
+def process(mkt, d, p, st, sent):
+    """Run strategy on closed bars d (with indicators): manage open trade or alert a fresh entry."""
+    etf, iv = MARKETS[mkt][1 if ALPACA else 0], p["interval"]
+    st.setdefault("pos", {}); st.setdefault("last", {})
+    last = st["last"].get(mkt)
+    idx = [i for i in range(len(d)) if str(d.index[i]) > last][-8:] if last else [len(d) - 1]
+    L, S = signals(d, p); eod = eod_mask(d.index, iv)
+    for i in idx:
+        r = d.iloc[i]; bar = str(d.index[i])
+        if pos := st["pos"].get(mkt):
+            why, px = step(pos, r.High, r.Low, r.Close, r.atr, p)
+            if not why and iv in INTRADAY and (eod[i] and i < len(d) - 1 or d.index[i].tz_convert(ET).time() >= dt.time(15, 55)):
+                why, px = "END OF DAY", r.Close
+            if why:
+                notify(f"🔔 {mkt} EXIT {'LONG' if pos['side'] > 0 else 'SHORT'} ({why})",
+                       f"{etf} close @ ~{px:.2f}  →  {s_pnl(pos, px):+.2f}%  (entry {pos['entry']:.2f})", "high", mkt)
+                del st["pos"][mkt]
+            continue
+        if p["status"] == "active" and (L[i] or S[i]) and i == len(d) - 1:
+            side = 1 if L[i] else -1; pos = open_pos(side, r.Close, r.atr, p); pos["interval"] = iv; st["pos"][mkt] = pos
+            risk, rew = (abs(pos[k] - r.Close) / r.Close * 100 for k in ("stop", "tgt"))
+            notify(f"🚀 {mkt} {'BUY' if side > 0 else 'SELL SHORT'} now",
+                   f"{etf} ~{r.Close:.2f}  ({p['strategy']}, {iv} bars)\nStop {pos['stop']:.2f} (-{risk:.2f}%)\n"
+                   f"Target {pos['tgt']:.2f} (+{rew:.2f}%)" + (f"\nTrail {p['trail']}×ATR" if p["trail"] else "")
+                   + f"\nMax hold {p['hold']} bars" + (" · flat by close" if iv in INTRADAY else "")
+                   + f"\n{size_txt(r.Close, pos['stop'])}\n{fmt_stats(p)}", "urgent", mkt)
+        elif iv not in INTRADAY and r.sq and r.sq_bars == 6 and (k := f"SQ|{mkt}|{bar}") not in sent:
+            sent.add(k); notify(f"👀 {mkt} coiling", f"{etf} {r.Close:.2f}: volatility squeezed {int(r.sq_bars)} bars. "
+                                f"Breakout likely soon; watch for entry alert.", "low", mkt)
+    st["last"][mkt] = str(d.index[-1])
+
+
+def scan(only=None):
+    st = load_state(); sent = set(st.get("sent", [])); params = load_params()
     for e in events():
         if (k := f"EV|{e}|{dt.date.today()}") not in sent:
             sent.add(k); notify("⚠️ Volatility event soon", e + "\nExpect fast moves: tighten risk or stay flat.", "high")
-    for mkt in MARKETS:
-        p = {**DEFAULT, **params.get(mkt, {})}; iv = p["interval"]; etf = MARKETS[mkt][1 if ALPACA else 0]
+    for mkt in only or MARKETS:
+        p = {**DEFAULT, **params.get(mkt, {})}; iv = p["interval"]
         try:
-            d = indicators(closed(fetch(mkt, iv, 12 if iv == "15m" else 45), iv))
+            d = indicators(closed(fetch(mkt, iv, {"1m": 5, "5m": 10, "15m": 12}.get(iv, 45)), iv))
         except Exception as e:
             print(mkt, "error:", e); continue
-        last = st["last"].get(mkt); idx = [i for i in range(len(d)) if str(d.index[i]) > (last or "")][-8:] or []
-        if not last: idx = [len(d) - 1]
-        L, S = signals(d, p)
-        for i in idx:
-            r = d.iloc[i]; bar = str(d.index[i])
-            if pos := st["pos"].get(mkt):
-                why, px = step(pos, r.High, r.Low, r.Close, r.atr, p)
-                if why:
-                    pnl = pos["side"] * (px - pos["entry"]) / pos["entry"] * 100
-                    notify(f"🔔 {mkt} EXIT {'LONG' if pos['side'] > 0 else 'SHORT'} ({why})",
-                           f"{etf} close @ ~{px:.2f}  →  {pnl:+.2f}%  (entry {pos['entry']:.2f})", "high", mkt)
-                    del st["pos"][mkt]
-                continue
-            if p["status"] == "active" and (L[i] or S[i]) and i == len(d) - 1:
-                side = 1 if L[i] else -1; pos = open_pos(side, r.Close, r.atr, p); st["pos"][mkt] = pos
-                risk, rew = (abs(pos[k] - r.Close) / r.Close * 100 for k in ("stop", "tgt"))
-                notify(f"🚀 {mkt} {'BUY' if side > 0 else 'SELL SHORT'} now",
-                       f"{etf} ~{r.Close:.2f}  ({p['strategy']}, {iv} bars)\nStop {pos['stop']:.2f} (-{risk:.2f}%)\n"
-                       f"Target {pos['tgt']:.2f} (+{rew:.2f}%)" + (f"\nTrail {p['trail']}×ATR" if p["trail"] else "")
-                       + f"\nMax hold {p['hold']} bars\n{size_txt(r.Close, pos['stop'])}\n{fmt_stats(p)}", "urgent", mkt)
-            elif r.sq and r.sq_bars == 6 and (k := f"SQ|{mkt}|{bar}") not in sent:
-                sent.add(k); notify(f"👀 {mkt} coiling", f"{etf} {r.Close:.2f}: volatility squeezed {int(r.sq_bars)} bars. "
-                                    f"Breakout likely soon; watch for entry alert.", "low", mkt)
-        st["last"][mkt] = str(d.index[-1])
+        process(mkt, d, p, st, sent)
         print(f"{mkt} {p['status']} {p['strategy']}/{iv}: {d.index[-1]} {d.Close.iloc[-1]:.2f} sq={bool(d.sq.iloc[-1])} "
               f"mom={d.mom.iloc[-1]:+.3f} rsi={d.rsi.iloc[-1]:.0f} pos={'yes' if mkt in st['pos'] else 'no'}")
     st["sent"] = sorted(sent)[-300:]
@@ -371,6 +397,13 @@ def persist(msg="bot: live state"):
                shell=True)
 
 
+def resample(m, n):
+    if n == 1: return m
+    b = m.resample(f"{n}min", label="left", closed="left").agg(
+        {"Open": "first", "High": "max", "Low": "min", "Close": "last", "Volume": "sum"}).dropna()
+    return b[b.index + pd.Timedelta(minutes=n) <= pd.Timestamp.now(tz="UTC")]
+
+
 def fast_checks(mkt, m, st, cool):
     """1-minute detectors: spikes/dips, day high/low breaks, live stop/target hits."""
     etf, now = MARKETS[mkt][1], time.time()
@@ -388,6 +421,14 @@ def fast_checks(mkt, m, st, cool):
              f"{etf} {px:.2f} | {abs(z):.1f}σ move | volume {vr:.1f}× normal\n"
              + ("Stretched: watch for a pullback / fade entry." if abs(z) > 4.5 else
                 "Momentum building: breakout entry may follow."), "urgent", 10)
+    b5 = resample(m, 5)
+    if len(b5) > 60:  # pre-move: 5-min volatility coiled + volume waking up + momentum turning
+        d5 = indicators(b5); r, pr = d5.iloc[-1], d5.iloc[-2]; vr3 = m.Volume.tail(3).mean() / (m.Volume.tail(390).mean() + 1e-9)
+        bias = "UP" if r.mom > 0 and r.mom > pr.mom else "DOWN" if r.mom < 0 and r.mom < pr.mom else None
+        if r.sq and r.sq_bars >= 6 and vr3 > 1.5 and bias:
+            fire("premove", f"🎯 {mkt} pre-move: leaning {bias}",
+                 f"{etf} {px:.2f}: 5-min range squeezed {int(r.sq_bars)} bars, volume waking {vr3:.1f}×, momentum turning "
+                 f"{bias.lower()}.\nBig move likely soon. Get ready; entry alert fires on confirmation.", "high", 30)
     et = m.index.tz_convert(ET); today = m[et.date == et[-1].date()]
     if len(today) > 30:
         prev = today.iloc[:-1]
@@ -425,7 +466,7 @@ def live():
     """Poll 1-minute bars; instant spike/dip/stop alerts; run strategy at each 15m bar close; pulse report."""
     if not ALPACA: sys.exit("live mode needs ALPACA_KEY / ALPACA_SECRET")
     t0, maxmin, pulse_min = time.time(), float(os.getenv("LIVE_MAX_MIN") or 1e9), int(os.getenv("PULSE_MIN") or 15)
-    cool, data, last_scan, last_pulse = {}, {}, None, None
+    cool, data, last_scan, last_pulse, params = {}, {}, None, None, load_params()
     print(f"live mode: max {maxmin} min, pulse every {pulse_min} min")
     while (time.time() - t0) / 60 < maxmin:
         now = dt.datetime.now(ET)
@@ -434,9 +475,9 @@ def live():
             time.sleep(60); continue
         try:
             since = min((d.index[-1] for d in data.values()), default=None)
-            since = (since - pd.Timedelta(minutes=3)) if since is not None else pd.Timestamp.now(tz="UTC") - pd.Timedelta(days=4)
+            since = (since - pd.Timedelta(minutes=3)) if since is not None else pd.Timestamp.now(tz="UTC") - pd.Timedelta(days=7)
             for sym, df in fetch_1m(since).items():
-                data[sym] = pd.concat([data.get(sym), df]).pipe(lambda x: x[~x.index.duplicated(keep="last")]).tail(3000)
+                data[sym] = pd.concat([data.get(sym), df]).pipe(lambda x: x[~x.index.duplicated(keep="last")]).tail(6000)
             st = load_state(); changed = False
             for e in events(hours=0.25):
                 if (k := f"EV15|{e}|{now.date()}") not in st.setdefault("sent", []):
@@ -445,11 +486,22 @@ def live():
                 if etf in data:
                     m = data[etf]; m = m[m.index + pd.Timedelta(minutes=1) <= pd.Timestamp.now(tz="UTC")]  # closed 1m bars
                     changed |= bool(fast_checks(mkt, m, st, cool))
+            sent = set(st.get("sent", []))
+            for mkt, (_, etf) in MARKETS.items():  # strategy on every closed bar, built from live 1-min data
+                p = {**DEFAULT, **params.get(mkt, {})}; n = BARS[p["interval"]][1]
+                if n <= 15 and etf in data:
+                    m = data[etf]; b = resample(m[m.index + pd.Timedelta(minutes=1) <= pd.Timestamp.now(tz="UTC")], n)
+                    if len(b) > 60 and str(b.index[-1]) != st.get("last", {}).get(mkt):
+                        had = mkt in st.get("pos", {}); process(mkt, indicators(b), p, st, sent)
+                        changed |= had != (mkt in st.get("pos", {}))
+            st["sent"] = sorted(sent)[-300:]
             json.dump(st, open(STATE_FILE, "w"), indent=1, default=float)
-            if changed: persist("bot: live exit")
-            slot = now.replace(minute=now.minute - now.minute % 15, second=0, microsecond=0)
-            if slot != last_scan and now.second >= 20 and now.minute % 15 < 3:
-                last_scan = slot; scan(); persist()
+            if changed: persist("bot: live trade")
+            if now.minute < 3 and now.hour != last_scan and now.second >= 20:  # hourly: refresh params + 1h strategies
+                last_scan = now.hour
+                if os.getenv("GIT_PERSIST"): os.system("git pull -q --rebase origin main"); params = load_params()
+                hourly = [k for k in MARKETS if BARS[{**DEFAULT, **params.get(k, {})}["interval"]][1] > 15]
+                if hourly: scan(hourly); persist()
             if pulse_min and (last_pulse is None or (now - last_pulse).total_seconds() >= pulse_min * 60):
                 last_pulse = now; pulse(data, load_state())
         except Exception as e:

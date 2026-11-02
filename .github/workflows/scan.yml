@@ -5,7 +5,7 @@ on:
     - cron: "45 18 * * 1-5"    # live session part 2 (queues behind part 1, runs to 4:05 ET close)
     - cron: "40 12 * * 1-5"    # morning brief ~7:40 ET
     - cron: "50 18 * * 1-5"    # afternoon brief ~1:50 ET
-    - cron: "17 22 * * 6"      # weekly re-optimize (Sat)
+    - cron: "30 21 * * 1-5"    # daily re-optimize after the close
   workflow_dispatch:
     inputs:
       cmd: {description: "live | scan | brief | optimize | doctor | testnotify", default: live}
@@ -24,7 +24,7 @@ jobs:
       - run: pip install -q -r requirements.txt && git config user.name bot && git config user.email bot@users.noreply.github.com
       - run: python swing_alert.py "$CMD"
         env:
-          CMD: ${{ inputs.cmd || (github.event.schedule == '17 22 * * 6' && 'optimize') || ((github.event.schedule == '15 13 * * 1-5' || github.event.schedule == '45 18 * * 1-5') && 'live') || 'brief' }}
+          CMD: ${{ inputs.cmd || (github.event.schedule == '30 21 * * 1-5' && 'optimize') || ((github.event.schedule == '15 13 * * 1-5' || github.event.schedule == '45 18 * * 1-5') && 'live') || 'brief' }}
           LIVE_MAX_MIN: "340"
           PYTHONUNBUFFERED: "1"
           GIT_PERSIST: "1"
