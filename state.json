@@ -12,36 +12,60 @@
   "BRENT": "2026-11-02 20:40:00+00:00"
  },
  "fpos": {},
- "seq": 12,
+ "seq": 14,
  "lswin": {
   "WTI": "KXWTI15M-26NOV021515-15",
   "BRENT": "KXBRENT15M-26NOV021545-45",
-  "NATGAS": "KXNATGAS15M-26NOV021730-30"
+  "NATGAS": "KXNATGAS15M-26NOV021730-30",
+  "HYPE": "KXHYPE15M-26NOV021730-30"
  },
  "skipslot": "2026-11-02 17:16",
  "lpos": {
   "NATGAS": {
-   "side": -1,
+   "side": 1,
    "entry": 2.8608333333333333,
    "stop": 0,
    "tgt": 0,
    "best": 2.8608333333333333,
    "n": 0,
-   "t0": 1793657880.5264611,
-   "kind": "fav",
+   "t0": 1793658240.8502433,
+   "kind": "flip",
    "k": {
     "ticker": "KXNATGAS15M-26NOV021730-30",
-    "side": "NO",
-    "cost": 0.55,
+    "side": "YES",
+    "cost": 0.81,
     "k": 2.86666,
     "close": "2026-11-02 22:30:00+00:00"
    },
-   "tp": 0.8200000000000001,
-   "bail": 0.275,
-   "parent": null,
-   "id": 12,
-   "at": "5:18 PM",
+   "tp": 0.92,
+   "bail": 0.405,
+   "parent": 12,
+   "id": 13,
+   "at": "5:24 PM",
    "at_px": "$2.861"
+  },
+  "HYPE": {
+   "side": -1,
+   "entry": 84.14380928467313,
+   "stop": 0,
+   "tgt": 0,
+   "best": 84.14380928467313,
+   "n": 0,
+   "t0": 1793658241.5828948,
+   "kind": "fav",
+   "k": {
+    "ticker": "KXHYPE15M-26NOV021730-30",
+    "side": "NO",
+    "cost": 0.71,
+    "k": 84.2893,
+    "close": "2026-11-02 22:30:00+00:00"
+   },
+   "tp": 0.884,
+   "bail": 0.355,
+   "parent": null,
+   "id": 14,
+   "at": "5:24 PM",
+   "at_px": "$84.144"
   }
  },
  "skipped": {
@@ -83,11 +107,26 @@
   "NATGAS": "2026-11-02"
  },
  "mode": "night",
- "regime": {},
+ "regime": {
+  "EURUSD": "HIGH",
+  "USDJPY": "HIGH"
+ },
  "thin": {
-  "BRENT": false,
-  "WTI": false,
-  "NATGAS": false
+  "BRENT": true,
+  "WTI": true,
+  "NATGAS": true,
+  "BTC": false,
+  "ETH": false,
+  "SOL": false,
+  "XRP": false,
+  "DOGE": false,
+  "BNB": false,
+  "HYPE": false,
+  "NEAR": false,
+  "ZEC": false,
+  "EURUSD": false,
+  "GBPUSD": false,
+  "USDJPY": false
  },
  "open": {
   "BRENT": true,
@@ -97,6 +136,18 @@
   "SILVER": false,
   "COPPER": false,
   "PLATINUM": false,
-  "PALLADIUM": false
+  "PALLADIUM": false,
+  "BTC": true,
+  "ETH": true,
+  "SOL": true,
+  "XRP": true,
+  "DOGE": true,
+  "BNB": true,
+  "HYPE": true,
+  "NEAR": true,
+  "ZEC": true,
+  "EURUSD": true,
+  "GBPUSD": true,
+  "USDJPY": true
  }
 }
