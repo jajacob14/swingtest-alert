@@ -517,6 +517,23 @@ def live():
     persist()
 
 
+KALSHI = "https://api.elections.kalshi.com/trade-api/v2"
+
+
+def kalshi_discover():
+    ser = requests.get(f"{KALSHI}/series", timeout=30).json().get("series", [])
+    hits = [x for x in ser if re.search(r"\b(oil|crude|wti|brent|natural gas|nat gas|henry hub)\b", (x.get("title") or "").lower())]
+    for x in hits[:25]:
+        print("SERIES", x.get("ticker"), "|", x.get("title"), "|", x.get("frequency"), "|",
+              [s_.get("name") or s_.get("url") for s_ in (x.get("settlement_sources") or [])])
+        ms = requests.get(f"{KALSHI}/markets", params={"series_ticker": x["ticker"], "status": "open", "limit": 6}, timeout=30).json().get("markets", [])
+        for m in ms:
+            print("   MKT", m.get("ticker"), "|", m.get("title"), "|", m.get("subtitle") or m.get("yes_sub_title"), "| strike",
+                  m.get("strike_type"), m.get("floor_strike"), m.get("cap_strike"), "| yes bid/ask", m.get("yes_bid"), m.get("yes_ask"),
+                  "| closes", m.get("close_time"))
+        if ms: print("   RULES:", (ms[0].get("rules_primary") or "")[:400].replace("\n", " "))
+
+
 def selftest():
     rng = np.random.default_rng(1); n = 3000
     vol = np.where((np.arange(n) // 150) % 2, 0.003, 0.012)
@@ -533,5 +550,5 @@ if __name__ == "__main__":
     cmds = dict(scan=scan, brief=brief, optimize=optimize, doctor=doctor, selftest=selftest,
                 testnotify=lambda: [notify(f"{m} test alert", f"Color check for {m} ({MARKETS[m][1]}). Data: "
                                        + ("Alpaca real-time" if ALPACA else "Yahoo delayed"), "high", m) for m in MARKETS],
-                live=live, loop=lambda: [(scan(), time.sleep(int(os.getenv("LOOP_SEC", 120)))) for _ in iter(int, 1)])
+                live=live, kalshi=kalshi_discover, loop=lambda: [(scan(), time.sleep(int(os.getenv("LOOP_SEC", 120)))) for _ in iter(int, 1)])
     cmds.get((sys.argv[1:] or ["scan"])[0], lambda: print(__doc__))()
