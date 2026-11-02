@@ -18,7 +18,7 @@
   "BRENT": "KXBRENT15M-26NOV021545-45",
   "NATGAS": "KXNATGAS15M-26NOV021745-45"
  },
- "skipslot": "2026-11-02 17:52",
+ "skipslot": "2026-11-02 18:01",
  "lpos": {},
  "skipped": {
   "2:30\u20132:45": [
@@ -74,6 +74,11 @@
    "BRENT",
    "NATGAS",
    "WTI"
+  ],
+  "6:00\u20136:15": [
+   "BRENT",
+   "NATGAS",
+   "WTI"
   ]
  },
  "ihm_day": {
@@ -96,5 +101,5 @@
   "PLATINUM": false,
   "PALLADIUM": false
  },
- "nightpulse": "17:50"
+ "nightpulse": "18:00"
 }
