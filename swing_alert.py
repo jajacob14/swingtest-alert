@@ -1046,7 +1046,9 @@ def k15_call(mkt, m, px, st, lv, cal, night=False):
     T = (c["close"] - pd.Timestamp.now(tz="UTC")).total_seconds() / 60
     if not 4 <= T <= 12 or st.setdefault("lswin", {}).get(mkt) == c["ticker"]: return False
     if event_window(mkt, dt.datetime.now(ET), T): return False
-    cx = live_ctx(m); cx["px"] = px; z = log(px * lv.r / c["k"]) / (cx["sig"] * sqrt(T))
+    cx = live_ctx(m); cx["px"] = px
+    if night and _SIG.get(mkt): cx["sig"] = _SIG[mkt]  # σ from clean futures bars, not the Kalshi/Yahoo join
+    z = log(px * lv.r / c["k"]) / (cx["sig"] * sqrt(T))
     if abs(z) < 0.5: return False
     bdir = -1 if z > 0 else 1; cl = m.Close
     turning = (px > cl.iloc[-1] and cx["rsi"] < 45) if bdir > 0 else (px < cl.iloc[-1] and cx["rsi"] > 55)
@@ -1059,8 +1061,9 @@ def k15_call(mkt, m, px, st, lv, cal, night=False):
     kind = "ls" if turning else "fav"
     up = (bdir > 0) if kind == "ls" else (bdir < 0); side = "YES" if up else "NO"
     cost = c["ya"] if up else c["na"]; p = cell[1] if kind == "ls" else 1 - cell[1]
-    if kind == "ls" and not (0 < cost <= LS_MAX_COST and p - cost - kfee(cost) >= LS_MIN_EDGE): return False
-    if kind == "fav" and not (0 < cost < 0.92 and p - cost - kfee(cost) >= FAV_MIN_EDGE): return False
+    xe = regime_extra(st, mkt)
+    if kind == "ls" and (xe or not (0 < cost <= LS_MAX_COST and p - cost - kfee(cost) >= LS_MIN_EDGE)): return False
+    if kind == "fav" and not (0 < cost < 0.92 and p - cost - kfee(cost) >= FAV_MIN_EDGE + xe): return False
     where = "below" if bdir > 0 else "above"
     why = (f"• Price is {where} the start and {'turning back toward it' if kind == 'ls' else 'still pushing away'}\n"
            + ctx_bullets(cx, up, lv) + (f"\n• 🌙 {SESS_TXT[sname]}" if night else "")
@@ -1107,7 +1110,7 @@ def drift_call(mkt, m, px, st, lv, cal):
     sig = float(np.log(m.Close).diff().tail(390).std())
     if not sig or abs(log(px * lv.r / c["k"])) / (sig * sqrt(T)) > 0.3: return False
     up = d["dir"] == "UP"; side = "YES" if up else "NO"; cost = c["ya"] if up else c["na"]
-    if not (0 < cost < 0.8 and d["p"] - cost - kfee(cost) >= 0.02): return False
+    if not (0 < cost < 0.8 and d["p"] - cost - kfee(cost) >= 0.02 + regime_extra(st, mkt)): return False
     cx = live_ctx(m); cx["px"] = px
     why = (f"• {SESS_TXT[session(now)]}: {NAME[mkt]} ended {d['dir']} in {d['p']:.0%} of {d['n']} recent 15-min sessions\n"
            f"• Older data {d['older']:.0%} · newer data {d['newer']:.0%} up: both agree\n• Price is still right at the start\n"
@@ -1266,6 +1269,7 @@ def night_tick(st, params, cool, nh, yc, only=None):
     """Overnight: Kalshi real-time price + delayed futures context → longshots / edge picks / skip board / watch board."""
     now = dt.datetime.now(ET); minute = now.replace(second=0, microsecond=0); changed = False; boards = {}
     for mkt in (only or ALL):
+      try:
         if yc.get(mkt, (None,))[0] != minute:
             try: yc[mkt] = (minute, night_bars(mkt))
             except Exception as e: print("night bars", mkt, e); continue
@@ -1274,6 +1278,11 @@ def night_tick(st, params, cool, nh, yc, only=None):
         h = nh.setdefault(mkt, []); h.append((pd.Timestamp.now(tz="UTC"), kp)); del h[:-240]
         hb = pd.Series([p for _, p in h], index=[t for t, _ in h]).resample("1min").ohlc().dropna()
         hb = hb.rename(columns=str.title).assign(Volume=0.0)
+        ov = hb.Close.reindex(y.index).dropna()  # minutes where both Kalshi and (delayed) Yahoo exist
+        if len(ov) >= 3:  # rescale Yahoo to Kalshi's price level so the join has no fake jump
+            r = float((ov / y.Close.reindex(ov.index)).median()); y = y.assign(**{k: y[k] * r for k in ("Open", "High", "Low", "Close")})
+        elif len(y):
+            r = kp / float(y.Close.iloc[-1]); y = y.assign(**{k: y[k] * r for k in ("Open", "High", "Low", "Close")})
         m = pd.concat([y[y.index < hb.index[0]], hb]); m = m[~m.index.duplicated(keep="last")]
         _SIG[mkt] = float(np.log(y.Close).diff().tail(390).std()); lv = ident(mkt)
         changed |= manage_ls(mkt, kp, st, lv)
@@ -1281,7 +1290,9 @@ def night_tick(st, params, cool, nh, yc, only=None):
         if now.time() < dt.time(15, 50) or now.time() > dt.time(16, 10):
             changed |= (ihm_call(mkt, m, kp, st, lv, cal_) or drift_call(mkt, m.iloc[:-1], kp, st, lv, cal_)
                         or k15_call(mkt, m.iloc[:-1], kp, st, lv, cal_, night=True))
-        boards[mkt] = (m, kp, lv)
+        regime_update(st, mkt, y); boards[mkt] = (m, kp, lv)  # volatility from one clean source
+      except Exception as e:
+        print("night", mkt, "error:", e)
     return changed, boards
 
 
@@ -1323,91 +1334,161 @@ def snapshots():
     return {k: (v.get("latestTrade") or {}).get("p") for k, v in r.json().items()}
 
 
-def live():
-    """Watch prices every TICK_SEC (15s): instant alerts on events; strategy on each closed bar; check-in on the clock."""
-    if not ALPACA: sys.exit("live mode needs ALPACA_KEY / ALPACA_SECRET")
-    t0, maxmin = time.time(), float(os.getenv("LIVE_MAX_MIN") or 1e9); nt = 0
-    pulse_min, tick = int(os.getenv("PULSE_MIN") or 10), int(os.getenv("TICK_SEC") or 10)
-    cool, data, params, nh, yc = {}, {}, load_params(), {}, {}
-    if not MAIN_ON:  # drop any old slow-signal positions so they don't block 15-min calls
-        st0 = load_state(); st0["pos"] = {}; json.dump(st0, open(STATE_FILE, "w"), indent=1, default=float)
-    last_min = last_hour = last_pulse = None
-    print(f"live mode: tick {tick}s, check-in every {pulse_min} min on the clock")
-    while (time.time() - t0) / 60 < maxmin:
-        now = dt.datetime.now(ET)
-        mode = market_mode(now)
-        if mode == "closed": time.sleep(60); continue
-        if mode == "night":
-            try:
-                st = load_state(); ch, boards = night_tick(st, params, cool, nh, yc); night_boards(st, boards)
-                json.dump(st, open(STATE_FILE, "w"), indent=1, default=float)
-                if ch: persist("bot: night call")
-                if now.minute < 2 and now.hour != last_hour:
-                    last_hour = now.hour
-                    if os.getenv("GIT_PERSIST"): os.system("git pull -q --rebase origin main"); params = load_params()
-            except Exception as e:
-                print("night error:", e)
-            time.sleep(max(1, tick - time.time() % tick)); continue
+MODE_TXT = {
+    "day": "☀️ Day mode: real-time fund prices for oil & gas (Alpaca); metals on Kalshi prices. Fast calls on.",
+    "night": "🌙 Overnight mode: live prices from Kalshi, context from futures (≈10 min delayed). Fast calls paused; "
+             "edge picks, long shots, drift calls and skip boards continue.",
+    "closed": "⏸ Market break (5–6 PM ET daily, or weekend): no new calls. Open calls still get their results.",
+    "night*": "⚠️ Day data isn't updating (holiday, early close or outage) → switched oil & gas to overnight mode. Rechecking every 5 min."}
+
+
+def regime_update(st, mkt, m):
+    """Volatility regime with hysteresis: HIGH when last 30 min moves >2× normal, back to NORMAL under 1.4×."""
+    r = np.log(m.Close).diff().dropna()
+    if len(r) < 200: return
+    ratio = float(r.tail(30).std() / (r.tail(390).std() + 1e-12)); reg = st.setdefault("regime", {}); cur = reg.get(mkt, "NORMAL")
+    new = "HIGH" if cur == "NORMAL" and ratio > 2.0 else "NORMAL" if cur == "HIGH" and ratio < 1.4 else cur
+    if new != cur:
+        reg[mkt] = new
+        notify(f"{'⚡' if new == 'HIGH' else '✅'} {NAME[mkt]} · {'HIGH-VOLATILITY mode' if new == 'HIGH' else 'back to normal'}",
+               (f"Moves are {ratio:.1f}× normal speed. Calls now need +2¢ more edge; long shots paused." if new == "HIGH"
+                else f"Volatility settled ({ratio:.1f}× normal). Normal call rules resume."), "default", mkt)
+
+
+def regime_extra(st, mkt): return 0.02 if st.get("regime", {}).get(mkt) == "HIGH" else 0.0
+
+
+def settle_only(st):
+    """During the break: only report results of calls whose 15-min window has closed."""
+    changed = False
+    for mkt, pos in list(st.get("lpos", {}).items()):
         try:
-            st = load_state(); st.setdefault("sent", []); changed = False
-            minute = now.replace(second=0, microsecond=0)
-            if minute != last_min and now.second >= 3:  # new minute: pull closed 1-min bars, run strategies
-                last_min = minute
-                since = min((d.index[-1] for d in data.values()), default=None)
-                since = (since - pd.Timedelta(minutes=3)) if since is not None else pd.Timestamp.now(tz="UTC") - pd.Timedelta(days=7)
-                for sym, df in fetch_1m(since).items():
-                    data[sym] = pd.concat([data.get(sym), df]).pipe(lambda x: x[~x.index.duplicated(keep="last")]).tail(6000)
-                for mkt_, (_, etf_) in MARKETS.items():
-                    if etf_ in data: _SIG[mkt_] = float(np.log(data[etf_].Close).diff().tail(390).std())
-                for e in events(hours=0.25):
-                    if (k := f"EV15|{e}|{now.date()}") not in st["sent"]:
-                        st["sent"].append(k); notify("⏰ REPORT IN 15 MIN", e + "\nPrices can jump hard. Avoid new bets until after.", "urgent")
-                sent = set(st["sent"])
-                for mkt, (_, etf) in MARKETS.items():
-                    p = {**DEFAULT, **params.get(mkt, {})}; n = BARS[p["interval"]][1]
-                    if n <= 15 and etf in data:
-                        m = data[etf]; b = resample(m[m.index + pd.Timedelta(minutes=1) <= pd.Timestamp.now(tz="UTC")], n)
-                        if len(b) > 60 and str(b.index[-1]) != st.get("last", {}).get(mkt):
-                            had = mkt in st.get("pos", {}); process(mkt, indicators(b), p, st, sent)
-                            changed |= had != (mkt in st.get("pos", {}))
-                st["sent"] = sorted(sent)[-300:]
-                for mkt, (_, etf) in MARKETS.items():  # fast engine: spike-start detector on closed 1-min bars
-                    if etf not in data or mkt in st.get("fpos", {}): continue
-                    m1 = data[etf]; m1 = m1[m1.index + pd.Timedelta(minutes=1) <= pd.Timestamp.now(tz="UTC")]
-                    if len(m1) >= 400 and now.time() < dt.time(15, 50):
-                        fp = {**FAST_DEFAULT, **(params.get("_fast") or {}).get(mkt, {})}
-                        changed |= fast_entry(mkt, indicators(m1.tail(1500)), fp, st, cool)
-            px = snapshots(); nt += 1  # every tick: live price → spike/dip, trend, stop/target checks
+            c = k15(mkt)
+            if c and c["ticker"] == pos["k"]["ticker"]: continue
+            if pd.Timestamp(pos["k"]["close"]) > pd.Timestamp.now(tz="UTC"): continue
+            txt, won = contract_status(pos["k"])
+            if won is None: continue
+            follow_msg(mkt, pos, "🏁" if won else "❌", f"RESULT: {'RIGHT ✅' if won else 'WRONG'}", txt)
+            del st["lpos"][mkt]; changed = True
+        except Exception as e: print("settle", mkt, e)
+    return changed
+
+
+def prune_state(st):
+    for k in ("skipped",):
+        if len(st.get(k, {})) > 40: st[k] = dict(sorted(st[k].items())[-40:])
+    st["sent"] = sorted(set(st.get("sent", [])))[-300:]
+
+
+def day_fresh(data, now):
+    """Is day data (Alpaca fund bars) actually updating? Grace period after the open."""
+    if now.time() < dt.time(9, 45) or not data: return True
+    last = max(d.index[-1] for d in data.values())
+    return (pd.Timestamp.now(tz="UTC") - last) < pd.Timedelta(minutes=20)
+
+
+def live():
+    """Supervisor: picks day / night / break mode every tick, switches safely, never lets one market break the rest."""
+    import traceback
+    if not ALPACA: sys.exit("live mode needs ALPACA_KEY / ALPACA_SECRET")
+    t0, maxmin = time.time(), float(os.getenv("LIVE_MAX_MIN") or 1e9)
+    pulse_min, tick = int(os.getenv("PULSE_MIN") or 10), int(os.getenv("TICK_SEC") or 10)
+    cool, data, nh, yc = {}, {}, {}, {}
+    S = dict(params=load_params(), last_min=None, last_hour=None, last_pulse=None, nt=0, errs=0, saved=time.time(), recheck=0)
+    if not MAIN_ON:
+        st0 = load_state(); st0["pos"] = {}; json.dump(st0, open(STATE_FILE, "w"), indent=1, default=float)
+    print(f"live supervisor: tick {tick}s")
+
+    def day_tick(st, now):
+        params = S["params"]
+        st.setdefault("sent", []); changed = False
+        minute = now.replace(second=0, microsecond=0)
+        if minute != S['last_min'] and now.second >= 3:  # new minute: pull closed 1-min bars, run strategies
+            S['last_min'] = minute
+            since = min((d.index[-1] for d in data.values()), default=None)
+            since = (since - pd.Timedelta(minutes=3)) if since is not None else pd.Timestamp.now(tz="UTC") - pd.Timedelta(days=7)
+            for sym, df in fetch_1m(since).items():
+                data[sym] = pd.concat([data.get(sym), df]).pipe(lambda x: x[~x.index.duplicated(keep="last")]).tail(6000)
+            for mkt_, (_, etf_) in MARKETS.items():
+                if etf_ in data: _SIG[mkt_] = float(np.log(data[etf_].Close).diff().tail(390).std())
+            for e in events(hours=0.25):
+                if (k := f"EV15|{e}|{now.date()}") not in st["sent"]:
+                    st["sent"].append(k); notify("⏰ REPORT IN 15 MIN", e + "\nPrices can jump hard. Avoid new bets until after.", "urgent")
+            sent = set(st["sent"])
             for mkt, (_, etf) in MARKETS.items():
-                if etf not in data or not px.get(etf): continue
-                m = data[etf]; m = m[m.index + pd.Timedelta(minutes=1) <= pd.Timestamp.now(tz="UTC")]
-                cur = pd.Timestamp.now(tz="UTC").floor("min"); p_ = float(px[etf])
-                changed |= manage_fast(mkt, p_, st)
-                lv_ = kconv(mkt, p_); changed |= manage_ls(mkt, p_, st, lv_)
-                if dt.datetime.now(ET).time() >= dt.time(15, 50): continue  # no new calls into the close
-                cal_ = (params.get("_cal") or {}).get(mkt)
-                changed |= ihm_call(mkt, m, p_, st, lv_, cal_) or k15_call(mkt, m, p_, st, lv_, cal_)
-                row = pd.DataFrame({"Open": p_, "High": p_, "Low": p_, "Close": p_, "Volume": m.Volume.iloc[-1]}, index=[cur])
-                changed |= bool(fast_checks(mkt, pd.concat([m, row]), st, cool))
-            skip_board(data, st, params)
-            try:
-                ch2, mb = night_tick(st, params, cool, nh, yc, only=METALS); changed |= ch2; night_boards(st, mb, night=False)
-            except Exception as e: print("metals error:", e)
-            json.dump(st, open(STATE_FILE, "w"), indent=1, default=float)
-            if changed: persist("bot: live trade")
-            if now.minute < 3 and now.hour != last_hour:  # hourly: refresh params + 1h strategies
-                last_hour = now.hour
-                if os.getenv("GIT_PERSIST"): os.system("git pull -q --rebase origin main"); params = load_params()
-                hourly = [k for k in MARKETS if BARS[{**DEFAULT, **params.get(k, {})}["interval"]][1] > 15]
-                if hourly: scan(hourly); persist()
-            slot = minute.replace(minute=minute.minute - minute.minute % pulse_min) if pulse_min else None
-            if pulse_min and slot != last_pulse and data:
-                if last_pulse is not None or now.minute % pulse_min == 0: pulse(data, load_state())
-                last_pulse = slot
+                p = {**DEFAULT, **params.get(mkt, {})}; n = BARS[p["interval"]][1]
+                if n <= 15 and etf in data:
+                    m = data[etf]; b = resample(m[m.index + pd.Timedelta(minutes=1) <= pd.Timestamp.now(tz="UTC")], n)
+                    if len(b) > 60 and str(b.index[-1]) != st.get("last", {}).get(mkt):
+                        had = mkt in st.get("pos", {}); process(mkt, indicators(b), p, st, sent)
+                        changed |= had != (mkt in st.get("pos", {}))
+            st["sent"] = sorted(sent)[-300:]
+            for mkt, (_, etf) in MARKETS.items():  # fast engine: spike-start detector on closed 1-min bars
+                if etf not in data or mkt in st.get("fpos", {}): continue
+                m1 = data[etf]; m1 = m1[m1.index + pd.Timedelta(minutes=1) <= pd.Timestamp.now(tz="UTC")]
+                if len(m1) >= 400 and now.time() < dt.time(15, 50):
+                    fp = {**FAST_DEFAULT, **(params.get("_fast") or {}).get(mkt, {})}
+                    changed |= fast_entry(mkt, indicators(m1.tail(1500)), fp, st, cool)
+        px = snapshots(); S['nt'] += 1  # every tick: live price → spike/dip, trend, stop/target checks
+        for mkt, (_, etf) in MARKETS.items():
+          try:
+            if etf not in data or not px.get(etf): continue
+            regime_update(st, mkt, data[etf])
+            m = data[etf]; m = m[m.index + pd.Timedelta(minutes=1) <= pd.Timestamp.now(tz="UTC")]
+            cur = pd.Timestamp.now(tz="UTC").floor("min"); p_ = float(px[etf])
+            changed |= manage_fast(mkt, p_, st)
+            lv_ = kconv(mkt, p_); changed |= manage_ls(mkt, p_, st, lv_)
+            if dt.datetime.now(ET).time() >= dt.time(15, 50): continue  # no new calls into the close
+            cal_ = (params.get("_cal") or {}).get(mkt)
+            changed |= ihm_call(mkt, m, p_, st, lv_, cal_) or k15_call(mkt, m, p_, st, lv_, cal_)
+            row = pd.DataFrame({"Open": p_, "High": p_, "Low": p_, "Close": p_, "Volume": m.Volume.iloc[-1]}, index=[cur])
+            changed |= bool(fast_checks(mkt, pd.concat([m, row]), st, cool))
+          except Exception as e:
+            print("day", mkt, "error:", e)
+        skip_board(data, st, params)
+        try:
+            ch2, mb = night_tick(st, params, cool, nh, yc, only=METALS); changed |= ch2; night_boards(st, mb, night=False)
+        except Exception as e: print("metals error:", e)
+        slot = minute.replace(minute=minute.minute - minute.minute % pulse_min) if pulse_min else None
+        if pulse_min and slot != S['last_pulse'] and data:
+            if S['last_pulse'] is not None or now.minute % pulse_min == 0: pulse(data, load_state())
+            S['last_pulse'] = slot
+        return changed
+
+    while (time.time() - t0) / 60 < maxmin:
+        now = dt.datetime.now(ET); mode = market_mode(now); shown = mode
+        if mode == "day" and not day_fresh(data, now):
+            mode, shown = "night", "night*"
+            if time.time() - S["recheck"] > 300:  # try Alpaca again every 5 min
+                S["recheck"] = time.time()
+                try:
+                    since = max((d.index[-1] for d in data.values()), default=pd.Timestamp.now(tz="UTC") - pd.Timedelta(days=7))
+                    for sym, df in fetch_1m(since - pd.Timedelta(minutes=3)).items():
+                        data[sym] = pd.concat([data.get(sym), df]).pipe(lambda x: x[~x.index.duplicated(keep="last")]).tail(6000)
+                except Exception as e: print("alpaca recheck:", e)
+        try:
+            st = load_state()
+            if st.get("mode") != shown:  # announce each mode switch once (survives run handoffs)
+                notify(f"🔁 Mode: {'NIGHT (day data down)' if shown == 'night*' else shown.upper()}", MODE_TXT[shown], "default")
+                st["mode"] = shown; nh.clear(); yc.clear()
+            if mode == "closed": changed = settle_only(st)
+            elif mode == "night":
+                changed, boards = night_tick(st, S["params"], cool, nh, yc); night_boards(st, boards)
+            else: changed = day_tick(st, now)
+            prune_state(st); json.dump(st, open(STATE_FILE, "w"), indent=1, default=float)
+            if changed or time.time() - S["saved"] > 600: persist("bot: live"); S["saved"] = time.time()
+            S["errs"] = 0
         except Exception as e:
-            print("live error:", e)
-        time.sleep(max(1, tick - time.time() % tick))
-    print(f"live ended after {nt} price checks"); persist()
+            S["errs"] += 1; print("tick error:", e); traceback.print_exc()
+            if S["errs"] == 30: notify("⚠️ Data problem", f"Live loop failing for ~5 min ({str(e)[:80]}). Retrying automatically.", "high")
+        if now.minute < 3 and now.hour != S["last_hour"]:  # hourly: pull fresh calibration / params
+            S["last_hour"] = now.hour
+            try:
+                if os.getenv("GIT_PERSIST"): os.system("git pull -q --rebase origin main")
+                S["params"] = load_params()
+            except Exception as e: print("param refresh:", e)
+        time.sleep(30 if mode == "closed" else max(1, tick - time.time() % tick))
+    print(f"live ended after {S['nt']} price checks"); persist()
 
 
 def kalshi_discover():
