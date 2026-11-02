@@ -12,13 +12,37 @@
   "BRENT": "2026-11-02 19:51:00+00:00"
  },
  "fpos": {},
- "seq": 8,
+ "seq": 9,
  "lswin": {
   "WTI": "KXWTI15M-26NOV021515-15",
-  "BRENT": "KXBRENT15M-26NOV021500-00"
+  "BRENT": "KXBRENT15M-26NOV021515-15"
  },
  "skipslot": "2026-11-02 15:01",
- "lpos": {},
+ "lpos": {
+  "BRENT": {
+   "side": 1,
+   "entry": 66.18,
+   "stop": 0,
+   "tgt": 0,
+   "best": 66.18,
+   "n": 0,
+   "t0": 1793649975.4072874,
+   "kind": "ls",
+   "k": {
+    "ticker": "KXBRENT15M-26NOV021515-15",
+    "side": "YES",
+    "cost": 0.03,
+    "k": 104.72,
+    "close": "2026-11-02 20:15:00+00:00"
+   },
+   "tp": 0.28,
+   "bail": 0.03,
+   "parent": null,
+   "id": 9,
+   "at": "3:06 PM",
+   "at_px": "$104.01"
+  }
+ },
  "skipped": {
   "2:30\u20132:45": [
    "BRENT",
