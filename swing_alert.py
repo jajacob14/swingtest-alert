@@ -206,6 +206,7 @@ def scan():
         except Exception as e:
             print(f"{name}: {e}"); continue
         i, r = len(d) - 2, d.iloc[-2]          # use last CLOSED bar (avoid repainting)
+        print(f"{name}: {d.index[i]} close {r.Close:.3f} squeeze={bool(r.sq)}({int(r.sq_bars)}) mom={r.mom:+.3f} rsi={r.rsi:.0f}")
         bar = str(d.index[i])
         pos = st["positions"].get(name)
         if pos:
@@ -269,7 +270,7 @@ def backtest(d, fee_pct=0.03):
 
 def run_backtest():
     for name, sym in MARKETS.items():
-        for interval, period in [("1h", "730d"), ("1d", "15y")]:
+        for interval, period in ([("1h", "1500d"), ("1d", "8y")] if os.getenv("ALPACA_KEY") else [("1h", "730d"), ("1d", "15y")]):
             try:
                 print(name, interval, backtest(fetch(sym, period, interval)))
             except Exception as e:
@@ -288,5 +289,6 @@ def selftest():
 
 
 if __name__ == "__main__":
-    {"scan": scan, "backtest": run_backtest, "selftest": selftest}.get(
+    {"scan": scan, "backtest": run_backtest, "selftest": selftest,
+     "testnotify": lambda: notify("✅ Swing alerts connected", "Test message. Data: " + ("Alpaca real-time" if os.getenv("ALPACA_KEY") else "Yahoo delayed"))}.get(
         (sys.argv[1:] or ["scan"])[0], lambda: print(__doc__))()
