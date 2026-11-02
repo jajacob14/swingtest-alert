@@ -10,7 +10,7 @@ Commands:
 Data: Alpaca real-time (ALPACA_KEY/ALPACA_SECRET, ETF proxies) else Yahoo futures (~10 min delayed).
 Push: NTFY_TOPIC, TELEGRAM_TOKEN+TELEGRAM_CHAT_ID, DISCORD_WEBHOOK.  Context: EIA_API_KEY, EXTRA_EVENTS.
 """
-import json, os, re, sys, time, itertools, datetime as dt
+import json, os, re, sys, time, datetime as dt
 from zoneinfo import ZoneInfo
 import numpy as np, pandas as pd, requests
 from numpy.lib.stride_tricks import sliding_window_view as swv
@@ -95,6 +95,16 @@ def indicators(df, n=20):
     d["rsi"], d["rsi2"] = rsi(c, 14), rsi(c, 2)
     d["bbz"] = (c - mid) / sd                                   # distance from mean in std devs
     d["volp"] = (d.atr / c).rolling(500, min_periods=100).rank(pct=True)  # volatility regime percentile
+    et = d.index.tz_convert(ET); day = pd.Series(et.date, index=d.index)
+    d["tod"] = et.hour * 60 + et.minute; d["dow"] = et.weekday
+    vol = d.Volume.where(d.Volume > 0, 1.0); tp = (h + l + c) / 3
+    d["vwap"] = (tp * vol).groupby(day).cumsum() / vol.groupby(day).cumsum()   # session VWAP
+    d["vwz"] = (c - d.vwap) / d.atr                                             # distance from VWAP in ATRs
+    d["ema200"] = c.ewm(span=200, adjust=False).mean()                          # higher-timeframe trend
+    d["sma20"] = c.rolling(20).mean()
+    first30 = (d.tod >= 570) & (d.tod < 600)                                     # 9:30-10:00 ET opening range
+    d["orh"] = h.where(first30).groupby(day).cummax().groupby(day).ffill()
+    d["orl"] = l.where(first30).groupby(day).cummin().groupby(day).ffill()
     return d
 
 
@@ -117,6 +127,16 @@ def signals(d, p):
         vr = d.Volume.rolling(3).mean() / (d.Volume.rolling(390, min_periods=60).mean() + 1e-9)
         L = (z3 > p["z"]) & (c > hh) & (vr > p["vr"])
         S = (z3 < -p["z"]) & (c < ll) & (vr > p["vr"])
+    elif p["strategy"] == "orb":  # opening-range breakout: first close beyond the 9:30-10:00 range, before 3pm
+        win = (d.tod >= 600) & (d.tod <= 900)
+        L = win & (c > d.orh) & (c.shift() <= d.orh.shift())
+        S = win & (c < d.orl) & (c.shift() >= d.orl.shift())
+    elif p["strategy"] == "vwapfade":  # stretched far from VWAP, turning back toward it
+        L = (d.vwz.shift() < -p["k"]) & (c > c.shift())
+        S = (d.vwz.shift() > p["k"]) & (c < c.shift())
+    elif p["strategy"] == "smacross":  # alpacahq/example-scalping style: price crosses its 20-bar average
+        L = (c > d.sma20) & (c.shift() <= d.sma20.shift()) & up
+        S = (c < d.sma20) & (c.shift() >= d.sma20.shift()) & dn
     elif p["strategy"] == "fade":  # buy stretched lows / sell stretched highs, once momentum turns
         L = (d.bbz.shift() < -p["k"]) & (c > c.shift()) & (d.rsi < 35)
         S = (d.bbz.shift() > p["k"]) & (c < c.shift()) & (d.rsi > 65)
@@ -125,6 +145,13 @@ def signals(d, p):
         S = (c < ema) & (d.rsi2 > 100 - p["lo"])
     if p.get("interval") in INTRADAY:  # no new intraday entries in the last 15 min of the session
         late = pd.Series(d.index.tz_convert(ET).time >= dt.time(15, 45), index=d.index); L, S = L & ~late, S & ~late
+    if p.get("vw"):   # trade with VWAP: longs only above it, shorts only below
+        L, S = L & (c > d.vwap), S & (c < d.vwap)
+    if p.get("htf"):  # align with the higher-timeframe trend (EMA200)
+        L, S = L & (c > d.ema200), S & (c < d.ema200)
+    if p.get("tod") and p.get("interval") in ("1m", "5m", "15m"):  # skip lunch chop + EIA release minutes
+        bad = ((d.tod >= 690) & (d.tod < 810)) | (d.dow.isin([2, 3]) & (d.tod >= 625) & (d.tod < 645))
+        L, S = L & ~bad, S & ~bad
     if p.get("volcap"):  # skip entries in extreme volatility spikes
         ok = ~(d.volp > p["volcap"]); L, S = L & ok, S & ok
     return L.to_numpy(bool), S.to_numpy(bool)
@@ -186,10 +213,19 @@ ENTRIES = ([dict(strategy="squeeze", min_sq=m, trend=t) for m in (4, 8) for t in
            + [dict(strategy="breakout", lookback=n, trend=t) for n in (10, 20, 40) for t in (0, 1)]
            + [dict(strategy="rsi2", lo=x) for x in (5, 10)]
            + [dict(strategy="fade", k=k) for k in (2.0, 2.5)]
-           + [dict(strategy="ignite", z=z, look=lk, vr=v) for z in (2.0, 2.5, 3.0) for lk in (15, 30) for v in (1.0, 1.5)])
+           + [dict(strategy="ignite", z=z, look=lk, vr=v) for z in (2.0, 2.5, 3.0) for lk in (15, 30) for v in (1.0, 1.5)]
+           + [dict(strategy="orb"), dict(strategy="smacross", trend=0), dict(strategy="smacross", trend=1)]
+           + [dict(strategy="vwapfade", k=k) for k in (1.5, 2.5)])
+FILTERS = [dict(vw=a, htf=b, tod=t) for a in (0, 1) for b in (0, 1) for t in (0, 1)]
 ENTRIES += [{**e, "volcap": 0.95} for e in ENTRIES]
 EXITS = [dict(stop=s, tgt=g, trail=r) for s in (1.0, 1.5, 2.5) for g in (1.5, 2.5, 4.0, 8.0) for r in (0, 1.5, 2.5)]
 FAST_HOLD = 30  # fast trades: max 30 one-minute bars
+
+
+def consistency(d, p, L, S, cut):
+    """Split the unseen period in 3; count chunks that were profitable."""
+    edges = np.linspace(cut, len(d), 4).astype(int)
+    return sum(stats(simulate(d, p, L, S, a, b))["pf"] > 1 for a, b in zip(edges[:-1], edges[1:]))
 
 
 def opt_market(mkt):
@@ -203,19 +239,25 @@ def opt_market(mkt):
         cut = int(len(d) * 0.7); cands = []
         for e in ENTRIES:
             if e["strategy"] == "ignite" and iv != "1m": continue
+            if e["strategy"] == "orb" and iv not in ("1m", "5m", "15m"): continue
             L, S = signals(d, {**e, "interval": iv})
             for x in EXITS:
                 p = {**e, **x, "interval": iv, "hold": FAST_HOLD if iv == "1m" else HOLD[iv]}
                 tr = stats(simulate(d, p, L, S, 0, cut))
                 if tr["n"] >= 30 and tr["pf"] > 1.05: cands.append((tr["t"], p, tr, L, S))
+        for _, p0, *_ in sorted(cands, key=lambda z: -z[0])[:10]:  # stage 2: add VWAP / trend / time filters
+            for f in FILTERS[1:]:
+                p = {**p0, **f}; L, S = signals(d, p); tr = stats(simulate(d, p, L, S, 0, cut))
+                if tr["n"] >= 30 and tr["pf"] > 1.05: cands.append((tr["t"], p, tr, L, S))
         days_test = max(1, (d.index[-1] - d.index[cut]).days * 5 / 7)
-        for _, p, tr, L, S in sorted(cands, key=lambda z: -z[0])[:8]:  # top in-sample, confirm out-of-sample
+        for _, p, tr, L, S in sorted(cands, key=lambda z: -z[0])[:12]:  # top in-sample → must hold up out-of-sample
             te = stats(simulate(d, p, L, S, cut))
-            row = {**p, "train": tr, "test": te, "trades_per_day": round(te["n"] / days_test, 1), "bars": len(d)}
-            if iv == "1m" and te["n"] >= 15 and te["pf"] >= 1.1 and (fast is None or te["t"] > fast["test"]["t"]):
-                fast = row
-            if te["n"] >= 15 and te["pf"] >= 1.15 and (best is None or te["t"] > best["test"]["t"]):
-                best = row
+            if te["n"] < 15 or te["pf"] < 1.1: continue
+            cons = consistency(d, p, L, S, cut)
+            if cons < 2: continue
+            row = {**p, "train": tr, "test": te, "chunks_ok": f"{cons}/3", "trades_per_day": round(te["n"] / days_test, 1), "bars": len(d)}
+            if iv == "1m" and (fast is None or te["t"] > fast["test"]["t"]): fast = row
+            if te["pf"] >= 1.15 and (best is None or te["t"] > best["test"]["t"]): best = row
         print(f"{mkt} {iv}: {len(d)} bars, {len(cands)} candidates, best={best and best['interval']} fast={fast and fast['strategy']}", flush=True)
     return mkt, ({**best, "status": "active"} if best else {**DEFAULT, "status": "watch"}), fast
 
@@ -394,8 +436,20 @@ def k15(mkt):
     return _KC[key]
 
 
-def pick15(mkt, up, lv_now):
-    """Text + contract info for the 15-min Kalshi bet matching a fast call."""
+_SIG = {}  # per-minute log volatility per market (updated live)
+
+
+def fair_up(kp, strike, mins_left, sig):
+    """Random-walk odds that price finishes at/above strike: Φ(ln(kp/strike) / (σ√T))."""
+    from math import erf, log, sqrt
+    if not sig or mins_left <= 0: return None
+    z = log(kp / strike) / (sig * sqrt(mins_left))
+    return 0.5 * (1 + erf(z / sqrt(2)))
+
+
+def pick15(mkt, up, lv, px_etf):
+    """Text + contract info for the 15-min Kalshi bet matching a fast call (with a fair-value check)."""
+    lv_now = lv(px_etf); kp = px_etf * getattr(lv, "r", 1.0)
     c = k15(mkt)
     if not c: return "(no 15-min Kalshi contract open right now)", None
     left = (c["close"] - pd.Timestamp.now(tz="UTC")).total_seconds() / 60
@@ -405,7 +459,13 @@ def pick15(mkt, up, lv_now):
     if left < 4:
         return head + f"\n    Too late for this one ({left:.0f} min left).\n    👉 Next window: BUY {side} right when it opens", None
     if not 0 < cost < 1: return head + "\n    (no price offered right now)", None
-    return (head + f"\n    👉 BUY {side} · {cost * 100:.0f}¢ → pays $1 if price ends {'at/above' if up else 'below'} start",
+    fu = fair_up(kp, c["k"], left, _SIG.get(mkt))
+    val = ""
+    if fu is not None:
+        fair = (fu if up else 1 - fu) * 100; edge = fair - cost * 100
+        val = (f"\n    Odds right now ≈{fair:.0f}% vs cost {cost * 100:.0f}¢ → "
+               + ("✅ good value" if edge >= 3 else "⚠️ pricey: odds don't justify it" if edge <= -8 else "≈ fair price"))
+    return (head + f"\n    👉 BUY {side} · {cost * 100:.0f}¢ → pays $1 if price ends {'at/above' if up else 'below'} start" + val,
             dict(ticker=c["ticker"], side=side, cost=cost, k=c["k"], close=str(c["close"])))
 
 
@@ -487,7 +547,7 @@ def scan(only=None):
 
 
 def brief():
-    params, st, lines = load_params(), load_state(), []
+    st, lines = load_state(), []
     for mkt in MARKETS:
         try:
             d = indicators(fetch(mkt, "1h", 45)); dd = fetch(mkt, "1d", 60)
@@ -504,7 +564,7 @@ def brief():
                      + ("\n    ⚡ Quiet → big move likely" if r.sq else "")
                      + (f"\n    Open signal #{pos.get('id', '?')}: {'UP' if pos['side'] > 0 else 'DOWN'}" if pos else ""))
     ev = events(hours=14)
-    notify(f"📋 Market check · {dt.datetime.now(ET):%-I:%M %p}", "\n\n".join(lines + ([f"📅 Today: " + "; ".join(ev)] if ev else [])))
+    notify(f"📋 Market check · {dt.datetime.now(ET):%-I:%M %p}", "\n\n".join(lines + (["📅 Today: " + "; ".join(ev)] if ev else [])))
 
 
 def doctor():
@@ -572,8 +632,8 @@ def fast_checks(mkt, m, st, cool):
     if abs(z) >= 2.5 and abs(r5) * 100 >= MINMOVE[mkt]:
         up, wild = r5 > 0, abs(z) > 4.5
         fire("spike", f"{'⚡ JUMPED' if up else '🩸 DROPPED'} {abs(r5) * 100:.1f}% in 5 min",
-             f"Now: {lv(px)}\n" + (f"Very stretched; it often snaps back. Don't chase.\nBounce idea:\n{pick15(mkt, not up, lv(px))[0]}"
-                                    if wild else f"Strong push; it may keep going.\nRide it:\n{pick15(mkt, up, lv(px))[0]}"), "urgent", 10)
+             f"Now: {lv(px)}\n" + (f"Very stretched; it often snaps back. Don't chase.\nBounce idea:\n{pick15(mkt, not up, lv, px)[0]}"
+                                    if wild else f"Strong push; it may keep going.\nRide it:\n{pick15(mkt, up, lv, px)[0]}"), "urgent", 10)
     b5 = resample(m, 5)
     if len(b5) > 60:
         d5 = indicators(b5); r, pr = d5.iloc[-1], d5.iloc[-2]; vr3 = m.Volume.tail(3).mean() / (m.Volume.tail(390).mean() + 1e-9)
@@ -586,7 +646,7 @@ def fast_checks(mkt, m, st, cool):
         bias = "UP" if r.mom > 0 and r.mom > pr.mom else "DOWN" if r.mom < 0 and r.mom < pr.mom else None
         if r.sq and r.sq_bars >= 6 and vr3 > 1.5 and bias:
             fire("premove", f"🎯 MOVE COMING · leaning {bias}",
-                 f"Now: {lv(px)}\nPrice coiled tight and buyers/sellers are waking up.\nGet ready:\n{pick15(mkt, bias == 'UP', lv(px))[0]}", "high", 30)
+                 f"Now: {lv(px)}\nPrice coiled tight and buyers/sellers are waking up.\nGet ready:\n{pick15(mkt, bias == 'UP', lv, px)[0]}", "high", 30)
     et = m.index.tz_convert(ET); today = m[et.date == et[-1].date()]
     if len(today) > 30:
         prev = today.iloc[:-1]
@@ -629,7 +689,7 @@ def fast_entry(mkt, d1, fp, st, cool):
     pos = open_pos(1 if up else -1, r.Close, r.atr, fp); pos.update(t0=time.time(), atr=r.atr, trail=fp["trail"], hold=fp["hold"])
     st.setdefault("fpos", {})[mkt] = pos; cool[(mkt, "spike")] = cool[(mkt, "trend")] = time.time()
     t = fp.get("test")
-    txt, pos["k"] = pick15(mkt, up, lv(r.Close))
+    txt, pos["k"] = pick15(mkt, up, lv, r.Close)
     n = new_trade(st, mkt, pos, lv, r.Close); aim = r.Close + (1 if up else -1) * 2 * r.atr
     notify(f"#{n} {NAME[mkt]} · {'BUY signal ⬆️ spike starting' if up else 'BUY signal ⬇️ drop starting'}",
            f"{txt}\n🎯 Exit expected near {lv(aim)} (could run further)\n🛑 Exit early if price hits {lv(pos['stop'])}\n"
@@ -661,7 +721,7 @@ def manage_fast(mkt, px, st):
                  if win else "LOSING. Selling now recovers what's left before it expires."))
         del st["fpos"][mkt]; return True
     if not why: return False
-    lv, pnl, mins = kconv(mkt, px), s_pnl(pos, px), (time.time() - pos["t0"]) / 60
+    lv, mins = kconv(mkt, px), (time.time() - pos["t0"]) / 60
     title = {"LOCK": "SELL signal 💰 move stalling, take profit", "TARGET": "SELL signal 💰 target reached",
              "CUT": "SELL signal 🛑 move failed", "DONE": "SELL signal ⏱ move is over"}[why]
     sell_msg(mkt, pos, title, px, lv, f"\n(signal lasted {mins:.0f} min)")
@@ -699,6 +759,8 @@ def live():
                 since = (since - pd.Timedelta(minutes=3)) if since is not None else pd.Timestamp.now(tz="UTC") - pd.Timedelta(days=7)
                 for sym, df in fetch_1m(since).items():
                     data[sym] = pd.concat([data.get(sym), df]).pipe(lambda x: x[~x.index.duplicated(keep="last")]).tail(6000)
+                for mkt_, (_, etf_) in MARKETS.items():
+                    if etf_ in data: _SIG[mkt_] = float(np.log(data[etf_].Close).diff().tail(390).std())
                 for e in events(hours=0.25):
                     if (k := f"EV15|{e}|{now.date()}") not in st["sent"]:
                         st["sent"].append(k); notify("⏰ REPORT IN 15 MIN", e + "\nPrices can jump hard. Avoid new bets until after.", "urgent")
@@ -766,6 +828,30 @@ def kcheck():
         dd = fetch(mkt, "1d", 10); print("KCHK", mkt, "ETF daily closes", [(str(i.date()), round(v, 2)) for i, v in dd.Close.tail(4).items()])
 
 
+def audit():
+    """Numbers + trend + recent-performance check."""
+    import yfinance as yf
+    params = load_params()
+    for mkt, (fut, etf) in MARKETS.items():
+        print(f"\n===== {mkt} =====")
+        b = kalshi_book(mkt); c15 = k15(mkt)
+        try:
+            yfp = float(yf.Ticker(fut).history(period="1d", interval="1m").Close.iloc[-1])
+        except Exception: yfp = None
+        e1 = fetch_alpaca(etf, "1m", 3) if ALPACA else None
+        print("PRICES  Kalshi-implied:", b and round(b["px"], 3), "| Yahoo futures (~10m delayed):", yfp and round(yfp, 3),
+              "| gap:", f"{(b['px'] / yfp - 1) * 100:+.2f}%" if b and yfp else "n/a",
+              "| 15m start:", c15 and c15["k"], "| ETF:", None if e1 is None else round(float(e1.Close.iloc[-1]), 2))
+        d = indicators(fetch(mkt, "1h", 60)); r = d.iloc[-1]
+        print(f"TREND   1h close {r.Close:.2f} | vs EMA50 {'above' if r.Close > r.ema else 'below'} | vs EMA200 "
+              f"{'above' if r.Close > r.ema200 else 'below'} | 5d {(r.Close / d.Close.iloc[-36] - 1) * 100:+.1f}% | "
+              f"vol pct {r.volp:.0%} | RSI {r.rsi:.0f}")
+        for tag, p in (("MAIN", {**DEFAULT, **params.get(mkt, {})}), ("FAST", {**FAST_DEFAULT, **(params.get("_fast") or {}).get(mkt, {})})):
+            days = 14 if p["interval"] in ("1m", "5m") else 30
+            dd = indicators(fetch(mkt, p["interval"], days)); L, S = signals(dd, p)
+            print(f"{tag:5} {p['strategy']}/{p['interval']} last {days}d: {stats(simulate(dd, p, L, S))} | validated: {p.get('test')} chunks {p.get('chunks_ok')}")
+
+
 def selftest():
     rng = np.random.default_rng(1); n = 3000
     vol = np.where((np.arange(n) // 150) % 2, 0.003, 0.012)
@@ -782,5 +868,5 @@ if __name__ == "__main__":
     cmds = dict(scan=scan, brief=brief, optimize=optimize, doctor=doctor, selftest=selftest,
                 testnotify=lambda: [notify(f"{m} test alert", f"Color check for {m} ({MARKETS[m][1]}). Data: "
                                        + ("Alpaca real-time" if ALPACA else "Yahoo delayed"), "high", m) for m in MARKETS],
-                live=live, livetest=lambda: (os.environ.update(LIVE_MAX_MIN='2', GIT_PERSIST='', STATE_FILE='/tmp/st.json'), live()), kalshi=kalshi_discover, kcheck=kcheck, loop=lambda: [(scan(), time.sleep(int(os.getenv("LOOP_SEC", 120)))) for _ in iter(int, 1)])
+                live=live, livetest=lambda: (os.environ.update(LIVE_MAX_MIN='2', GIT_PERSIST='', STATE_FILE='/tmp/st.json'), live()), audit=audit, kalshi=kalshi_discover, kcheck=kcheck, loop=lambda: [(scan(), time.sleep(int(os.getenv("LOOP_SEC", 120)))) for _ in iter(int, 1)])
     cmds.get((sys.argv[1:] or ["scan"])[0], lambda: print(__doc__))()
