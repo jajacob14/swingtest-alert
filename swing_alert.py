@@ -1074,7 +1074,7 @@ def skip_reasons(mkt, m, px, lv):
 def skip_board(data, st, params):
     """Session preview at minute 1 and update at minute 7: which markets to SKIP (and why) vs in play."""
     now = dt.datetime.now(ET)
-    if now.minute % 15 not in (1, 7): return
+    if now.minute % 15 not in (1, 7) or now.time() >= dt.time(15, 55): return
     slot = now.strftime("%Y-%m-%d %H:%M")
     if st.get("skipslot") == slot: return
     st["skipslot"] = slot; w_end = now.replace(second=0, microsecond=0) + dt.timedelta(minutes=15 - now.minute % 15)
@@ -1144,7 +1144,7 @@ def live():
                 for mkt, (_, etf) in MARKETS.items():  # fast engine: spike-start detector on closed 1-min bars
                     if etf not in data or mkt in st.get("fpos", {}): continue
                     m1 = data[etf]; m1 = m1[m1.index + pd.Timedelta(minutes=1) <= pd.Timestamp.now(tz="UTC")]
-                    if len(m1) >= 400:
+                    if len(m1) >= 400 and now.time() < dt.time(15, 50):
                         fp = {**FAST_DEFAULT, **(params.get("_fast") or {}).get(mkt, {})}
                         changed |= fast_entry(mkt, indicators(m1.tail(1500)), fp, st, cool)
             px = snapshots(); nt += 1  # every tick: live price → spike/dip, trend, stop/target checks
@@ -1154,6 +1154,7 @@ def live():
                 cur = pd.Timestamp.now(tz="UTC").floor("min"); p_ = float(px[etf])
                 changed |= manage_fast(mkt, p_, st)
                 lv_ = kconv(mkt, p_); changed |= manage_ls(mkt, p_, st, lv_)
+                if dt.datetime.now(ET).time() >= dt.time(15, 50): continue  # no new calls into the close
                 cal_ = (params.get("_cal") or {}).get(mkt)
                 changed |= ihm_call(mkt, m, p_, st, lv_, cal_) or k15_call(mkt, m, p_, st, lv_, cal_)
                 row = pd.DataFrame({"Open": p_, "High": p_, "Low": p_, "Close": p_, "Volume": m.Volume.iloc[-1]}, index=[cur])
