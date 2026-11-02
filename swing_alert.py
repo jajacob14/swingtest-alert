@@ -1143,7 +1143,7 @@ def open_call(st, mkt, kind, side, c, lv, px, odds, why, tested, parent=None, pr
             "ls": f"within {left:.0f} min", "drift": f"by {pd.Timestamp(k['close']).tz_convert(ET):%-I:%M}",
             "ihm": "into the close"}.get(kind, "soon")
     tg = tier(prob) if prob else ""
-    title = (f"{NAME[mkt]} {'UP' if up else 'DOWN'} · " + (f"{tg} {prob:.0%} · " if tg else "")
+    title = (f"{NAME[mkt]}: BUY {'UP (YES)' if up else 'DOWN (NO)'} · " + (f"{tg} {prob:.0%} · " if tg else "")
              + f"{'rise' if up else 'drop'} expected {when} · #{n}" + (f" · BIG PAYOUT {1 / cost:.0f}x" if big else ""))
     sig = _SIG.get(mkt); tl = max(left * 0.6, 1)
     tpx = level_for(k["k"], tp, up, tl, sig); bpx = level_for(k["k"], bail, up, tl, sig)
@@ -1154,11 +1154,11 @@ def open_call(st, mkt, kind, side, c, lv, px, odds, why, tested, parent=None, pr
              f"Get out if it {'falls back below' if up else 'climbs back above'} about {pk(bpx)}." if tpx and bpx
              else "Take profit once it's clearly winning; get out if it reverses.")
     notify(title,
-           f"Bet {'UP' if up else 'DOWN'}: wins if {NAME[mkt].title()} ends {'at or above' if up else 'below'} "
+           f"Buy {'UP (YES)' if up else 'DOWN (NO)'}: wins if {NAME[mkt].title()} ends {'at or above' if up else 'below'} "
            f"{money(mkt, k['k'])} at {pd.Timestamp(k['close']).tz_convert(ET):%-I:%M} ({left:.0f} min left). Now {lv(px)}.\n"
            f"{exits} {odds[0].upper() + odds[1:]}.\n"
            f"Why: {why}." + ("" if tested else " Untested: small size.") + (f" Flip of call #{parent}." if parent else "")
-           + (f"\n{action_line(mkt, st['ana'][mkt]).split('. ')[0].rstrip('.')}." if (st.get("ana") or {}).get(mkt, {}) and "fc_p" in st["ana"][mkt] else ""),
+           + (f"\n{analysis_block(mkt, st['ana'][mkt])}" if (st.get("ana") or {}).get(mkt) else ""),
            "urgent", mkt)
     return n
 
@@ -1172,7 +1172,7 @@ def sell_msg(mkt, pos, title, px, lv, extra=""):
 def follow_msg(mkt, pos, icon, action, extra=""):
     k = pos["k"]
     notify(f"{NAME[mkt]}: {action} · #{pos.get('id', '?')}",
-           f"Call #{pos.get('id', '?')} was {'UP' if k['side'] == 'YES' else 'DOWN'}: needed {NAME[mkt].title()} "
+           f"Call #{pos.get('id', '?')} was BUY {'UP (YES)' if k['side'] == 'YES' else 'DOWN (NO)'}: needed {NAME[mkt].title()} "
            f"{'at or above' if k['side'] == 'YES' else 'below'} {money(mkt, k['k'])} at {pd.Timestamp(k['close']).tz_convert(ET):%-I:%M}." + extra,
            "urgent", mkt)
 
@@ -1197,6 +1197,11 @@ def analyze(mkt, m, kp, lv, c, fc=None):
     if c:
         T = max((c["close"] - pd.Timestamp.now(tz="UTC")).total_seconds() / 60, 0.1)
         a.update(T=T, start=c["k"], rng=kp * s1 * sqrt(T), p_up=_phi(log(kp / c["k"]) / (s1 * sqrt(T))), ya=c["ya"], na=c["na"])
+    tr_, vw_, rs_, fl_ = ctx_features(p, m.Volume.fillna(0), m.index, m.Open)
+    ema = p.ewm(span=240, adjust=False).mean()
+    a.update(tr_pct=float(p.iloc[-1] / ema.iloc[-1] - 1), m60=float(p.iloc[-1] / p.iloc[-61] - 1) if len(p) > 61 else 0.0,
+             vw_pct=float(p.iloc[-1] / vw_.iloc[-1] - 1), rsi=float(rs_.iloc[-1]), flow=float(fl_.fillna(0).iloc[-1]),
+             sess=session(dt.datetime.now(ET)))
     mm = m.copy(); mm.iloc[-1, mm.columns.get_loc("Close")] = p.iloc[-1]
     pu = forecast_live(mm, fc)
     if pu is not None:
@@ -1208,12 +1213,34 @@ def analyze(mkt, m, kp, lv, c, fc=None):
     return a
 
 
+SESS_NOTE = {"EVE": "evening session: moves tend to keep going (snap-backs only 4-10%)",
+             "ASIA": "Asia session: thin trading, some snap-backs (10-16%)",
+             "EU": "Europe session: London open, most snap-backs for oil (16-19%)",
+             "US": "US day session: snap-backs 7-15%"}
+
+
+def analysis_block(mkt, a):
+    """All factors, graphically and numerically, in three lines."""
+    if not a: return ""
+    fl = a.get("flow", 0); fs = f"{'buyers' if fl > 0 else 'sellers'} {50 + abs(fl) * 50:.0f}%" if abs(fl) > 0.05 else "buyers/sellers even"
+    l1 = f"Chart (12 min): {a['spark']}  {a['ch5'] * 100:+.2f}% in 5 min, {a['volx']:.1f}x normal volatility"
+    l2 = (f"Trend: 4h {'up' if a.get('tr_pct', 0) > 0 else 'down'} ({a.get('tr_pct', 0) * 100:+.2f}% vs avg), "
+          f"1h {a.get('m60', 0) * 100:+.2f}%, {fs}, RSI {a.get('rsi', 50):.0f}, {a.get('vw_pct', 0) * 100:+.2f}% vs VWAP")
+    fc = (f"10-min forecast {'UP' if a['fc_p'] >= 0.5 else 'DOWN'} {max(a['fc_p'], 1 - a['fc_p']):.0%}"
+          + ("" if a.get("fc_ok") else " (low confidence)")) if "fc_p" in a else "no 10-min forecast"
+    l3 = f"Spike score {a['score']:.0f}/100 ({a['label']}), {fc}, {SESS_NOTE.get(a.get('sess'), '')}"
+    return "\n".join((l1, l2, l3))
+
+
 def board_line(mkt, a, st):
     """Two plain lines per market: what it's doing now, then what to do."""
     op = (st.get("lpos") or {}).get(mkt)
     l1 = (f"{COLOR[mkt][0]} {NAME[mkt]} {money(mkt, a['px'])}  {a['ch5'] * 100:+.2f}% in 5 min  {a['spark']}  {a['label']}"
           + (f" ({a['score']:.0f}/100)" if a["score"] >= 45 else "") + (f"  [call #{op.get('id')} open]" if op else ""))
-    return l1 + "\n    " + action_line(mkt, a)
+    out = l1 + "\n    " + action_line(mkt, a)
+    if a["score"] >= 45 or ("start" in a and max(a["p_up"], 1 - a["p_up"]) >= 0.75) or (a.get("fc_ok") and max(a.get("fc_p", .5), 1 - a.get("fc_p", .5)) >= 0.6):
+        out += "\n    " + analysis_block(mkt, a).split("\n")[1]  # trend line for the markets that matter right now
+    return out
 
 
 def action_line(mkt, a):
@@ -1229,19 +1256,30 @@ def action_line(mkt, a):
     if "start" in a:
         T = a["T"]
         if "fc_p" in a and max(a["fc_p"], 1 - a["fc_p"]) >= 0.6 and a.get("fc_ok") and T >= 4:
-            want_up = a["fc_p"] >= 0.5; cost = a["ya"] if want_up else a["na"]
-            parts.append(f"Lean {'UP' if want_up else 'DOWN'} (ends {'above' if want_up else 'below'} {money(mkt, a['start'])})" if cost < 0.8
-                         else f"{'UP' if want_up else 'DOWN'} is already priced in, skip")
+            fc_up = a["fc_p"] >= 0.5; target = a["px"] + (a["fc_move"] if fc_up else -a["fc_move"])
+            want_up = target >= a["start"]; cost = a["ya"] if want_up else a["na"]
+            if want_up != fc_up:  # forecast move won't cross the start → the current leader stays favored
+                parts.append(f"{'bounce' if fc_up else 'dip'} likely but probably not past the start {money(mkt, a['start'])}, "
+                             f"{'DOWN (NO)' if not want_up else 'UP (YES)'} still favored")
+                return ". ".join(parts) + "."
+            parts.append(f"Lean BUY {'UP (YES)' if want_up else 'DOWN (NO)'}, ends {'above' if want_up else 'below'} {money(mkt, a['start'])}" if cost < 0.8
+                         else f"{'UP (YES)' if want_up else 'DOWN (NO)'} is already priced in, skip")
         else:
             lead_up = a["p_up"] >= 0.5; lead = max(a["p_up"], 1 - a["p_up"])
             if lead >= 0.9:
-                parts.append(f"NEAR LOCK: {'UP' if lead_up else 'DOWN'} {lead:.0%} (ends {'above' if lead_up else 'below'} "
+                parts.append(f"NEAR LOCK: BUY {'UP (YES)' if lead_up else 'DOWN (NO)'} {lead:.0%} (ends {'above' if lead_up else 'below'} "
                              f"{money(mkt, a['start'])}, {T:.0f} min left; market already near {max(a['ya'], a['na']):.0%})")
             elif lead >= 0.75:
-                parts.append(f"HIGH CONFIDENCE: {'UP' if lead_up else 'DOWN'} {lead:.0%} so far ({T:.0f} min left)")
+                parts.append(f"HIGH CONFIDENCE: {'UP (YES)' if lead_up else 'DOWN (NO)'} {lead:.0%} so far ({T:.0f} min left)")
             elif T < 4: parts.append(f"window ends in {T:.0f} min, wait for the next one")
             else: parts.append("wait")
     return ". ".join(parts) + "."
+
+
+def fc_conflict(st, mkt, up):
+    """True if a validated 10-min forecast strongly points the other way."""
+    a = (st.get("ana") or {}).get(mkt) or {}
+    return bool(a.get("fc_ok") and "fc_p" in a and max(a["fc_p"], 1 - a["fc_p"]) >= 0.6 and (a["fc_p"] >= 0.5) != up)
 
 
 def lock_call(st, mkt, a, lv, cal):
@@ -1280,7 +1318,7 @@ def spike_alert(st, mkt, a, lv, cal, cool):
            f"{money(mkt, a['px'])}, {move}. {a['spark']}\n"
            f"Typical range for the next {a['T']:.0f} min: about {money(mkt, a['rng'])}.\n"
            + (f"Do not chase: on {NAME[mkt]}, buying after a spike starts has lost money in testing ({sp.get('test_roi', 0):+.0%})."
-              if sp.get("n") else f"Untested: betting {'UP' if up else 'DOWN'} rides it ({a['T']:.0f} min left)."), "high", mkt)
+              if sp.get("n") else f"Untested: BUY {'UP (YES)' if up else 'DOWN (NO)'} rides it ({a['T']:.0f} min left)."), "high", mkt)
     return False
 
 
@@ -1295,7 +1333,7 @@ def fast_entry(mkt, d1, fp, st, cool):
     left = (c["close"] - pd.Timestamp.now(tz="UTC")).total_seconds() / 60
     if left < 4: return False
     side = "YES" if up else "NO"; cost = c["ya"] if up else c["na"]
-    if not 0 < cost < 0.9: return False
+    if not 0 < cost < 0.9 or fc_conflict(st, mkt, up): return False
     cx = live_ctx(d1); cx["px"] = px
     fu = fair_up(px * lv.r, c["k"], left, cx["sig"]); p = (fu if up else 1 - fu) if fu is not None else 0.5
     t = fp.get("test") or {}
@@ -1333,6 +1371,7 @@ def k15_call(mkt, m, px, st, lv, cal, night=False):
     tested = cal.get(f"night_{kind}_ok" if night else f"{kind}_ok")
     a_ = (st.get("ana") or {}).get(mkt) or {}
     if a_.get("score", 0) >= 70 and a_.get("dir") and (a_["dir"] > 0) != up: return False  # never fade a live spike
+    if fc_conflict(st, mkt, up): return False                                                # never fight the forecast
     if kind == "fav" and not tested: return False                       # edge picks only where the edge held on unseen data
     if kind == "ls" and mkt not in MARKETS and mkt not in METALS: return False  # untested longshots only on commodities
     xe = regime_extra(st, mkt) + (0.02 if st.get("thin", {}).get(mkt) else 0)
@@ -1379,6 +1418,7 @@ def drift_call(mkt, m, px, st, lv, cal):
     sig = float(np.log(m.Close).diff().tail(390).std())
     if not sig or abs(log(px * lv.r / c["k"])) / (sig * sqrt(T)) > 0.3: return False
     up = d["dir"] == "UP"; side = "YES" if up else "NO"; cost = c["ya"] if up else c["na"]
+    if fc_conflict(st, mkt, up): return False
     if not (0 < cost < 0.8 and d["p"] - cost - kfee(cost) >= 0.02 + regime_extra(st, mkt)): return False
     cx = live_ctx(m); cx["px"] = px
     why = f"{SH_SESS[session(now)]} session tends {d['dir'].lower()}, {d['p']:.0%} win rate, " + ctx_short(cx, up)
