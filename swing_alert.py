@@ -532,51 +532,70 @@ def pulse(data, st):
 def s_pnl(pos, px): return pos["side"] * (px - pos["entry"]) / pos["entry"] * 100
 
 
+def snapshots():
+    """Latest trade price per ETF (real-time, one request)."""
+    hdr = {"APCA-API-KEY-ID": os.environ["ALPACA_KEY"], "APCA-API-SECRET-KEY": os.environ["ALPACA_SECRET"]}
+    r = requests.get("https://data.alpaca.markets/v2/stocks/snapshots", headers=hdr, timeout=10,
+                     params={"symbols": ",".join(v[1] for v in MARKETS.values()), "feed": os.getenv("ALPACA_FEED", "iex")})
+    r.raise_for_status()
+    return {k: (v.get("latestTrade") or {}).get("p") for k, v in r.json().items()}
+
+
 def live():
-    """Poll 1-minute bars; instant spike/dip/stop alerts; run strategy at each 15m bar close; pulse report."""
+    """Watch prices every TICK_SEC (15s): instant alerts on events; strategy on each closed bar; check-in on the clock."""
     if not ALPACA: sys.exit("live mode needs ALPACA_KEY / ALPACA_SECRET")
-    t0, maxmin, pulse_min = time.time(), float(os.getenv("LIVE_MAX_MIN") or 1e9), int(os.getenv("PULSE_MIN") or 5)
-    cool, data, last_scan, last_pulse, params = {}, {}, None, None, load_params()
-    print(f"live mode: max {maxmin} min, pulse every {pulse_min} min")
+    t0, maxmin = time.time(), float(os.getenv("LIVE_MAX_MIN") or 1e9)
+    pulse_min, tick = int(os.getenv("PULSE_MIN") or 30), int(os.getenv("TICK_SEC") or 15)
+    cool, data, params = {}, {}, load_params()
+    last_min = last_hour = last_pulse = None
+    print(f"live mode: tick {tick}s, check-in every {pulse_min} min on the clock")
     while (time.time() - t0) / 60 < maxmin:
         now = dt.datetime.now(ET)
         if now.weekday() >= 5 or not (LIVE_OPEN <= now.time() <= LIVE_CLOSE):
             if os.getenv("LIVE_MAX_MIN") and now.time() > LIVE_CLOSE: print("market closed, exiting"); break
             time.sleep(60); continue
         try:
-            since = min((d.index[-1] for d in data.values()), default=None)
-            since = (since - pd.Timedelta(minutes=3)) if since is not None else pd.Timestamp.now(tz="UTC") - pd.Timedelta(days=7)
-            for sym, df in fetch_1m(since).items():
-                data[sym] = pd.concat([data.get(sym), df]).pipe(lambda x: x[~x.index.duplicated(keep="last")]).tail(6000)
-            st = load_state(); changed = False
-            for e in events(hours=0.25):
-                if (k := f"EV15|{e}|{now.date()}") not in st.setdefault("sent", []):
-                    st["sent"].append(k); notify("⏰ REPORT IN 15 MIN", e + "\nPrices can jump hard. Avoid new bets until after.", "urgent")
+            st = load_state(); st.setdefault("sent", []); changed = False
+            minute = now.replace(second=0, microsecond=0)
+            if minute != last_min and now.second >= 3:  # new minute: pull closed 1-min bars, run strategies
+                last_min = minute
+                since = min((d.index[-1] for d in data.values()), default=None)
+                since = (since - pd.Timedelta(minutes=3)) if since is not None else pd.Timestamp.now(tz="UTC") - pd.Timedelta(days=7)
+                for sym, df in fetch_1m(since).items():
+                    data[sym] = pd.concat([data.get(sym), df]).pipe(lambda x: x[~x.index.duplicated(keep="last")]).tail(6000)
+                for e in events(hours=0.25):
+                    if (k := f"EV15|{e}|{now.date()}") not in st["sent"]:
+                        st["sent"].append(k); notify("⏰ REPORT IN 15 MIN", e + "\nPrices can jump hard. Avoid new bets until after.", "urgent")
+                sent = set(st["sent"])
+                for mkt, (_, etf) in MARKETS.items():
+                    p = {**DEFAULT, **params.get(mkt, {})}; n = BARS[p["interval"]][1]
+                    if n <= 15 and etf in data:
+                        m = data[etf]; b = resample(m[m.index + pd.Timedelta(minutes=1) <= pd.Timestamp.now(tz="UTC")], n)
+                        if len(b) > 60 and str(b.index[-1]) != st.get("last", {}).get(mkt):
+                            had = mkt in st.get("pos", {}); process(mkt, indicators(b), p, st, sent)
+                            changed |= had != (mkt in st.get("pos", {}))
+                st["sent"] = sorted(sent)[-300:]
+            px = snapshots()  # every tick: live price → spike/dip, trend, stop/target checks
             for mkt, (_, etf) in MARKETS.items():
-                if etf in data:
-                    m = data[etf]; m = m[m.index + pd.Timedelta(minutes=1) <= pd.Timestamp.now(tz="UTC")]  # closed 1m bars
-                    changed |= bool(fast_checks(mkt, m, st, cool))
-            sent = set(st.get("sent", []))
-            for mkt, (_, etf) in MARKETS.items():  # strategy on every closed bar, built from live 1-min data
-                p = {**DEFAULT, **params.get(mkt, {})}; n = BARS[p["interval"]][1]
-                if n <= 15 and etf in data:
-                    m = data[etf]; b = resample(m[m.index + pd.Timedelta(minutes=1) <= pd.Timestamp.now(tz="UTC")], n)
-                    if len(b) > 60 and str(b.index[-1]) != st.get("last", {}).get(mkt):
-                        had = mkt in st.get("pos", {}); process(mkt, indicators(b), p, st, sent)
-                        changed |= had != (mkt in st.get("pos", {}))
-            st["sent"] = sorted(sent)[-300:]
+                if etf not in data or not px.get(etf): continue
+                m = data[etf]; m = m[m.index + pd.Timedelta(minutes=1) <= pd.Timestamp.now(tz="UTC")]
+                cur = pd.Timestamp.now(tz="UTC").floor("min"); p_ = float(px[etf])
+                row = pd.DataFrame({"Open": p_, "High": p_, "Low": p_, "Close": p_, "Volume": m.Volume.iloc[-1]}, index=[cur])
+                changed |= bool(fast_checks(mkt, pd.concat([m, row]), st, cool))
             json.dump(st, open(STATE_FILE, "w"), indent=1, default=float)
             if changed: persist("bot: live trade")
-            if now.minute < 3 and now.hour != last_scan and now.second >= 20:  # hourly: refresh params + 1h strategies
-                last_scan = now.hour
+            if now.minute < 3 and now.hour != last_hour:  # hourly: refresh params + 1h strategies
+                last_hour = now.hour
                 if os.getenv("GIT_PERSIST"): os.system("git pull -q --rebase origin main"); params = load_params()
                 hourly = [k for k in MARKETS if BARS[{**DEFAULT, **params.get(k, {})}["interval"]][1] > 15]
                 if hourly: scan(hourly); persist()
-            if pulse_min and (last_pulse is None or (now - last_pulse).total_seconds() >= pulse_min * 60):
-                last_pulse = now; pulse(data, load_state())
+            slot = minute.replace(minute=minute.minute - minute.minute % pulse_min) if pulse_min else None
+            if pulse_min and slot != last_pulse and data:
+                if last_pulse is not None or now.minute % pulse_min == 0: pulse(data, load_state())
+                last_pulse = slot
         except Exception as e:
             print("live error:", e)
-        time.sleep(max(5, 62 - dt.datetime.now().second))  # wake ~2s after each new minute
+        time.sleep(max(1, tick - time.time() % tick))
     persist()
 
 
