@@ -368,7 +368,7 @@ def doctor():
 
 
 # ---------------- live (minute-by-minute) ----------------
-MINMOVE = {"BRENT": 0.5, "WTI": 0.5, "NATGAS": 1.0}  # min % move in 5 min to count as a spike/dip
+MINMOVE = {"BRENT": 0.35, "WTI": 0.35, "NATGAS": 0.7}  # min % move in 5 min to count as a spike/dip
 LIVE_OPEN, LIVE_CLOSE = dt.time(9, 25), dt.time(16, 5)
 
 
@@ -415,7 +415,7 @@ def fast_checks(mkt, m, st, cool):
     sig = np.log(c).diff().tail(780).std()
     r5 = np.log(px / c.iloc[-6]); z = r5 / (sig * np.sqrt(5) + 1e-12)
     vr = m.Volume.tail(5).mean() / (m.Volume.tail(780).mean() + 1e-9)
-    if abs(z) >= 3 and abs(r5) * 100 >= MINMOVE[mkt]:
+    if abs(z) >= 2.5 and abs(r5) * 100 >= MINMOVE[mkt]:
         up = r5 > 0
         fire("spike", f"{'⚡ SPIKE' if up else '🩸 DIP'} {mkt} {r5 * 100:+.2f}% in 5 min",
              f"{etf} {px:.2f} | {abs(z):.1f}σ move | volume {vr:.1f}× normal\n"
@@ -425,6 +425,13 @@ def fast_checks(mkt, m, st, cool):
     if len(b5) > 60:  # pre-move: 5-min volatility coiled + volume waking up + momentum turning
         d5 = indicators(b5); r, pr = d5.iloc[-1], d5.iloc[-2]; vr3 = m.Volume.tail(3).mean() / (m.Volume.tail(390).mean() + 1e-9)
         bias = "UP" if r.mom > 0 and r.mom > pr.mom else "DOWN" if r.mom < 0 and r.mom < pr.mom else None
+        e9, e21 = b5.Close.ewm(span=9, adjust=False).mean(), b5.Close.ewm(span=21, adjust=False).mean()
+        x_now, x_prev = np.sign(e9.iloc[-1] - e21.iloc[-1]), np.sign(e9.iloc[-2] - e21.iloc[-2])
+        if x_now != x_prev and x_now * r.mom > 0:  # 5-min trend flip confirmed by momentum
+            up = x_now > 0
+            fire("trend", f"{'↗️' if up else '↘️'} {mkt} trend turning {'UP' if up else 'DOWN'}",
+                 f"{etf} {px:.2f}: 5-min EMA9 crossed {'above' if up else 'below'} EMA21, momentum {r.mom:+.3f}, "
+                 f"RSI {r.rsi:.0f}.\n{'Dips may get bought' if up else 'Rallies may get sold'}; wait for entry alert to act.", "high", 20)
         if r.sq and r.sq_bars >= 6 and vr3 > 1.5 and bias:
             fire("premove", f"🎯 {mkt} pre-move: leaning {bias}",
                  f"{etf} {px:.2f}: 5-min range squeezed {int(r.sq_bars)} bars, volume waking {vr3:.1f}×, momentum turning "
@@ -465,7 +472,7 @@ def s_pnl(pos, px): return pos["side"] * (px - pos["entry"]) / pos["entry"] * 10
 def live():
     """Poll 1-minute bars; instant spike/dip/stop alerts; run strategy at each 15m bar close; pulse report."""
     if not ALPACA: sys.exit("live mode needs ALPACA_KEY / ALPACA_SECRET")
-    t0, maxmin, pulse_min = time.time(), float(os.getenv("LIVE_MAX_MIN") or 1e9), int(os.getenv("PULSE_MIN") or 15)
+    t0, maxmin, pulse_min = time.time(), float(os.getenv("LIVE_MAX_MIN") or 1e9), int(os.getenv("PULSE_MIN") or 5)
     cool, data, last_scan, last_pulse, params = {}, {}, None, None, load_params()
     print(f"live mode: max {maxmin} min, pulse every {pulse_min} min")
     while (time.time() - t0) / 60 < maxmin:
