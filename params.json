@@ -221,8 +221,8 @@
      0.306
     ],
     "1.0|T-|V+|F+|run": [
-     90,
-     0.178
+     91,
+     0.176
     ],
     "1.0|T-|V+|F+|turn": [
      49,
@@ -264,16 +264,17 @@
    "setups": 2300,
    "src": "yahoo futures 30d",
    "ls_test_n": 8,
-   "ls_test_roi": -1.102,
+   "ls_test_roi": -1.101,
    "ls_ok": false,
-   "fav_test_n": 131,
-   "fav_test_roi": 0.044,
+   "fav_test_n": 133,
+   "fav_test_roi": 0.048,
    "fav_ok": true,
    "active": true,
    "ihm": {
     "n": 273,
-    "hit": 0.451,
-    "hit_recent": 0.476,
+    "dir": "reverse",
+    "hit": 0.549,
+    "hit_recent": 0.524,
     "ok": false
    }
   },
@@ -308,8 +309,8 @@
      0.194
     ],
     "1.0|T-|V+|F-|turn": [
-     209,
-     0.191
+     208,
+     0.192
     ],
     "1.0|T-|V-|F-|run": [
      71,
@@ -336,8 +337,8 @@
      0.1
     ],
     "99|T-|V+|F-|turn": [
-     51,
-     0.02
+     52,
+     0.019
     ]
    },
    "setups": 2634,
@@ -351,16 +352,17 @@
    "active": true,
    "ihm": {
     "n": 697,
-    "hit": 0.449,
-    "hit_recent": 0.471,
+    "dir": "reverse",
+    "hit": 0.551,
+    "hit_recent": 0.529,
     "ok": false
    }
   },
   "NATGAS": {
    "table": {
     "1.0|T+|V+|F-|run": [
-     49,
-     0.204
+     50,
+     0.2
     ],
     "1.0|T+|V-|F+|run": [
      53,
@@ -379,16 +381,16 @@
      0.227
     ],
     "1.0|T-|V+|F+|turn": [
-     42,
-     0.238
+     41,
+     0.244
     ],
     "1.0|T-|V+|F-|run": [
      419,
      0.174
     ],
     "1.0|T-|V+|F-|turn": [
-     123,
-     0.154
+     124,
+     0.153
     ],
     "1.0|T-|V-|F-|run": [
      50,
@@ -411,20 +413,21 @@
      0.035
     ]
    },
-   "setups": 2235,
+   "setups": 2236,
    "src": "yahoo futures 30d",
    "ls_test_n": 0,
    "ls_test_roi": 0,
    "ls_ok": false,
-   "fav_test_n": 178,
-   "fav_test_roi": 0.061,
+   "fav_test_n": 179,
+   "fav_test_roi": 0.055,
    "fav_ok": true,
    "active": true,
    "ihm": {
     "n": 661,
-    "hit": 0.439,
-    "hit_recent": 0.417,
-    "ok": false
+    "dir": "reverse",
+    "hit": 0.561,
+    "hit_recent": 0.583,
+    "ok": true
    }
   }
  }
