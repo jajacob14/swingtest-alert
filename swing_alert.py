@@ -313,8 +313,11 @@ def ihm_stats(mkt):
             rows.append((np.sign(sig), np.sign(g[945] / g[915] - 1)))
         if 945 in g: prev_close = g[945]
     if len(rows) < 60: return {"n": len(rows)}
-    a = np.array(rows); hit = (a[:, 0] == a[:, 1]).astype(float); cut = int(len(hit) * 0.7)
-    res = dict(n=len(hit), hit=round(float(hit.mean()), 3), hit_recent=round(float(hit[cut:].mean()), 3))
+    a = np.array(rows); same = (a[:, 0] == a[:, 1]).astype(float); cut = int(len(same) * 0.7)
+    direction = 1 if same[:cut].mean() >= 0.5 else -1          # learned on older 70%: follow or reverse
+    hit = same if direction > 0 else 1 - same
+    res = dict(n=len(hit), dir="follow" if direction > 0 else "reverse", hit=round(float(hit.mean()), 3),
+               hit_recent=round(float(hit[cut:].mean()), 3))
     res["ok"] = bool(res["hit"] >= 0.54 and res["hit_recent"] >= 0.53)
     return res
 
@@ -944,7 +947,7 @@ def ihm_call(mkt, m, px, st, lv, cal):
     if not len(a) or not len(b): return False
     sig = b.iloc[-1] / a.iloc[-1] - 1; c = k15(mkt)
     if not c or abs(sig) < 0.001: return False
-    up = sig > 0; side = "YES" if up else "NO"; cost = c["ya"] if up else c["na"]; p = ih["hit"]
+    up = (sig > 0) == (ih.get("dir", "follow") == "follow"); side = "YES" if up else "NO"; cost = c["ya"] if up else c["na"]; p = ih["hit"]
     if not (0 < cost < 0.9 and p - cost - kfee(cost) >= 0.02): return False
     st["ihm_day"][mkt] = str(now.date())
     pos = dict(side=1 if up else -1, entry=px, stop=0, tgt=0, best=px, n=0, t0=time.time(), kind="ihm",
@@ -952,9 +955,9 @@ def ihm_call(mkt, m, px, st, lv, cal):
     st.setdefault("lpos", {})[mkt] = pos; n = new_trade(st, mkt, pos, lv, px)
     notify(f"#{n} {NAME[mkt]} · 📈 CLOSE-MOMENTUM {side} {cost * 100:.0f}¢",
            f"{'3rd half-hour (EIA day)' if wed else 'First half-hour (incl. overnight)'} was {sig * 100:+.2f}% → "
-           f"last half-hour tends to follow\n👉 Kalshi 15-min ({c['close'].tz_convert(ET):%-I:%M}): BUY {side} at ≤{cost * 100 + 2:.0f}¢\n"
+           f"last half-hour tends to {'FOLLOW' if ih.get('dir') == 'follow' else 'REVERSE'} it\n👉 Kalshi 15-min ({c['close'].tz_convert(ET):%-I:%M}): BUY {side} at ≤{cost * 100 + 2:.0f}¢\n"
            f"📊 {ih['n']} days tested: same direction {p:.0%} (recent {ih['hit_recent']:.0%}) vs cost {cost * 100:.0f}¢ + fee\n"
-           f"Source: Wen et al. 2021/2023 oil intraday-momentum studies\nPlan: hold to settle. #{n} result will follow.", "urgent", mkt)
+           f"Based on Wen et al. 2021/2023 (direction re-learned on recent data)\nPlan: hold to settle. #{n} result will follow.", "urgent", mkt)
     return True
 
 
