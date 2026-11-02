@@ -561,11 +561,13 @@ def busy(st, mkt): return any(mkt in st.get(k, {}) for k in ("pos", "fpos", "lpo
 
 
 def sell_msg(mkt, pos, title, px, lv, extra=""):
-    entry = lv(pos["entry"]); now = lv(px); worked = s_pnl(pos, px) > 0
-    notify(f"{badge((pos.get('k') or {}).get('cost'))} #{pos.get('id', '?')} {NAME[mkt]} · {title}",
-           f"Closes signal #{pos.get('id', '?')}: {'BUY UP' if pos['side'] > 0 else 'BUY DOWN'} at {pos.get('at_px', entry)} ({pos.get('at', '')})\n"
-           f"Price now {now} · {'✅ signal worked' if worked else '❌ signal failed'}"
-           + (contract_value(pos.get("k")) or "") + extra, "urgent", mkt)
+    ktxt, verdict = contract_status(pos.get("k"))
+    if verdict is None: verdict = s_pnl(pos, px) > 0
+    k = pos.get("k") or {}
+    what = f"{k['side']} at {k['cost'] * 100:.0f}¢" if k else ("UP" if pos["side"] > 0 else "DOWN")
+    notify(f"{badge(k.get('cost'))} #{pos.get('id', '?')} {NAME[mkt]} · {title}",
+           f"Closes #{pos.get('id', '?')}: {what} ({pos.get('at', '')})\n"
+           + ("✅ worked" if verdict else "❌ did not work") + (ktxt if k else f" · price now {lv(px)}") + extra, "urgent", mkt)
 
 
 K15 = {"BRENT": "KXBRENT15M", "WTI": "KXWTI15M", "NATGAS": "KXNATGAS15M"}
@@ -604,7 +606,7 @@ def pick15(mkt, up, lv, px_etf):
     left = (c["close"] - pd.Timestamp.now(tz="UTC")).total_seconds() / 60
     end = c["close"].tz_convert(ET).strftime("%-I:%M")
     side, cost = ("YES", c["ya"]) if up else ("NO", c["na"])
-    head = f"⏱ Kalshi 15-min ({end} close)\n    Start price {money(mkt, c['k'])} · now {lv_now}"
+    head = f"⏱ Kalshi 15-min ({end} close)\nStart {money(mkt, c['k'])} · now {lv_now}"
     if left < 4:
         return head + f"\n    Too late for this one ({left:.0f} min left).\n    👉 Next window: BUY {side} right when it opens", None
     if not 0 < cost < 1: return head + "\n    (no price offered right now)", None
@@ -612,24 +614,27 @@ def pick15(mkt, up, lv, px_etf):
     val = ""
     if fu is not None:
         fair = (fu if up else 1 - fu) * 100; edge = fair - cost * 100
-        val = (f"\n    Odds right now ≈{fair:.0f}% vs cost {cost * 100:.0f}¢ → "
-               + ("✅ good value" if edge >= 3 else "⚠️ pricey: odds don't justify it" if edge <= -8 else "≈ fair price"))
-    return (head + f"\n    👉 BUY {side} · {cost * 100:.0f}¢ → pays $1 if price ends {'at/above' if up else 'below'} start" + val,
+        val = (f"\nOdds ≈{fair:.0f}% vs {cost * 100:.0f}¢ → "
+               + ("✅ good value" if edge >= 3 else "⚠️ pricey" if edge <= -8 else "≈ fair price"))
+    return (head + f"\n👉 BUY {side} at {cost * 100:.0f}¢ (wins if it ends {'≥' if up else '<'} start)" + val,
             dict(ticker=c["ticker"], side=side, cost=cost, k=c["k"], close=str(c["close"])))
 
 
-def contract_value(info):
-    """What your Kalshi contract is worth now (best bid you can sell to)."""
-    if not info: return ""
+def contract_status(info):
+    """(text, verdict) from Kalshi itself: verdict True/False = contract is up/down vs entry (or won/lost)."""
+    if not info: return "", None
     try:
         m = requests.get(f"{KALSHI}/markets/{info['ticker']}", timeout=10).json()["market"]
-    except Exception: return ""
+    except Exception: return "", None
     paid = info["cost"] * 100
     if m.get("result"):
         won = m["result"].lower() == info["side"].lower()
-        return f"\nKalshi {info['side']} contract: window closed, {'paid out $1 ✅' if won else 'expired worthless ❌'}"
+        return f"\nKalshi {info['side']}: settled {'$1 ✅' if won else '$0 ❌'} (bought at {paid:.0f}¢)", won
     bid = float(m.get("yes_bid_dollars" if info["side"] == "YES" else "no_bid_dollars") or 0) * 100
-    return f"\nKalshi {info['side']} contract: {paid:.0f}¢ at signal → {bid:.0f}¢ now ({bid - paid:+.0f}¢)"
+    return f"\nKalshi {info['side']}: {paid:.0f}¢ → {bid:.0f}¢ now ({bid - paid:+.0f}¢)", bid > paid
+
+
+def contract_value(info): return contract_status(info)[0]
 
 
 def hold_txt(p):
@@ -836,10 +841,11 @@ def fast_entry(mkt, d1, fp, st, cool):
     if not (L[-1] or S[-1]) or st.setdefault("flast", {}).get(mkt) == bar: return False
     st["flast"][mkt] = bar
     up, r = bool(L[-1]), d1.iloc[-1]; lv = kconv(mkt, r.Close)
-    pos = open_pos(1 if up else -1, r.Close, r.atr, fp); pos.update(t0=time.time(), atr=r.atr, trail=fp["trail"], hold=fp["hold"])
+    txt, info = pick15(mkt, up, lv, r.Close)
+    if not info: return False  # too late in the window or no contract: no call
+    pos = open_pos(1 if up else -1, r.Close, r.atr, fp); pos.update(t0=time.time(), atr=r.atr, trail=fp["trail"], hold=fp["hold"], k=info)
     st.setdefault("fpos", {})[mkt] = pos; cool[(mkt, "spike")] = cool[(mkt, "trend")] = time.time()
     t = fp.get("test")
-    txt, pos["k"] = pick15(mkt, up, lv, r.Close)
     n = new_trade(st, mkt, pos, lv, r.Close); aim = r.Close + (1 if up else -1) * 2 * r.atr
     notify(f"{badge((pos.get('k') or {}).get('cost'))} #{n} {NAME[mkt]} · {'BUY signal ⬆️ spike starting' if up else 'BUY signal ⬇️ drop starting'}",
            f"{txt}\n🎯 Exit expected near {lv(aim)} (could run further)\n🛑 Exit early if price hits {lv(pos['stop'])}\n"
@@ -864,11 +870,10 @@ def manage_fast(mkt, px, st):
     elif time.time() - pos["t0"] > pos["hold"] * 60 or dt.datetime.now(ET).time() >= dt.time(15, 55): why = "DONE"
     k = pos.get("k")
     if not why and k and k.get("close") and (pd.Timestamp(k["close"]) - pd.Timestamp.now(tz="UTC")).total_seconds() < 75:
-        lv = kconv(mkt, px); kp = px * lv.r
-        win = (kp >= k["k"]) if k["side"] == "YES" else (kp < k["k"])
-        sell_msg(mkt, pos, "SELL signal · 15-min window ending", px, lv,
-                 f"\nWindow start {money(mkt, k['k'])}: {k['side']} is " + ("WINNING. Holding to settle pays $1; selling now locks the current price."
-                 if win else "LOSING. Selling now recovers what's left before it expires."))
+        lv = kconv(mkt, px); c15 = k15(mkt)
+        bid = (c15["yb"] if k["side"] == "YES" else c15["nb"]) if c15 and c15["ticker"] == k["ticker"] else 0
+        sell_msg(mkt, pos, "⏱ window ending: " + ("HOLD to collect $1" if bid >= 0.5 else "SELL what's left"), px, lv,
+                 f"\n{k['side']} {'winning' if bid >= 0.5 else 'losing'} at {bid * 100:.0f}¢")
         del st["fpos"][mkt]; return True
     if not why: return False
     lv, mins = kconv(mkt, px), (time.time() - pos["t0"]) / 60
@@ -1020,15 +1025,15 @@ def manage_ls(mkt, px, st, lv):
     if not pos: return False
     k = pos["k"]; c = k15(mkt); left = (pd.Timestamp(k["close"]) - pd.Timestamp.now(tz="UTC")).total_seconds() / 60
     if not c or c["ticker"] != k["ticker"]:
-        sell_msg(mkt, pos, "RESULT · 15-min window settled", px, lv); del st["lpos"][mkt]; return True
-    bid = c["yb"] if k["side"] == "YES" else c["nb"]; kp = px * lv.r
-    win = (kp >= k["k"]) if k["side"] == "YES" else (kp < k["k"]); title = None
+        sell_msg(mkt, pos, "RESULT · window settled", px, lv); del st["lpos"][mkt]; return True
+    bid = c["yb"] if k["side"] == "YES" else c["nb"]
+    win = bid >= 0.5; title = None
     if pos.get("kind") == "ls" and bid >= min(0.95, max(2.5 * k["cost"], k["cost"] + 0.25)):
         title = f"SELL signal 💰 cash out {k['cost'] * 100:.0f}¢ → {bid * 100:.0f}¢ ({bid / k['cost']:.1f}×)"
-    elif pos.get("kind") == "fav" and not win and left > 1.5:
-        title = f"SELL signal 🛑 price crossed back over the start ({bid * 100:.0f}¢ now)"
+    elif pos.get("kind") == "fav" and bid < 0.4 and left > 1.5:
+        title = "SELL signal 🛑 turned against it"
     elif left < 1.25:
-        title = "HOLD to settle: winning ✅ pays $1" if win else "SELL signal ⏱ window ending, not winning"
+        title = "⏱ window ending: " + ("HOLD to collect $1" if win else "SELL what's left")
     if not title: return False
     sell_msg(mkt, pos, title, px, lv); del st["lpos"][mkt]; return True
 
