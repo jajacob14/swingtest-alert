@@ -1,8 +1,7 @@
 name: commodity-scan
 on:
   schedule:
-    - cron: "15 13 * * 1-5"    # live session part 1 (waits for 9:25 ET open)
-    - cron: "45 18 * * 1-5"    # live session part 2 (queues behind part 1, runs to 4:05 ET close)
+    - cron: "7 0,6,12,18 * * 0-5"   # live 24/5: four ~6h runs chain back-to-back (Sun 6pm → Fri 5pm ET)
     - cron: "40 12 * * 1-5"    # morning brief ~7:40 ET
     - cron: "50 18 * * 1-5"    # afternoon brief ~1:50 ET
     - cron: "30 21 * * 1-5"    # daily re-optimize after the close
@@ -11,7 +10,7 @@ on:
       cmd: {description: "live | scan | brief | optimize | doctor | testnotify", default: live}
 permissions: {contents: write}
 concurrency:
-  group: swing-${{ github.event.schedule == '15 13 * * 1-5' || github.event.schedule == '45 18 * * 1-5' || inputs.cmd == 'live' }}
+  group: swing-${{ github.event.schedule == '7 0,6,12,18 * * 0-5' || inputs.cmd == 'live' }}
   cancel-in-progress: false
 jobs:
   run:
@@ -24,8 +23,8 @@ jobs:
       - run: pip install -q -r requirements.txt && git config user.name bot && git config user.email bot@users.noreply.github.com
       - run: python swing_alert.py "$CMD"
         env:
-          CMD: ${{ inputs.cmd || (github.event.schedule == '30 21 * * 1-5' && 'optimize') || ((github.event.schedule == '15 13 * * 1-5' || github.event.schedule == '45 18 * * 1-5') && 'live') || 'brief' }}
-          LIVE_MAX_MIN: "340"
+          CMD: ${{ inputs.cmd || (github.event.schedule == '30 21 * * 1-5' && 'optimize') || (github.event.schedule == '7 0,6,12,18 * * 0-5' && 'live') || 'brief' }}
+          LIVE_MAX_MIN: "352"
           PYTHONUNBUFFERED: "1"
           GIT_PERSIST: "1"
           PULSE_MIN: ${{ vars.PULSE_MIN }}

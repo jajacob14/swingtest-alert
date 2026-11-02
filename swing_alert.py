@@ -273,6 +273,28 @@ def ctx_key(dist, bdir, trend, px, vwap, turning, flow=0.0):
     return f"{ls_bucket(dist)}|{tr}|{vw}|{fl}|{'turn' if turning else 'run'}"
 
 
+def session(ts_et):
+    """Trading session by ET clock: US day, evening (post-settle + 6pm reopen), Asia, Europe."""
+    m = ts_et.hour * 60 + ts_et.minute
+    return "US" if 570 <= m < 960 else "EVE" if 960 <= m < 1200 else "EU" if 180 <= m < 570 else "ASIA"
+
+
+SESS_TXT = {"US": "US day session", "EVE": "Evening session (after settlement, 6pm reopen)",
+            "ASIA": "Asian session (thin trading)", "EU": "European session (London digests overnight news)"}
+
+
+def event_window(mkt, now_et, mins_ahead=15):
+    """Known jumpy windows (research-based). Returns a reason string or ''."""
+    end = now_et + dt.timedelta(minutes=mins_ahead); m0, wd = now_et.hour * 60 + now_et.minute, now_et.weekday()
+    def hit(a, b): return a <= m0 <= b or a <= end.hour * 60 + end.minute <= b
+    if events(now_et, hours=mins_ahead / 60 + 0.05): return "EIA report inside this session"
+    if mkt != "NATGAS" and wd == 1 and hit(16 * 60 + 15, 17 * 60): return "API oil inventory report (Tue 4:30 PM): after-hours jumps"
+    if hit(18 * 60, 18 * 60 + 30): return "6 PM reopen: thin, gappy trading"
+    if mkt == "NATGAS" and (hit(23 * 60 + 15, 23 * 60 + 59) or hit(90, 150) or hit(5 * 60 + 15, 5 * 60 + 59)):
+        return "Weather-model update (GFS/European): nat gas jumps on forecast changes"
+    return ""
+
+
 def ls_rows(df, rth=True):
     """Per 15-min window: first 'turning' and first 'running' minute (3-12 min left) where price is ≥0.5σ√T
     from the window start. won = price ended back across the start (the bounce side wins)."""
@@ -291,7 +313,9 @@ def ls_rows(df, rth=True):
     ok = full & (T >= 3) & (T <= 12) & (z.abs() >= 0.5) & sig.notna()
     x = pd.DataFrame({"w": w, "dist": z.abs(), "won": np.where(bdir > 0, end >= start, end < start),
                       "key": [ctx_key(a, b, t, p, v, u, f) for a, b, t, p, v, u, f in zip(z.abs(), bdir, trend, c, vwap, turning, flow.fillna(0))],
-                      "turn": turning})[ok]
+                      "turn": turning,
+                      "skey": [f"{session(t)}|{ls_bucket(a)}|{'T+' if tr == b else 'T-'}|{'turn' if u else 'run'}"
+                               for t, a, b, tr, u in zip(et, z.abs(), bdir, trend, turning)]})[ok]
     return x.groupby(["w", "turn"]).head(1)
 
 
@@ -329,7 +353,22 @@ def calibrate(mkt):
         print(mkt, "futures 1m failed:", e); rows = ls_rows(fetch(mkt, "1m", 60)); src = "etf 60d"
     cut = int(len(rows) * 0.7); tr, te = rows.iloc[:cut], rows.iloc[cut:]
     tab = {k: [len(g), round(float(g.won.mean()), 3)] for k, g in tr.groupby("key") if len(g) >= 25}
-    res = dict(table=tab, setups=len(rows), src=src)
+    stab = {k: [len(g), round(float(g.won.mean()), 3)] for k, g in tr.groupby("skey") if len(g) >= 25}
+    res = dict(table=tab, stable=stab, setups=len(rows), src=src)
+    nt = te[~te.skey.str.startswith("US")]
+    for typ in ("ls", "fav"):  # overnight validation on unseen 30%, session-aware table
+        pnl = cost = n = 0
+        for _, r in nt.iterrows():
+            cell = stab.get(r.skey)
+            if not cell or (typ == "ls") != bool(r.turn): continue
+            fair_b = _phi(-r.dist); price = (fair_b if typ == "ls" else 1 - fair_b) + 0.02
+            p = cell[1] if typ == "ls" else 1 - cell[1]; won = r.won if typ == "ls" else not r.won
+            if (price <= LS_MAX_COST if typ == "ls" else price < 0.92) and p - price - kfee(price) >= (LS_MIN_EDGE if typ == "ls" else FAV_MIN_EDGE):
+                pnl += won - price - kfee(price); cost += price; n += 1
+        res[f"night_{typ}_n"], res[f"night_{typ}_roi"] = n, round(pnl / cost, 3) if cost else 0
+        res[f"night_{typ}_ok"] = bool(n >= 15 and cost and pnl / cost > 0.03)
+    res["bounce_by_session"] = {sname: round(float(g.won.mean()), 3) for sname, g in
+                                rows[rows.turn].groupby(rows[rows.turn].skey.str.split("|").str[0])}
     for typ in ("ls", "fav"):  # test on unseen 30%: buy when history odds beat a fair price (+2¢ spread)
         pnl = cost = n = 0
         for _, r in te.iterrows():
@@ -347,7 +386,7 @@ def calibrate(mkt):
     res["active"] = True  # calls still require live Kalshi price < history odds; 'ok' flags mark tested edge
     res["ihm"] = ihm_stats(mkt)
     best = sorted(((v[1] - _phi(-float(k.split("|")[0]) * 0.75), k, v) for k, v in tab.items() if k.endswith("turn")), reverse=True)[:3]
-    print(mkt, "CAL", json.dumps({k: v for k, v in res.items() if k != "table"}), "| best bounce cells:", best, flush=True)
+    print(mkt, "CAL", json.dumps({k: v for k, v in res.items() if k not in ("table", "stable")}), "| best bounce cells:", best, flush=True)
     return res
 
 
@@ -962,19 +1001,24 @@ def fast_entry(mkt, d1, fp, st, cool):
     return True
 
 
-def k15_call(mkt, m, px, st, lv, cal):
+def k15_call(mkt, m, px, st, lv, cal, night=False):
     """🎯 longshot (cheap bounce side) or 💪 edge pick (favored side), from calibrated history + context."""
     from math import log, sqrt
-    if busy(st, mkt) or not cal or not cal.get("table") or len(m) < 300: return False
+    if busy(st, mkt) or not cal or not cal.get("stable" if night else "table") or len(m) < 300: return False
     c = k15(mkt)
     if not c: return False
     T = (c["close"] - pd.Timestamp.now(tz="UTC")).total_seconds() / 60
     if not 4 <= T <= 12 or st.setdefault("lswin", {}).get(mkt) == c["ticker"]: return False
+    if event_window(mkt, dt.datetime.now(ET), T): return False
     cx = live_ctx(m); cx["px"] = px; z = log(px * lv.r / c["k"]) / (cx["sig"] * sqrt(T))
     if abs(z) < 0.5: return False
     bdir = -1 if z > 0 else 1; cl = m.Close
     turning = (px > cl.iloc[-1] and cx["rsi"] < 45) if bdir > 0 else (px < cl.iloc[-1] and cx["rsi"] > 55)
-    cell = cal["table"].get(ctx_key(abs(z), bdir, cx["trend"], px, cx["vwap"], turning, cx["flow"]))
+    sname = session(dt.datetime.now(ET))
+    if night:
+        cell = (cal.get("stable") or {}).get(f"{sname}|{ls_bucket(abs(z))}|{'T+' if cx['trend'] == bdir else 'T-'}|{'turn' if turning else 'run'}")
+    else:
+        cell = cal["table"].get(ctx_key(abs(z), bdir, cx["trend"], px, cx["vwap"], turning, cx["flow"]))
     if not cell: return False
     kind = "ls" if turning else "fav"
     up = (bdir > 0) if kind == "ls" else (bdir < 0); side = "YES" if up else "NO"
@@ -983,8 +1027,11 @@ def k15_call(mkt, m, px, st, lv, cal):
     if kind == "fav" and not (0 < cost < 0.92 and p - cost - kfee(cost) >= FAV_MIN_EDGE): return False
     where = "below" if bdir > 0 else "above"
     why = (f"• Price is {where} the start and {'turning back toward it' if kind == 'ls' else 'still pushing away'}\n"
-           + ctx_bullets(cx, up, lv) + f"\n• Last 30 days: {cell[0]} setups like this → {'bounced back' if kind == 'ls' else 'kept going'} {p:.0%}")
-    open_call(st, mkt, kind, side, c, lv, px, odds_line(p, cost), why, cal.get(f"{kind}_ok"))
+           + ctx_bullets(cx, up, lv) + (f"\n• 🌙 {SESS_TXT[sname]}" if night else "")
+           + f"\n• Last 30 days{' in this session' if night else ''}: {cell[0]} setups like this → "
+           f"{'bounced back' if kind == 'ls' else 'kept going'} {p:.0%}")
+    open_call(st, mkt, kind, side, c, lv, px, odds_line(p, cost), why,
+              cal.get(f"night_{kind}_ok" if night else f"{kind}_ok"))
     return True
 
 
@@ -1059,8 +1106,8 @@ def skip_reasons(mkt, m, px, lv):
     fav = max(c["ya"], c["na"]); reasons, hard = [], False
     if fav >= 0.90:
         reasons.append(f"Already decided: favorite costs {fav * 100:.0f}¢ → at most {100 - fav * 100:.0f}¢ gain before fees"); hard = True
-    if events(hours=T / 60 + 0.05):
-        reasons.append("Oil/gas report lands inside this window: random spike risk"); hard = True
+    if ev := event_window(mkt, dt.datetime.now(ET), T):
+        reasons.append(ev); hard = True
     soft = []
     if quiet < 0.7: soft.append(f"Very quiet: last 30 min moving {int((1 - quiet) * 100)}% less than usual")
     if abs(px - m.Close.ewm(span=240, adjust=False).mean().iloc[-1]) / px < 0.001: soft.append("Trend not in favor: flat vs 4h average, no direction")
@@ -1094,6 +1141,88 @@ def skip_board(data, st, params):
     notify(f"⛔ SKIP · {label} session" + (" (update)" if now.minute % 15 == 7 else ""), body, "default")
 
 
+def night_bars(mkt):
+    """~10-min-delayed 1-min futures bars (context) from Yahoo."""
+    import yfinance as yf
+    df = yf.Ticker(MARKETS[mkt][0]).history(period="2d", interval="1m", auto_adjust=False)
+    return df[["Open", "High", "Low", "Close", "Volume"]].dropna()
+
+
+def night_price(mkt, y):
+    """Real-time price from Kalshi: strike-book implied price, else backed out of the 15-min YES price."""
+    from math import exp, sqrt
+    from statistics import NormalDist
+    b = kalshi_book(mkt)
+    if b: return b["px"]
+    c = k15(mkt)
+    if not c or len(y) < 60: return None
+    mid = (c["ya"] + c["yb"]) / 2; T = (c["close"] - pd.Timestamp.now(tz="UTC")).total_seconds() / 60
+    if not 0.05 < mid < 0.95 or T <= 0: return None
+    sig = float(np.log(y.Close).diff().tail(390).std())
+    return c["k"] * exp(NormalDist().inv_cdf(mid) * sig * sqrt(T))
+
+
+def ident(mkt):
+    f = lambda x: money(mkt, x); f.r = 1.0; return f
+
+
+def market_mode(now):
+    """'day' = US stock hours (fund prices, Alpaca); 'night' = futures open otherwise; 'closed' = weekend / 5-6pm break."""
+    wd, t = now.weekday(), now.time()
+    if wd == 5 or (wd == 4 and t >= dt.time(17)) or (wd == 6 and t < dt.time(18)) or dt.time(17) <= t < dt.time(18): return "closed"
+    return "day" if wd < 5 and LIVE_OPEN <= t <= LIVE_CLOSE else "night"
+
+
+def night_tick(st, params, cool, nh, yc):
+    """Overnight: Kalshi real-time price + delayed futures context → longshots / edge picks / skip board / watch board."""
+    now = dt.datetime.now(ET); minute = now.replace(second=0, microsecond=0); changed = False; boards = {}
+    for mkt in MARKETS:
+        if yc.get(mkt, (None,))[0] != minute:
+            try: yc[mkt] = (minute, night_bars(mkt))
+            except Exception as e: print("night bars", mkt, e); continue
+        y = yc[mkt][1]; kp = night_price(mkt, y)
+        if kp is None or len(y) < 300: continue
+        h = nh.setdefault(mkt, []); h.append((pd.Timestamp.now(tz="UTC"), kp)); del h[:-240]
+        hb = pd.Series([p for _, p in h], index=[t for t, _ in h]).resample("1min").ohlc().dropna()
+        hb = hb.rename(columns=str.title).assign(Volume=0.0)
+        m = pd.concat([y[y.index < hb.index[0]], hb]); m = m[~m.index.duplicated(keep="last")]
+        _SIG[mkt] = float(np.log(y.Close).diff().tail(390).std()); lv = ident(mkt)
+        changed |= manage_ls(mkt, kp, st, lv)
+        if now.time() < dt.time(15, 50) or now.time() > dt.time(16, 10):
+            changed |= k15_call(mkt, m.iloc[:-1], kp, st, lv, (params.get("_cal") or {}).get(mkt), night=True)
+        boards[mkt] = (m, kp, lv)
+    return changed, boards
+
+
+def night_boards(st, boards):
+    """Skip board (minute 1/7 of each session) + 10-min watch board for overnight."""
+    now = dt.datetime.now(ET)
+    if now.minute % 15 in (1, 7):
+        slot = now.strftime("%Y-%m-%d %H:%M")
+        if st.get("skipslot") != slot:
+            st["skipslot"] = slot; w_end = now.replace(second=0, microsecond=0) + dt.timedelta(minutes=15 - now.minute % 15)
+            label = f"{(w_end - dt.timedelta(minutes=15)):%-I:%M}–{w_end:%-I:%M}"; done = set(st.get("skipped", {}).get(label, []))
+            skips, play = [], []
+            for mkt, (m, kp, lv) in boards.items():
+                if busy(st, mkt): play.append((mkt, "call open")); continue
+                why, _ = skip_reasons(mkt, m, kp, lv)
+                if why and mkt not in done: skips.append((mkt, why))
+                elif not why: play.append((mkt, "watching"))
+            if skips:
+                st.setdefault("skipped", {})[label] = sorted(done | {k for k, _ in skips})
+                body = "\n".join(f"{COLOR[k][0]} {NAME[k]}: SKIP\n" + "\n".join(f"   • {w}" for w in why) for k, why in skips)
+                if play: body += "\n\n✅ In play: " + ", ".join(f"{COLOR[k][0]} {NAME[k]} ({t})" for k, t in play)
+                notify(f"⛔ SKIP · 🌙 {label} session · {session(now)}", body, "default")
+    if now.minute % 10 == 0 and st.get("nightpulse") != now.strftime("%H:%M"):
+        st["nightpulse"] = now.strftime("%H:%M"); lines = []
+        for mkt, (m, kp, lv) in boards.items():
+            c = k15(mkt); line = f"{COLOR[mkt][0]} {NAME[mkt]}  {money(mkt, kp)}"
+            if c: line += f"\n    15-min ({c['close'].tz_convert(ET):%-I:%M}): start {money(mkt, c['k'])} · YES {c['ya'] * 100:.0f}¢ / NO {c['na'] * 100:.0f}¢"
+            op = next((st[k][mkt] for k in ("lpos",) if mkt in st.get(k, {})), None)
+            lines.append(line + (f"\n    open: call #{op.get('id', '?')}" if op else "\n    watching"))
+        if lines: notify(f"🌙 Watching · {now:%-I:%M %p} · {SESS_TXT[session(now)]}", "\n".join(lines), "default")
+
+
 def snapshots():
     """Latest trade price per ETF (real-time, one request)."""
     hdr = {"APCA-API-KEY-ID": os.environ["ALPACA_KEY"], "APCA-API-SECRET-KEY": os.environ["ALPACA_SECRET"]}
@@ -1108,16 +1237,26 @@ def live():
     if not ALPACA: sys.exit("live mode needs ALPACA_KEY / ALPACA_SECRET")
     t0, maxmin = time.time(), float(os.getenv("LIVE_MAX_MIN") or 1e9); nt = 0
     pulse_min, tick = int(os.getenv("PULSE_MIN") or 10), int(os.getenv("TICK_SEC") or 15)
-    cool, data, params = {}, {}, load_params()
+    cool, data, params, nh, yc = {}, {}, load_params(), {}, {}
     if not MAIN_ON:  # drop any old slow-signal positions so they don't block 15-min calls
         st0 = load_state(); st0["pos"] = {}; json.dump(st0, open(STATE_FILE, "w"), indent=1, default=float)
     last_min = last_hour = last_pulse = None
     print(f"live mode: tick {tick}s, check-in every {pulse_min} min on the clock")
     while (time.time() - t0) / 60 < maxmin:
         now = dt.datetime.now(ET)
-        if now.weekday() >= 5 or not (LIVE_OPEN <= now.time() <= LIVE_CLOSE):
-            if os.getenv("LIVE_MAX_MIN") and now.time() > LIVE_CLOSE: print("market closed, exiting"); break
-            time.sleep(60); continue
+        mode = market_mode(now)
+        if mode == "closed": time.sleep(60); continue
+        if mode == "night":
+            try:
+                st = load_state(); ch, boards = night_tick(st, params, cool, nh, yc); night_boards(st, boards)
+                json.dump(st, open(STATE_FILE, "w"), indent=1, default=float)
+                if ch: persist("bot: night call")
+                if now.minute < 2 and now.hour != last_hour:
+                    last_hour = now.hour
+                    if os.getenv("GIT_PERSIST"): os.system("git pull -q --rebase origin main"); params = load_params()
+            except Exception as e:
+                print("night error:", e)
+            time.sleep(max(1, tick - time.time() % tick)); continue
         try:
             st = load_state(); st.setdefault("sent", []); changed = False
             minute = now.replace(second=0, microsecond=0)
