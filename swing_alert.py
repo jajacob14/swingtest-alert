@@ -21,7 +21,13 @@ for _k, _v in list(os.environ.items()):  # tolerate secrets pasted with stray sp
 MARKETS = {"BRENT": ("BZ=F", "BNO"), "WTI": ("CL=F", "USO"), "NATGAS": ("NG=F", "UNG")}          # energy: day + night engines
 METALS = {"GOLD": ("GC=F", "GLD"), "SILVER": ("SI=F", "SLV"), "COPPER": ("HG=F", "CPER"),         # Kalshi 15-min metals:
           "PLATINUM": ("PL=F", "PPLT"), "PALLADIUM": ("PA=F", "PALL")}                             # Kalshi-price engine 24/5
-ALL = {**MARKETS, **METALS}
+CRYPTO = {"BTC": ("BTC-USD", None), "ETH": ("ETH-USD", None), "SOL": ("SOL-USD", None), "XRP": ("XRP-USD", None),
+          "DOGE": ("DOGE-USD", None), "BNB": ("BNB-USD", None), "HYPE": ("HYPE32196-USD", None), "NEAR": ("NEAR-USD", None),
+          "ZEC": ("ZEC-USD", None)}
+FX = {"EURUSD": ("EURUSD=X", None), "GBPUSD": ("GBPUSD=X", None), "USDJPY": ("JPY=X", None)}
+EXTRA_ON = os.getenv("EXTRA_MARKETS", "1") == "1"  # crypto + FX 15-min markets (open 24/7)
+ALL = {**MARKETS, **METALS, **(CRYPTO if EXTRA_ON else {}), **(FX if EXTRA_ON else {})}
+COINBASE = {"BTC": "BTC-USD", "ETH": "ETH-USD", "SOL": "SOL-USD", "XRP": "XRP-USD", "DOGE": "DOGE-USD", "NEAR": "NEAR-USD", "ZEC": "ZEC-USD"}
 ET = ZoneInfo("America/New_York")
 STATE_FILE, PARAMS_FILE = os.getenv("STATE_FILE", "state.json"), "params.json"
 FEE = 0.03  # % per side: spread + slippage
@@ -32,7 +38,10 @@ FAST_DEFAULT = dict(strategy="ignite", z=2.5, look=30, vr=1.5, stop=1.5, tgt=8.0
 DEFAULT = dict(interval="1h", strategy="squeeze", min_sq=6, trend=1, stop=1.5, tgt=3.0, trail=2.5, hold=40)
 EXTRA_EVENTS = [e for e in os.getenv("EXTRA_EVENTS", "").split(",") if e]  # "2026-11-30 OPEC+ meeting"
 ALPACA = bool(os.getenv("ALPACA_KEY"))
-COLOR = {"GOLD": ("🟡", "", 0xFBC02D), "SILVER": ("⚪", "", 0x9E9E9E), "COPPER": ("🟤", "", 0x8D6E63),
+COLOR = {"BTC": ("🪙", "", 0xF7931A), "ETH": ("💎", "", 0x627EEA), "SOL": ("☀️", "", 0x14F195), "XRP": ("💧", "", 0x23292F),
+         "DOGE": ("🐕", "", 0xC2A633), "BNB": ("🔶", "", 0xF3BA2F), "HYPE": ("🌊", "", 0x50D2C1), "NEAR": ("🌐", "", 0x00C08B),
+         "ZEC": ("🛡️", "", 0xECB244), "EURUSD": ("💶", "", 0x1565C0), "GBPUSD": ("💷", "", 0x6A1B9A), "USDJPY": ("💴", "", 0xC62828),
+         "GOLD": ("🟡", "", 0xFBC02D), "SILVER": ("⚪", "", 0x9E9E9E), "COPPER": ("🟤", "", 0x8D6E63),
          "PLATINUM": ("🟣", "", 0x7E57C2), "PALLADIUM": ("🔴", "", 0xE53935),
          "BRENT": ("🟢", "green_circle", 0x43A047), "WTI": ("🟠", "orange_circle", 0xFB8C00),
          "NATGAS": ("🔵", "large_blue_circle", 0x1E88E5)}
@@ -294,9 +303,14 @@ def event_window(mkt, now_et, mins_ahead=15):
     def hit(a, b): return a <= m0 <= b or a <= end.hour * 60 + end.minute <= b
     if events(now_et, hours=mins_ahead / 60 + 0.05): return "EIA report inside this session"
     if mkt != "NATGAS" and wd == 1 and hit(16 * 60 + 15, 17 * 60): return "API oil inventory report (Tue 4:30 PM): after-hours jumps"
-    if hit(18 * 60, 18 * 60 + 30): return "6 PM reopen: thin, gappy trading"
+    if (mkt in MARKETS or mkt in METALS) and hit(18 * 60, 18 * 60 + 30): return "6 PM reopen: thin, gappy trading"
     if mkt == "NATGAS" and (hit(23 * 60 + 15, 23 * 60 + 59) or hit(90, 150) or hit(5 * 60 + 15, 5 * 60 + 59)):
         return "Weather-model update (GFS/European): nat gas jumps on forecast changes"
+    if mkt in FX:
+        if wd < 5 and hit(8 * 60 + 25, 8 * 60 + 45): return "8:30 AM US data: currencies jump on rate news"
+        if wd < 5 and hit(10 * 60 + 55, 11 * 60 + 5): return "London 4pm FX fix: big orders cluster"
+        if mkt == "USDJPY" and hit(19 * 60 + 50, 20 * 60): return "Tokyo fix: big yen orders cluster"
+    if mkt in CRYPTO and wd < 5 and hit(8 * 60 + 25, 8 * 60 + 40): return "8:30 AM US data: crypto swings on rate news"
     if mkt in METALS:
         if wd < 5 and hit(8 * 60 + 25, 8 * 60 + 45): return "8:30 AM US data (jobs/CPI/claims): metals jump on rate news"
         if hit(20 * 60, 20 * 60 + 15): return "Shanghai open: Chinese buying/selling hits metals"
@@ -541,17 +555,19 @@ def size_txt(px, stop):
 
 # ---------------- Kalshi (all prices shown in Kalshi terms) ----------------
 KALSHI = "https://api.elections.kalshi.com/trade-api/v2"
-KSERIES = {"BRENT": ["KXBRENTD"], "WTI": ["KXWTIH", "KXWTI"], "NATGAS": ["KXNATGASD"], "GOLD": ["KXGOLDH"],
+KSERIES = {**{k: [] for k in ("BTC", "ETH", "SOL", "XRP", "DOGE", "BNB", "HYPE", "NEAR", "ZEC", "EURUSD", "GBPUSD", "USDJPY")},
+           "BRENT": ["KXBRENTD"], "WTI": ["KXWTIH", "KXWTI"], "NATGAS": ["KXNATGASD"], "GOLD": ["KXGOLDH"],
            "SILVER": ["KXSILVERH"], "COPPER": [], "PLATINUM": ["KXPLATINUMH"], "PALLADIUM": ["KXPALLADIUMH"]}
 NAME = {"BRENT": "BRENT", "WTI": "WTI", "NATGAS": "NAT GAS", "GOLD": "GOLD", "SILVER": "SILVER", "COPPER": "COPPER",
-        "PLATINUM": "PLATINUM", "PALLADIUM": "PALLADIUM"}
-DEC = {"NATGAS": 3, "SILVER": 3, "COPPER": 4}
+        "PLATINUM": "PLATINUM", "PALLADIUM": "PALLADIUM", "BTC": "BTC", "ETH": "ETH", "SOL": "SOL", "XRP": "XRP", "DOGE": "DOGE",
+        "BNB": "BNB", "HYPE": "HYPE", "NEAR": "NEAR", "ZEC": "ZEC", "EURUSD": "EUR/USD", "GBPUSD": "GBP/USD", "USDJPY": "USD/JPY"}
+DEC = {"NATGAS": 3, "SILVER": 3, "COPPER": 4, "BTC": 0, "XRP": 4, "DOGE": 5, "HYPE": 3, "NEAR": 3, "EURUSD": 5, "GBPUSD": 5, "USDJPY": 3}
 REASON = {"STOP": "hit your stop: cut the loss", "TARGET": "hit the target 🎯", "TIME": "idea timed out",
           "END OF DAY": "market closing soon"}
 _KC, _KR, _PICK = {}, {}, {}
 
 
-def money(mkt, x): return f"${x:,.{DEC.get(mkt, 2)}f}"
+def money(mkt, x): return f"{'' if mkt in FX else '$'}{x:,.{DEC.get(mkt, 2)}f}"
 
 
 def implied(rows):
@@ -635,7 +651,9 @@ def busy(st, mkt): return any(mkt in st.get(k, {}) for k in ("pos", "fpos", "lpo
 
 
 
-K15 = {"BRENT": "KXBRENT15M", "WTI": "KXWTI15M", "NATGAS": "KXNATGAS15M", "GOLD": "KXGOLD15M", "SILVER": "KXSILVER15M",
+K15 = {"BTC": "KXBTC15M", "ETH": "KXETH15M", "SOL": "KXSOL15M", "XRP": "KXXRP15M", "DOGE": "KXDOGE15M", "BNB": "KXBNB15M",
+       "HYPE": "KXHYPE15M", "NEAR": "KXNEAR15M", "ZEC": "KXZEC15M", "EURUSD": "KXEURUSD15M", "GBPUSD": "KXGBPUSD15M",
+       "USDJPY": "KXUSDJPY15M", "BRENT": "KXBRENT15M", "WTI": "KXWTI15M", "NATGAS": "KXNATGAS15M", "GOLD": "KXGOLD15M", "SILVER": "KXSILVER15M",
        "COPPER": "KXCOPPER15M", "PLATINUM": "KXPLATINUM15M", "PALLADIUM": "KXPALLADIUM15M"}
 
 
@@ -1245,12 +1263,16 @@ def night_price(mkt, y):
     from math import exp, sqrt
     from statistics import NormalDist
     if (p := pyth_price(mkt)) is not None: return p
+    if mkt in COINBASE:  # free real-time crypto trades
+        try: return float(requests.get(f"https://api.exchange.coinbase.com/products/{COINBASE[mkt]}/ticker", timeout=8).json()["price"])
+        except Exception: pass
     b = kalshi_book(mkt) if KSERIES.get(mkt) else None
     if b: return b["px"]
     c = k15(mkt)
     if not c or len(y) < 60: return kraken_gold() if mkt == "GOLD" else None
     mid = (c["ya"] + c["yb"]) / 2; T = (c["close"] - pd.Timestamp.now(tz="UTC")).total_seconds() / 60
-    if not 0.05 < mid < 0.95 or T <= 0: return kraken_gold() if mkt == "GOLD" else None
+    if not 0.05 < mid < 0.95 or T <= 0:
+        return kraken_gold() if mkt == "GOLD" else (float(y.Close.iloc[-1]) if mkt in CRYPTO or mkt in FX else None)
     sig = float(np.log(y.Close).diff().tail(390).std())
     return c["k"] * exp(NormalDist().inv_cdf(mid) * sig * sqrt(T))
 
@@ -1269,6 +1291,15 @@ def night_tick(st, params, cool, nh, yc, only=None):
     """Overnight: Kalshi real-time price + delayed futures context → longshots / edge picks / skip board / watch board."""
     now = dt.datetime.now(ET); minute = now.replace(second=0, microsecond=0); changed = False; boards = {}
     mkts = list(only or ALL); openm = []
+    from concurrent.futures import ThreadPoolExecutor
+    def bars_safe(k):
+        try: return night_bars(k)
+        except Exception as e: print("night bars", k, e); return None
+    with ThreadPoolExecutor(12) as ex:  # fetch everything in parallel, then decide sequentially
+        list(ex.map(k15, mkts))
+        need = [k for k in mkts if _KC.get(f"15|{k}") and yc.get(k, (None,))[0] != minute]
+        for k, df in zip(need, ex.map(bars_safe, need)):
+            if df is not None and len(df): yc[k] = (minute, df)
     for mkt in mkts:
       try:
         c0 = k15(mkt)
@@ -1276,9 +1307,7 @@ def night_tick(st, params, cool, nh, yc, only=None):
             changed |= manage_ls(mkt, 0.0, st, ident(mkt)) if mkt in st.get("lpos", {}) and not c0 else False
             continue
         openm.append(mkt)
-        if yc.get(mkt, (None,))[0] != minute:
-            try: yc[mkt] = (minute, night_bars(mkt))
-            except Exception as e: print("night bars", mkt, e); continue
+        if mkt not in yc: continue
         y = yc[mkt][1]; kp = night_price(mkt, y)
         if kp is None or len(y) < 300: continue
         h = nh.setdefault(mkt, []); h.append((pd.Timestamp.now(tz="UTC"), kp)); del h[:-240]
@@ -1420,7 +1449,7 @@ def live():
     S = dict(params=load_params(), last_min=None, last_hour=None, last_pulse=None, nt=0, errs=0, saved=time.time(), recheck=0)
     if not MAIN_ON:
         st0 = load_state(); st0["pos"] = {}; json.dump(st0, open(STATE_FILE, "w"), indent=1, default=float)
-    print(f"live supervisor: tick {tick}s")
+    print(f"live supervisor: tick {tick}s · markets: {', '.join(ALL)}")
 
     def day_tick(st, now):
         params = S["params"]
@@ -1471,7 +1500,7 @@ def live():
             print("day", mkt, "error:", e)
         skip_board(data, st, params)
         try:
-            ch2, mb = night_tick(st, params, cool, nh, yc, only=METALS); changed |= ch2; night_boards(st, mb, night=False)
+            ch2, mb = night_tick(st, params, cool, nh, yc, only=[k for k in ALL if k not in MARKETS]); changed |= ch2; night_boards(st, mb, night=False)
         except Exception as e: print("metals error:", e)
         slot = minute.replace(minute=minute.minute - minute.minute % pulse_min) if pulse_min else None
         if pulse_min and slot != S['last_pulse'] and data:
