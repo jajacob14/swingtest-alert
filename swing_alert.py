@@ -1608,15 +1608,19 @@ def nighttest():
 
 
 def kraw():
-    """Raw view of every Kalshi 15-min/hourly commodity series that has open markets right now."""
-    for ser in list(K15.values()) + ["KXGOLDH", "KXSILVERH", "KXPLATINUMH", "KXPALLADIUMH", "KXWTIH", "KXCOFFEE15M"]:
-        ms = requests.get(f"{KALSHI}/markets", params={"series_ticker": ser, "status": "open", "limit": 50}, timeout=20).json().get("markets", [])
-        print("KRAW", ser, "open:", len(ms))
-        for m in sorted(ms, key=lambda x: x["close_time"])[:3]:
-            print("   ", m["ticker"], "| close", m["close_time"], "| strike", m.get("floor_strike"), m.get("strike_type"),
-                  "| yes", m.get("yes_bid_dollars"), m.get("yes_ask_dollars"), "| no", m.get("no_bid_dollars"), m.get("no_ask_dollars"),
-                  "| status", m.get("status"), "| open_time", m.get("open_time"))
-    print("KRAW k15 view:", {k: (bool(k15(k)) and k15(k)["ticker"]) for k in ALL})
+    """Every Kalshi series with intraday/daily frequency that has OPEN markets right now (any category)."""
+    from concurrent.futures import ThreadPoolExecutor
+    ser = [x for x in requests.get(f"{KALSHI}/series", timeout=30).json().get("series", [])
+           if x.get("frequency") in ("fifteen_min", "hourly", "daily")]
+    def cnt(x):
+        try:
+            ms = requests.get(f"{KALSHI}/markets", params={"series_ticker": x["ticker"], "status": "open", "limit": 200}, timeout=20).json().get("markets", [])
+            live = [m for m in ms if float(m.get("yes_ask_dollars") or 0) > 0 or float(m.get("no_ask_dollars") or 0) > 0]
+            return (x["ticker"], x.get("title"), x.get("frequency"), x.get("category"), len(ms), len(live),
+                    min((m["close_time"] for m in ms), default=None))
+        except Exception: return None
+    with ThreadPoolExecutor(16) as ex: rows = [r for r in ex.map(cnt, ser) if r and r[5]]
+    for r in sorted(rows, key=lambda r: (r[3] or "", r[2], r[0])): print("OPEN", *r, sep=" | ")
 
 
 def selftest():
