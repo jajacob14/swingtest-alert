@@ -522,16 +522,17 @@ KALSHI = "https://api.elections.kalshi.com/trade-api/v2"
 
 def kalshi_discover():
     ser = requests.get(f"{KALSHI}/series", timeout=30).json().get("series", [])
-    hits = [x for x in ser if re.search(r"\b(oil|crude|wti|brent|natural gas|nat gas|henry hub)\b", (x.get("title") or "").lower())]
-    for x in hits[:25]:
-        print("SERIES", x.get("ticker"), "|", x.get("title"), "|", x.get("frequency"), "|",
-              [s_.get("name") or s_.get("url") for s_ in (x.get("settlement_sources") or [])])
-        ms = requests.get(f"{KALSHI}/markets", params={"series_ticker": x["ticker"], "status": "open", "limit": 6}, timeout=30).json().get("markets", [])
-        for m in ms:
-            print("   MKT", m.get("ticker"), "|", m.get("title"), "|", m.get("subtitle") or m.get("yes_sub_title"), "| strike",
-                  m.get("strike_type"), m.get("floor_strike"), m.get("cap_strike"), "| yes bid/ask", m.get("yes_bid"), m.get("yes_ask"),
-                  "| closes", m.get("close_time"))
-        if ms: print("   RULES:", (ms[0].get("rules_primary") or "")[:400].replace("\n", " "))
+    for x in ser:
+        t = (x.get("title") or "").lower()
+        if re.search(r"(natural gas|natgas|brent|wti)", t) and x.get("frequency") in ("daily", "weekly", "hourly"):
+            ms = requests.get(f"{KALSHI}/markets", params={"series_ticker": x["ticker"], "status": "open", "limit": 200}, timeout=30).json().get("markets", [])
+            print("SERIES", x["ticker"], "|", x.get("title"), "|", x.get("frequency"), "| open markets:", len(ms))
+            if ms:
+                m = ms[0]; print("   KEYS", sorted(k for k in m if "price" in k or "bid" in k or "ask" in k or "time" in k or "strike" in k))
+                print("   SAMPLE", {k: m.get(k) for k in ("ticker", "event_ticker", "yes_sub_title", "floor_strike", "cap_strike", "strike_type",
+                      "yes_bid_dollars", "yes_ask_dollars", "last_price_dollars", "close_time", "volume")})
+                print("   RULES", (m.get("rules_primary") or "")[:300])
+                print("   EVENTS", sorted({z["event_ticker"] for z in ms})[:6])
 
 
 def selftest():
