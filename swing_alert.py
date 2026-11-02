@@ -458,6 +458,39 @@ def forecast_live(m, fc):
     return float(1 / (1 + np.exp(-(fc["w"][0] + z @ np.array(fc["w"][1:])))))
 
 
+LOCK_B = (0.90, 0.95, 0.98)
+
+
+def lock_stats(df):
+    """How often the leading side really wins when random-walk math says 90%+ (per bucket, per minutes-left band)."""
+    df = df.resample("1min").last().dropna(how="all"); c = df.Close; w = df.index.floor("15min")
+    full = pd.Series(1, index=df.index).groupby(w).transform("size") >= 8
+    start = c.shift(1).groupby(w).transform("first"); end = c.groupby(w).transform("last")
+    T = 14 - (df.index.tz_convert(ET).minute % 15)
+    sig = np.log(c).diff().rolling(390, min_periods=60).std()
+    dz = (np.log(c / start) / (sig * np.sqrt(np.maximum(T, 1)))).abs()
+    lead = pd.Series([_phi(x) if x == x else np.nan for x in dz], index=df.index)
+    won = ((end >= start) == (c >= start))
+    d = pd.DataFrame({"lead": lead, "won": won, "T": T})[full & (T >= 1) & (T <= 12) & (lead >= LOCK_B[0])].dropna()
+    out = {}
+    for lo, hi in zip(LOCK_B, LOCK_B[1:] + (1.01,)):
+        g = d[(d.lead >= lo) & (d.lead < hi)]
+        if len(g) >= 100: out[f"{lo:.2f}"] = [len(g), round(float(g.won.mean()), 4)]
+    return out
+
+
+def lock_rate(cal, lead):
+    """Measured win rate for a math-probability `lead` (falls back to a haircut of the math)."""
+    tab = (cal or {}).get("lock") or {}; key = None
+    for lo in LOCK_B:
+        if lead >= lo: key = f"{lo:.2f}"
+    return (tab[key][1], tab[key][0]) if key in tab else (lead - 0.03, 0)
+
+
+def tier(p):
+    return "NEAR LOCK" if p >= 0.90 else "HIGH CONFIDENCE" if p >= 0.75 else ""
+
+
 def spike_stats(df):
     """Backtest: first minute per 15-min window (4-12 min left) with spike score ≥70 → buy that direction's contract."""
     df = df.resample("1min").last().dropna(how="all"); c = df.Close; w = df.index.floor("15min")
@@ -481,16 +514,16 @@ def spike_stats(df):
 
 
 def calibrate(mkt):
-    drift, spike, fcast = {}, {}, {}
+    drift, spike, fcast, lock = {}, {}, {}, {}
     try:
         fdf = fetch_fut_1m(mkt); rows = ls_rows(fdf, rth=False); src = "yahoo futures 30d"; drift = drift_stats(fdf)
-        spike = spike_stats(fdf); fcast = forecast_stats(fdf)
+        spike = spike_stats(fdf); fcast = forecast_stats(fdf); lock = lock_stats(fdf)
     except Exception as e:
         print(mkt, "futures 1m failed:", e); rows = ls_rows(fetch(mkt, "1m", 60)); src = "etf 60d"
     cut = int(len(rows) * 0.7); tr, te = rows.iloc[:cut], rows.iloc[cut:]
     tab = {k: [len(g), round(float(g.won.mean()), 3)] for k, g in tr.groupby("key") if len(g) >= 25}
     stab = {k: [len(g), round(float(g.won.mean()), 3)] for k, g in tr.groupby("skey") if len(g) >= 25}
-    res = dict(table=tab, stable=stab, setups=len(rows), src=src, drift=drift, spike=spike, fcast=fcast)
+    res = dict(table=tab, stable=stab, setups=len(rows), src=src, drift=drift, spike=spike, fcast=fcast, lock=lock)
     nt = te[~te.skey.str.startswith("US")]
     for typ in ("ls", "fav"):  # overnight validation on unseen 30%, session-aware table
         pnl = cost = n = 0
@@ -1054,7 +1087,7 @@ def why_lines(mkt, cx, bdir, px, lv, cell, kind):
 
 
 # ---------------- unified 15-min calls: BUY → (TAKE PROFIT | WRONG → FLIP | HOLD) → RESULT ----------------
-KIND = {"spike": "🔥 Spike", "drift": "📊 Session drift", "fast": "⚡ Fast move", "ls": "🎯 Longshot", "fav": "💪 Edge pick", "ihm": "📈 Close pattern", "flip": "🔄 Flip"}
+KIND = {"lock": "Near lock", "spike": "🔥 Spike", "drift": "📊 Session drift", "fast": "⚡ Fast move", "ls": "🎯 Longshot", "fav": "💪 Edge pick", "ihm": "📈 Close pattern", "flip": "🔄 Flip"}
 
 
 def sess(close):
@@ -1093,27 +1126,31 @@ def level_for(start, q_side, up, mins, sig):
     return start * exp(z * sig * sqrt(mins))
 
 
-def open_call(st, mkt, kind, side, c, lv, px, odds, why, tested, parent=None):
+def open_call(st, mkt, kind, side, c, lv, px, odds, why, tested, parent=None, prob=None):
     """Create a numbered call on the current 15-min contract and send the BUY message."""
     cost = c["ya"] if side == "YES" else c["na"]
     k = dict(ticker=c["ticker"], side=side, cost=cost, k=c["k"], close=str(c["close"]))
     tp = min(0.95, max(2.5 * cost, cost + 0.25)) if kind == "ls" else min(0.92, cost + max(0.15, (1 - cost) * 0.6))
     bail = max(0.03, cost * 0.5)
+    if kind == "lock": tp, bail = 0.995, 0.60  # hold to the end; bail only if it really reverses
     pos = dict(side=1 if side == "YES" else -1, entry=px, stop=0, tgt=0, best=px, n=0, t0=time.time(), kind=kind, k=k,
                tp=tp, bail=bail, parent=parent)
     st.setdefault("lpos", {})[mkt] = pos; st.setdefault("lswin", {})[mkt] = c["ticker"]
     n = new_trade(st, mkt, pos, lv, px)
     left = (c["close"] - pd.Timestamp.now(tz="UTC")).total_seconds() / 60
     up = side == "YES"; big = 1 / cost >= BIG_X
-    when = {"spike": "now", "fast": "in 5-10 min", "fav": "in 5-10 min", "flip": "in 5-10 min",
+    when = {"lock": f"to hold by {pd.Timestamp(k['close']).tz_convert(ET):%-I:%M}", "spike": "now", "fast": "in 5-10 min", "fav": "in 5-10 min", "flip": "in 5-10 min",
             "ls": f"within {left:.0f} min", "drift": f"by {pd.Timestamp(k['close']).tz_convert(ET):%-I:%M}",
             "ihm": "into the close"}.get(kind, "soon")
-    title = (f"{NAME[mkt]} {'UP' if up else 'DOWN'} · {'rise' if up else 'drop'} expected {when} · #{n}"
-             + (f" · BIG PAYOUT {1 / cost:.0f}x" if big else ""))
+    tg = tier(prob) if prob else ""
+    title = (f"{NAME[mkt]} {'UP' if up else 'DOWN'} · " + (f"{tg} {prob:.0%} · " if tg else "")
+             + f"{'rise' if up else 'drop'} expected {when} · #{n}" + (f" · BIG PAYOUT {1 / cost:.0f}x" if big else ""))
     sig = _SIG.get(mkt); tl = max(left * 0.6, 1)
     tpx = level_for(k["k"], tp, up, tl, sig); bpx = level_for(k["k"], bail, up, tl, sig)
     pk = lambda x: money(mkt, x)
-    exits = (f"Take profit if it {'rises to' if up else 'drops to'} about {pk(tpx)}. "
+    if kind == "lock" and bpx:
+        exits = f"Hold to the end. Get out only if it {'falls back below' if up else 'climbs back above'} about {pk(bpx)}."
+    else: exits = (f"Take profit if it {'rises to' if up else 'drops to'} about {pk(tpx)}. "
              f"Get out if it {'falls back below' if up else 'climbs back above'} about {pk(bpx)}." if tpx and bpx
              else "Take profit once it's clearly winning; get out if it reverses.")
     notify(title,
@@ -1195,9 +1232,36 @@ def action_line(mkt, a):
             want_up = a["fc_p"] >= 0.5; cost = a["ya"] if want_up else a["na"]
             parts.append(f"Lean {'UP' if want_up else 'DOWN'} (ends {'above' if want_up else 'below'} {money(mkt, a['start'])})" if cost < 0.8
                          else f"{'UP' if want_up else 'DOWN'} is already priced in, skip")
-        elif T < 4: parts.append(f"window ends in {T:.0f} min, wait for the next one")
-        else: parts.append("wait")
+        else:
+            lead_up = a["p_up"] >= 0.5; lead = max(a["p_up"], 1 - a["p_up"])
+            if lead >= 0.9:
+                parts.append(f"NEAR LOCK: {'UP' if lead_up else 'DOWN'} {lead:.0%} (ends {'above' if lead_up else 'below'} "
+                             f"{money(mkt, a['start'])}, {T:.0f} min left; market already near {max(a['ya'], a['na']):.0%})")
+            elif lead >= 0.75:
+                parts.append(f"HIGH CONFIDENCE: {'UP' if lead_up else 'DOWN'} {lead:.0%} so far ({T:.0f} min left)")
+            elif T < 4: parts.append(f"window ends in {T:.0f} min, wait for the next one")
+            else: parts.append("wait")
     return ". ".join(parts) + "."
+
+
+def lock_call(st, mkt, a, lv, cal):
+    """Leading side is a near lock (measured ≥90%): one tracked call per window with the % and the honest payout."""
+    if "start" not in a or busy(st, mkt) or a["T"] < 1.5: return False
+    up = a["p_up"] >= 0.5; lead = a["p_up"] if up else 1 - a["p_up"]
+    if lead < 0.92: return False
+    rate, n = lock_rate(cal, lead)
+    c = k15(mkt)
+    if rate < 0.90 or not c or st.setdefault("lockwin", {}).get(mkt) == c["ticker"]: return False
+    if event_window(mkt, dt.datetime.now(ET), a["T"]) or regime_extra(st, mkt): return False  # jumps break locks
+    cost = c["ya"] if up else c["na"]
+    if not 0 < cost < 0.99: return False
+    st["lockwin"][mkt] = c["ticker"]; gain = (1 - cost - kfee(cost)) / cost
+    why = (f"price is {abs(a['px'] / a['start'] - 1) * 100:.2f}% {'above' if up else 'below'} the start with {a['T']:.0f} min left; "
+           f"history: {rate:.1%} of {n:,} cases like this held" if n else "far from the start with little time left")
+    open_call(st, mkt, "lock", "YES" if up else "NO", c, lv, a["px"],
+              f"market already prices it at {cost:.0%}, so profit is small: about +{gain:.0%} on stake if it holds", why,
+              bool(n), prob=rate)
+    return True
 
 
 def spike_alert(st, mkt, a, lv, cal, cool):
@@ -1210,7 +1274,7 @@ def spike_alert(st, mkt, a, lv, cal, cool):
            f"{money(mkt, a['hi30'] if up else a['lo30'])}" if (up and a['px'] > a['hi30']) or (not up and a['px'] < a['lo30']) else "")
     if c and sp.get("ok") and 4 <= a["T"] <= 12 and 0 < cost < 0.85:
         p = min(0.95, (a["p_up"] if up else 1 - a["p_up"]) + max(0.0, sp.get("test_roi", 0)) * cost)
-        open_call(st, mkt, "spike", side, c, lv, a["px"], odds_line(p, cost), f"spike starting, {move}", True)
+        open_call(st, mkt, "spike", side, c, lv, a["px"], odds_line(p, cost), f"spike starting, {move}", True, prob=p)
         return True
     notify(f"{NAME[mkt]} SPIKE {'UP' if up else 'DOWN'} starting now",
            f"{money(mkt, a['px'])}, {move}. {a['spark']}\n"
@@ -1277,7 +1341,7 @@ def k15_call(mkt, m, px, st, lv, cal, night=False):
     why = (("snap-back setup" if kind == "ls" else "move still running") + f", {p:.0%} win rate in history, " + ctx_short(cx, up)
            + (", thin hours" if st.get("thin", {}).get(mkt) else ""))
     open_call(st, mkt, kind, side, c, lv, px, odds_line(p, cost), why,
-              cal.get(f"night_{kind}_ok" if night else f"{kind}_ok"))
+              cal.get(f"night_{kind}_ok" if night else f"{kind}_ok"), prob=p)
     return True
 
 
@@ -1298,7 +1362,7 @@ def ihm_call(mkt, m, px, st, lv, cal):
     if not (0 < cost < 0.9 and ih["hit"] - cost - kfee(cost) >= 0.02): return False
     st["ihm_day"][mkt] = str(now.date()); cx = live_ctx(m); cx["px"] = px
     why = f"end-of-day pattern, {ih['hit']:.0%} win rate, " + ctx_short(cx, up)
-    open_call(st, mkt, "ihm", side, c, lv, px, odds_line(ih["hit"], cost), why, True)
+    open_call(st, mkt, "ihm", side, c, lv, px, odds_line(ih["hit"], cost), why, True, prob=ih["hit"])
     st["ihm_day"][mkt] = str(now.date())
     return True
 
@@ -1318,7 +1382,7 @@ def drift_call(mkt, m, px, st, lv, cal):
     if not (0 < cost < 0.8 and d["p"] - cost - kfee(cost) >= 0.02 + regime_extra(st, mkt)): return False
     cx = live_ctx(m); cx["px"] = px
     why = f"{SH_SESS[session(now)]} session tends {d['dir'].lower()}, {d['p']:.0%} win rate, " + ctx_short(cx, up)
-    open_call(st, mkt, "drift", side, c, lv, px, odds_line(d["p"], cost), why, True)
+    open_call(st, mkt, "drift", side, c, lv, px, odds_line(d["p"], cost), why, True, prob=d["p"])
     return True
 
 
@@ -1525,7 +1589,7 @@ def night_tick(st, params, cool, nh, yc, only=None):
         regime_update(st, mkt, y); boards[mkt] = (m, kp, lv)  # volatility from one clean source
         try:
             a = analyze(mkt, m, kp, lv, k15(mkt), (cal_ or {}).get("fcast")); st.setdefault("ana", {})[mkt] = a
-            if a: changed |= spike_alert(st, mkt, a, lv, cal_, cool)
+            if a: changed |= spike_alert(st, mkt, a, lv, cal_, cool) or lock_call(st, mkt, a, lv, cal_)
         except Exception as e: print("analyze", mkt, e)
         st.setdefault("thin", {})[mkt] = bool(len(y) and pd.Timestamp.now(tz="UTC") - y.index[-1] > pd.Timedelta(minutes=25))
       except Exception as e:
@@ -1693,7 +1757,8 @@ def live():
                 _m = data[etf]; _m = _m[_m.index + pd.Timedelta(minutes=1) <= pd.Timestamp.now(tz="UTC")]
                 _lv = kconv(mkt, float(px[etf])); _a = analyze(mkt, _m, float(px[etf]) * _lv.r, _lv, k15(mkt), ((params.get("_cal") or {}).get(mkt) or {}).get("fcast"))
                 st.setdefault("ana", {})[mkt] = _a
-                if _a: changed |= spike_alert(st, mkt, _a, _lv, (params.get("_cal") or {}).get(mkt), cool)
+                _c = (params.get("_cal") or {}).get(mkt)
+                if _a: changed |= spike_alert(st, mkt, _a, _lv, _c, cool) or lock_call(st, mkt, _a, _lv, _c)
             except Exception as e: print("analyze", mkt, e)
             m = data[etf]; m = m[m.index + pd.Timedelta(minutes=1) <= pd.Timestamp.now(tz="UTC")]
             cur = pd.Timestamp.now(tz="UTC").floor("min"); p_ = float(px[etf])
