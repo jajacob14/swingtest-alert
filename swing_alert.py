@@ -370,10 +370,10 @@ def busy(st, mkt): return mkt in st.get("pos", {}) or mkt in st.get("fpos", {})
 
 
 def sell_msg(mkt, pos, title, px, lv, extra=""):
-    pnl = s_pnl(pos, px)
+    entry = lv(pos["entry"]); now = lv(px); worked = s_pnl(pos, px) > 0
     notify(f"#{pos.get('id', '?')} {NAME[mkt]} · {title}",
-           f"You bet {'UP' if pos['side'] > 0 else 'DOWN'} at {pos.get('at_px', '')} ({pos.get('at', '')})\n"
-           f"Price now {lv(px)} · {'✅ went your way' if pnl > 0 else '❌ went against you'}"
+           f"Closes signal #{pos.get('id', '?')}: {'BUY UP' if pos['side'] > 0 else 'BUY DOWN'} at {pos.get('at_px', entry)} ({pos.get('at', '')})\n"
+           f"Price now {now} · {'✅ signal worked' if worked else '❌ signal failed'}"
            + (contract_value(pos.get("k")) or "") + extra, "urgent", mkt)
 
 
@@ -418,9 +418,9 @@ def contract_value(info):
     paid = info["cost"] * 100
     if m.get("result"):
         won = m["result"].lower() == info["side"].lower()
-        return f"\nKalshi {info['side']}: window closed, {'YOU WON ✅ ($1 each)' if won else 'lost ❌'}"
+        return f"\nKalshi {info['side']} contract: window closed, {'paid out $1 ✅' if won else 'expired worthless ❌'}"
     bid = float(m.get("yes_bid_dollars" if info["side"] == "YES" else "no_bid_dollars") or 0) * 100
-    return f"\nKalshi {info['side']}: paid {paid:.0f}¢ → sell now for {bid:.0f}¢ ({bid - paid:+.0f}¢ each)"
+    return f"\nKalshi {info['side']} contract: {paid:.0f}¢ at signal → {bid:.0f}¢ now ({bid - paid:+.0f}¢)"
 
 
 def hold_txt(p):
@@ -448,10 +448,10 @@ def process(mkt, d, p, st, sent):
             t = p.get("test") or {}; _PICK.pop(mkt, None)
             pick = kalshi_pick(mkt, side > 0, min(p['hold'] * BARS[iv][1], 180)); pos["k"] = _PICK.get(mkt)
             n = new_trade(st, mkt, pos, lv, r.Close)
-            notify(f"#{n} {NAME[mkt]} · {'BUY ⬆️ (bet UP)' if side > 0 else 'BUY ⬇️ (bet DOWN)'}",
+            notify(f"#{n} {NAME[mkt]} · {'BUY signal ⬆️ price rising' if side > 0 else 'BUY signal ⬇️ price falling'}",
                    f"Price now {lv(r.Close)}\n{pick}\n"
-                   f"🎯 Expect to sell near {lv(pos['tgt'])}\n🛑 Or sooner if it hits {lv(pos['stop'])}\n"
-                   f"⏱ Usually done within {hold_txt(p)}. I'll send #{n} SELL." 
+                   f"🎯 Exit expected near {lv(pos['tgt'])}\n🛑 Exit early if price hits {lv(pos['stop'])}\n"
+                   f"⏱ Usually lasts up to {hold_txt(p)}. #{n} SELL signal will follow." 
                    + (f"\n📊 Past: {t['win']:.0%} wins, profitable overall" if t else ""), "urgent", mkt)
         elif not TRADES_ONLY and iv not in INTRADAY and r.sq and r.sq_bars == 6 and (k := f"SQ|{mkt}|{bar}") not in sent:
             sent.add(k); notify(f"{NAME[mkt]}  👀 BIG MOVE BREWING",
@@ -462,9 +462,9 @@ def process(mkt, d, p, st, sent):
 
 def exit_alert(mkt, pos, px, why, lv):
     good = s_pnl(pos, px) > 0
-    title = {"STOP": "SELL 🛑 cut the loss", "TARGET": "SELL 💰 target hit", "TIME": "SELL ⏱ move is over",
-             "END OF DAY": "SELL ⏱ market closing"}.get(why, "SELL NOW")
-    if why == "STOP" and good: title = "SELL 💰 lock in profit"
+    title = {"STOP": "SELL signal 🛑 move failed", "TARGET": "SELL signal 💰 target reached", "TIME": "SELL signal ⏱ move is over",
+             "END OF DAY": "SELL signal ⏱ market closing"}.get(why, "SELL NOW")
+    if why == "STOP" and good: title = "SELL signal 💰 take profit"
     sell_msg(mkt, pos, title, px, lv)
 
 
@@ -502,7 +502,7 @@ def brief():
         lines.append(f"{COLOR[mkt][0]} {NAME[mkt]}  {lv(r.Close)}  {'▲' if chg >= 0 else '▼'}{abs(chg):.1f}%\n"
                      f"    Trend: {trend}\n    Usual daily swing: ±{rng:.1f}%"
                      + ("\n    ⚡ Quiet → big move likely" if r.sq else "")
-                     + (f"\n    You have an open {'UP' if pos['side'] > 0 else 'DOWN'} bet" if pos else ""))
+                     + (f"\n    Open signal #{pos.get('id', '?')}: {'UP' if pos['side'] > 0 else 'DOWN'}" if pos else ""))
     ev = events(hours=14)
     notify(f"📋 Market check · {dt.datetime.now(ET):%-I:%M %p}", "\n\n".join(lines + ([f"📅 Today: " + "; ".join(ev)] if ev else [])))
 
@@ -612,7 +612,7 @@ def pulse(data, st):
         arrow = "↗️" if m15 > 0.1 else "↘️" if m15 < -0.1 else "➡️"
         pos = st.get("pos", {}).get(mkt)
         lines.append(f"{COLOR[mkt][0]} {NAME[mkt]:<8}{lv(c.iloc[-1]):>9}  {arrow} {'▲' if day >= 0 else '▼'}{abs(day):.1f}%"
-                     + (f"\n     your {'UP' if pos['side'] > 0 else 'DOWN'} bet: {s_pnl(pos, c.iloc[-1]):+.1f}%" if pos else ""))
+                     + (f"\n     open signal #{pos.get('id', '?')} {'UP' if pos['side'] > 0 else 'DOWN'}: {s_pnl(pos, c.iloc[-1]):+.1f}%" if pos else ""))
     if lines: notify(f"📡 Check-in · {dt.datetime.now(ET):%-I:%M %p}", "\n".join(lines) + "\n(arrow = last 15 min)", "low")
 
 
@@ -631,10 +631,10 @@ def fast_entry(mkt, d1, fp, st, cool):
     t = fp.get("test")
     txt, pos["k"] = pick15(mkt, up, lv(r.Close))
     n = new_trade(st, mkt, pos, lv, r.Close); aim = r.Close + (1 if up else -1) * 2 * r.atr
-    notify(f"#{n} {NAME[mkt]} · {'BUY ⬆️ spike starting' if up else 'BUY ⬇️ drop starting'}",
-           f"{txt}\n🎯 Expect to sell near {lv(aim)} (could run further)\n🛑 Or sooner if it hits {lv(pos['stop'])}\n"
-           f"⏱ Fast trade: minutes, not hours. I'll send #{n} SELL."
-           + (f"\n📊 Past: {t['win']:.0%} wins, profitable overall" if t else "\n⚠️ Untested pattern: bet small"), "urgent", mkt)
+    notify(f"#{n} {NAME[mkt]} · {'BUY signal ⬆️ spike starting' if up else 'BUY signal ⬇️ drop starting'}",
+           f"{txt}\n🎯 Exit expected near {lv(aim)} (could run further)\n🛑 Exit early if price hits {lv(pos['stop'])}\n"
+           f"⏱ Fast move: minutes, not hours. #{n} SELL signal will follow."
+           + (f"\n📊 Past: {t['win']:.0%} wins, profitable overall" if t else "\n⚠️ Untested pattern: small size only"), "urgent", mkt)
     return True
 
 
@@ -656,15 +656,15 @@ def manage_fast(mkt, px, st):
     if not why and k and k.get("close") and (pd.Timestamp(k["close"]) - pd.Timestamp.now(tz="UTC")).total_seconds() < 75:
         lv = kconv(mkt, px); kp = px * lv.r
         win = (kp >= k["k"]) if k["side"] == "YES" else (kp < k["k"])
-        sell_msg(mkt, pos, "SELL or HOLD · 15-min window ending", px, lv,
-                 f"\nStart price {money(mkt, k['k'])} → " + ("you're WINNING: hold to collect $1, or sell now to lock it."
-                 if win else "you're LOSING: sell now to save what's left."))
+        sell_msg(mkt, pos, "SELL signal · 15-min window ending", px, lv,
+                 f"\nWindow start {money(mkt, k['k'])}: {k['side']} is " + ("WINNING. Holding to settle pays $1; selling now locks the current price."
+                 if win else "LOSING. Selling now recovers what's left before it expires."))
         del st["fpos"][mkt]; return True
     if not why: return False
     lv, pnl, mins = kconv(mkt, px), s_pnl(pos, px), (time.time() - pos["t0"]) / 60
-    title = {"LOCK": "SELL 💰 lock in profit (move stalling)", "TARGET": "SELL 💰 target hit",
-             "CUT": "SELL 🛑 cut the loss", "DONE": "SELL ⏱ move is over"}[why]
-    sell_msg(mkt, pos, title, px, lv, f"\n({mins:.0f} min trade)")
+    title = {"LOCK": "SELL signal 💰 move stalling, take profit", "TARGET": "SELL signal 💰 target reached",
+             "CUT": "SELL signal 🛑 move failed", "DONE": "SELL signal ⏱ move is over"}[why]
+    sell_msg(mkt, pos, title, px, lv, f"\n(signal lasted {mins:.0f} min)")
     del st["fpos"][mkt]; return True
 
 
