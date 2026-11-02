@@ -1084,6 +1084,15 @@ def ctx_bullets(cx, up, lv):
         f"• RSI {cx['rsi']:.0f} · today {cx['day']:+.1f}%"])
 
 
+def level_for(start, q_side, up, mins, sig):
+    """Price at which the bet (UP or DOWN) would have win-chance q_side with `mins` left."""
+    from math import exp, sqrt
+    from statistics import NormalDist
+    if not sig or mins <= 0: return None
+    q = min(max(q_side, 0.02), 0.98); z = NormalDist().inv_cdf(q if up else 1 - q)
+    return start * exp(z * sig * sqrt(mins))
+
+
 def open_call(st, mkt, kind, side, c, lv, px, odds, why, tested, parent=None):
     """Create a numbered call on the current 15-min contract and send the BUY message."""
     cost = c["ya"] if side == "YES" else c["na"]
@@ -1099,14 +1108,20 @@ def open_call(st, mkt, kind, side, c, lv, px, odds, why, tested, parent=None):
     when = {"spike": "now", "fast": "in 5-10 min", "fav": "in 5-10 min", "flip": "in 5-10 min",
             "ls": f"within {left:.0f} min", "drift": f"by {pd.Timestamp(k['close']).tz_convert(ET):%-I:%M}",
             "ihm": "into the close"}.get(kind, "soon")
-    title = (f"BUY {NAME[mkt]} {'UP' if up else 'DOWN'} · {'rise' if up else 'drop'} expected {when} · #{n}"
+    title = (f"{NAME[mkt]} {'UP' if up else 'DOWN'} · {'rise' if up else 'drop'} expected {when} · #{n}"
              + (f" · BIG PAYOUT {1 / cost:.0f}x" if big else ""))
+    sig = _SIG.get(mkt); tl = max(left * 0.6, 1)
+    tpx = level_for(k["k"], tp, up, tl, sig); bpx = level_for(k["k"], bail, up, tl, sig)
+    pk = lambda x: money(mkt, x)
+    exits = (f"Take profit if it {'rises to' if up else 'drops to'} about {pk(tpx)}. "
+             f"Get out if it {'falls back below' if up else 'climbs back above'} about {pk(bpx)}." if tpx and bpx
+             else "Take profit once it's clearly winning; get out if it reverses.")
     notify(title,
-           f"Buy {side} at {cost * 100:.0f}¢ or less. Wins if price ends {'at or above' if up else 'below'} "
+           f"Bet {'UP' if up else 'DOWN'}: wins if {NAME[mkt].title()} ends {'at or above' if up else 'below'} "
            f"{money(mkt, k['k'])} at {pd.Timestamp(k['close']).tz_convert(ET):%-I:%M} ({left:.0f} min left). Now {lv(px)}.\n"
-           f"Take profit at {tp * 100:.0f}¢, exit if it falls to {bail * 100:.0f}¢. {odds[0].upper() + odds[1:]}.\n"
+           f"{exits} {odds[0].upper() + odds[1:]}.\n"
            f"Why: {why}." + ("" if tested else " Untested: small size.") + (f" Flip of call #{parent}." if parent else "")
-           + (f"\n{action_line(mkt, st['ana'][mkt]).split('. Buy')[0]}." if (st.get("ana") or {}).get(mkt, {}) and "fc_p" in st["ana"][mkt] else ""),
+           + (f"\n{action_line(mkt, st['ana'][mkt]).split('. ')[0].rstrip('.')}." if (st.get("ana") or {}).get(mkt, {}) and "fc_p" in st["ana"][mkt] else ""),
            "urgent", mkt)
     return n
 
@@ -1119,15 +1134,15 @@ def sell_msg(mkt, pos, title, px, lv, extra=""):
 
 def follow_msg(mkt, pos, icon, action, extra=""):
     k = pos["k"]
-    notify(f"{action} · {NAME[mkt]} · #{pos.get('id', '?')}",
-           f"Call #{pos.get('id', '?')}: bought {k['side']} at {k['cost'] * 100:.0f}¢, needed price "
+    notify(f"{NAME[mkt]}: {action} · #{pos.get('id', '?')}",
+           f"Call #{pos.get('id', '?')} was {'UP' if k['side'] == 'YES' else 'DOWN'}: needed {NAME[mkt].title()} "
            f"{'at or above' if k['side'] == 'YES' else 'below'} {money(mkt, k['k'])} at {pd.Timestamp(k['close']).tz_convert(ET):%-I:%M}." + extra,
            "urgent", mkt)
 
 
 def odds_line(p, cost, label="Odds"):
     e = p - cost - kfee(cost)
-    return (f"edge +{e * 100:.0f}¢" if e >= 0.03 else "edge about 0" if e > -0.03 else f"overpriced by {-e * 100:.0f}¢")
+    return (f"win chance {p:.0%} vs market {cost:.0%}" + (" (good value)" if e >= 0.03 else " (fair)" if e > -0.03 else " (overpriced)"))
 
 
 def analyze(mkt, m, kp, lv, c, fc=None):
@@ -1178,8 +1193,8 @@ def action_line(mkt, a):
         T = a["T"]
         if "fc_p" in a and max(a["fc_p"], 1 - a["fc_p"]) >= 0.6 and a.get("fc_ok") and T >= 4:
             want_up = a["fc_p"] >= 0.5; cost = a["ya"] if want_up else a["na"]
-            parts.append(f"Buy {'YES' if want_up else 'NO'} at {cost * 100:.0f}¢" if cost < 0.8
-                         else f"{'YES' if want_up else 'NO'} already {cost * 100:.0f}¢, priced in, skip")
+            parts.append(f"Lean {'UP' if want_up else 'DOWN'} (ends {'above' if want_up else 'below'} {money(mkt, a['start'])})" if cost < 0.8
+                         else f"{'UP' if want_up else 'DOWN'} is already priced in, skip")
         elif T < 4: parts.append(f"window ends in {T:.0f} min, wait for the next one")
         else: parts.append("wait")
     return ". ".join(parts) + "."
@@ -1201,7 +1216,7 @@ def spike_alert(st, mkt, a, lv, cal, cool):
            f"{money(mkt, a['px'])}, {move}. {a['spark']}\n"
            f"Typical range for the next {a['T']:.0f} min: about {money(mkt, a['rng'])}.\n"
            + (f"Do not chase: on {NAME[mkt]}, buying after a spike starts has lost money in testing ({sp.get('test_roi', 0):+.0%})."
-              if sp.get("n") else f"Untested: {side} at {cost * 100:.0f}¢ rides it ({a['T']:.0f} min left)."), "high", mkt)
+              if sp.get("n") else f"Untested: betting {'UP' if up else 'DOWN'} rides it ({a['T']:.0f} min left)."), "high", mkt)
     return False
 
 
@@ -1316,15 +1331,15 @@ def manage_ls(mkt, px, st, lv):
     if not c or c["ticker"] != k["ticker"]:  # window over → final result
         _, won = contract_status(k)
         if won is None: return False
-        follow_msg(mkt, pos, "", f"RESULT: WON +{100 - cost:.0f}¢" if won else f"RESULT: LOST -{cost:.0f}¢")
+        follow_msg(mkt, pos, "", f"RESULT: WON (+{(100 - cost) / cost:.0%} on stake)" if won else "RESULT: LOST (stake gone)")
         del st["lpos"][mkt]; return True
     if pos.get("held"): return False
     bid = c["yb"] if k["side"] == "YES" else c["nb"]; gain = bid * 100 - cost
     if bid >= pos.get("tp", 0.9):
-        follow_msg(mkt, pos, "", f"SELL NOW, take profit: {k['side']} at {bid * 100:.0f}¢ ({gain:+.0f}¢)")
+        follow_msg(mkt, pos, "", f"TAKE PROFIT NOW (bet up {gain / cost:+.0%})")
         del st["lpos"][mkt]; return True
     if bid <= pos.get("bail", 0) and left >= 4 and pos.get("kind") != "flip":
-        follow_msg(mkt, pos, "", f"SELL NOW, call was wrong: {k['side']} at {bid * 100:.0f}¢ ({gain:+.0f}¢)")
+        follow_msg(mkt, pos, "", f"GET OUT NOW, call was wrong (bet {gain / cost:+.0%})")
         del st["lpos"][mkt]
         opp = "NO" if k["side"] == "YES" else "YES"; oa = c["na"] if opp == "NO" else c["ya"]
         if 0 < oa <= 0.85:  # moves tend to continue within a window → flip
@@ -1333,8 +1348,8 @@ def manage_ls(mkt, px, st, lv):
         return True
     if left < 1.25:
         if bid >= 0.5:
-            follow_msg(mkt, pos, "", f"HOLD to settle: {k['side']} worth {bid * 100:.0f}¢, pays $1"); pos["held"] = True; return True
-        follow_msg(mkt, pos, "", f"SELL what's left: {k['side']} at {bid * 100:.0f}¢, or let it expire")
+            follow_msg(mkt, pos, "", "HOLD TO THE END, winning, pays in full at the close"); pos["held"] = True; return True
+        follow_msg(mkt, pos, "", f"LOSING with {left:.0f} min left: get out now or let it expire")
         del st["lpos"][mkt]; return True
     return False
 
@@ -1604,7 +1619,7 @@ def settle_only(st):
             if pd.Timestamp(pos["k"]["close"]) > pd.Timestamp.now(tz="UTC"): continue
             txt, won = contract_status(pos["k"])
             if won is None: continue
-            follow_msg(mkt, pos, "", f"RESULT: {'WON' if won else 'LOST'}", txt)
+            follow_msg(mkt, pos, "", f"RESULT: {'WON' if won else 'LOST'}")
             del st["lpos"][mkt]; changed = True
         except Exception as e: print("settle", mkt, e)
     return changed
