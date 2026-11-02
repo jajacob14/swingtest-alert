@@ -229,8 +229,8 @@
      0.217
     ],
     "1.0|T-|V+|F-|run": [
-     384,
-     0.185
+     385,
+     0.187
     ],
     "1.0|T-|V+|F-|turn": [
      143,
@@ -315,8 +315,8 @@
      0.192
     ],
     "US|1.0|T-|run": [
-     185,
-     0.189
+     186,
+     0.194
     ],
     "US|1.0|T-|turn": [
      64,
@@ -331,8 +331,34 @@
      0.02
     ]
    },
-   "setups": 2309,
+   "setups": 2311,
    "src": "yahoo futures 30d",
+   "drift": {
+    "ASIA": {
+     "dir": "DOWN",
+     "p": 0.556,
+     "older": 0.515,
+     "newer": 0.444,
+     "n": 520,
+     "ok": false
+    },
+    "EU": {
+     "dir": "DOWN",
+     "p": 0.513,
+     "older": 0.513,
+     "newer": 0.487,
+     "n": 546,
+     "ok": false
+    },
+    "US": {
+     "dir": "UP",
+     "p": 0.506,
+     "older": 0.562,
+     "newer": 0.506,
+     "n": 546,
+     "ok": false
+    }
+   },
    "night_ls_n": 5,
    "night_ls_roi": -0.097,
    "night_ls_ok": false,
@@ -342,14 +368,14 @@
    "bounce_by_session": {
     "ASIA": 0.138,
     "EU": 0.159,
-    "EVE": 0.081,
+    "EVE": 0.079,
     "US": 0.128
    },
    "ls_test_n": 7,
    "ls_test_roi": -1.101,
    "ls_ok": false,
-   "fav_test_n": 116,
-   "fav_test_roi": -0.004,
+   "fav_test_n": 114,
+   "fav_test_roi": 0.014,
    "fav_ok": false,
    "active": true,
    "ihm": {
@@ -511,6 +537,40 @@
    },
    "setups": 2663,
    "src": "yahoo futures 30d",
+   "drift": {
+    "ASIA": {
+     "dir": "DOWN",
+     "p": 0.512,
+     "older": 0.512,
+     "newer": 0.488,
+     "n": 588,
+     "ok": false
+    },
+    "EU": {
+     "dir": "UP",
+     "p": 0.506,
+     "older": 0.541,
+     "newer": 0.506,
+     "n": 546,
+     "ok": false
+    },
+    "EVE": {
+     "dir": "UP",
+     "p": 0.512,
+     "older": 0.512,
+     "newer": 0.589,
+     "n": 245,
+     "ok": false
+    },
+    "US": {
+     "dir": "UP",
+     "p": 0.503,
+     "older": 0.562,
+     "newer": 0.503,
+     "n": 546,
+     "ok": false
+    }
+   },
    "night_ls_n": 33,
    "night_ls_roi": 0.024,
    "night_ls_ok": false,
@@ -677,6 +737,40 @@
    },
    "setups": 2249,
    "src": "yahoo futures 30d",
+   "drift": {
+    "ASIA": {
+     "dir": "UP",
+     "p": 0.54,
+     "older": 0.54,
+     "newer": 0.571,
+     "n": 559,
+     "ok": true
+    },
+    "EU": {
+     "dir": "UP",
+     "p": 0.503,
+     "older": 0.503,
+     "newer": 0.506,
+     "n": 546,
+     "ok": false
+    },
+    "EVE": {
+     "dir": "UP",
+     "p": 0.514,
+     "older": 0.527,
+     "newer": 0.514,
+     "n": 216,
+     "ok": false
+    },
+    "US": {
+     "dir": "UP",
+     "p": 0.524,
+     "older": 0.524,
+     "newer": 0.552,
+     "n": 546,
+     "ok": false
+    }
+   },
    "night_ls_n": 0,
    "night_ls_roi": 0,
    "night_ls_ok": false,
@@ -701,6 +795,998 @@
     "dir": "reverse",
     "hit": 0.562,
     "hit_recent": 0.588,
+    "ok": true
+   }
+  },
+  "GOLD": {
+   "table": {
+    "1.0|T+|V+|F-|run": [
+     65,
+     0.2
+    ],
+    "1.0|T+|V-|F+|run": [
+     59,
+     0.153
+    ],
+    "1.0|T+|V-|F-|run": [
+     260,
+     0.169
+    ],
+    "1.0|T+|V-|F-|turn": [
+     63,
+     0.127
+    ],
+    "1.0|T-|V+|F+|run": [
+     80,
+     0.263
+    ],
+    "1.0|T-|V+|F+|turn": [
+     48,
+     0.208
+    ],
+    "1.0|T-|V+|F-|run": [
+     452,
+     0.179
+    ],
+    "1.0|T-|V+|F-|turn": [
+     201,
+     0.169
+    ],
+    "1.0|T-|V-|F-|run": [
+     101,
+     0.267
+    ],
+    "1.0|T-|V-|F-|turn": [
+     47,
+     0.298
+    ],
+    "2.0|T+|V-|F-|run": [
+     40,
+     0.2
+    ],
+    "2.0|T+|V-|F-|turn": [
+     43,
+     0.047
+    ],
+    "2.0|T-|V+|F-|run": [
+     88,
+     0.17
+    ],
+    "2.0|T-|V+|F-|turn": [
+     144,
+     0.069
+    ],
+    "2.0|T-|V-|F-|turn": [
+     32,
+     0.094
+    ],
+    "99|T-|V+|F-|turn": [
+     56,
+     0.054
+    ]
+   },
+   "stable": {
+    "ASIA|1.0|T+|run": [
+     126,
+     0.198
+    ],
+    "ASIA|1.0|T+|turn": [
+     28,
+     0.179
+    ],
+    "ASIA|1.0|T-|run": [
+     194,
+     0.227
+    ],
+    "ASIA|1.0|T-|turn": [
+     84,
+     0.274
+    ],
+    "ASIA|2.0|T-|run": [
+     49,
+     0.163
+    ],
+    "ASIA|2.0|T-|turn": [
+     82,
+     0.073
+    ],
+    "ASIA|99|T-|turn": [
+     32,
+     0.0
+    ],
+    "EU|1.0|T+|run": [
+     121,
+     0.165
+    ],
+    "EU|1.0|T+|turn": [
+     25,
+     0.12
+    ],
+    "EU|1.0|T-|run": [
+     183,
+     0.246
+    ],
+    "EU|1.0|T-|turn": [
+     90,
+     0.222
+    ],
+    "EU|2.0|T+|turn": [
+     26,
+     0.077
+    ],
+    "EU|2.0|T-|run": [
+     38,
+     0.158
+    ],
+    "EU|2.0|T-|turn": [
+     54,
+     0.074
+    ],
+    "EVE|1.0|T+|run": [
+     48,
+     0.104
+    ],
+    "EVE|1.0|T-|run": [
+     81,
+     0.111
+    ],
+    "EVE|1.0|T-|turn": [
+     37,
+     0.054
+    ],
+    "US|1.0|T+|run": [
+     97,
+     0.186
+    ],
+    "US|1.0|T+|turn": [
+     30,
+     0.167
+    ],
+    "US|1.0|T-|run": [
+     193,
+     0.202
+    ],
+    "US|1.0|T-|turn": [
+     94,
+     0.16
+    ],
+    "US|2.0|T-|turn": [
+     41,
+     0.098
+    ]
+   },
+   "setups": 2840,
+   "src": "yahoo futures 30d",
+   "drift": {
+    "ASIA": {
+     "dir": "DOWN",
+     "p": 0.529,
+     "older": 0.471,
+     "newer": 0.452,
+     "n": 588,
+     "ok": false
+    },
+    "EU": {
+     "dir": "UP",
+     "p": 0.519,
+     "older": 0.492,
+     "newer": 0.519,
+     "n": 546,
+     "ok": false
+    },
+    "EVE": {
+     "dir": "DOWN",
+     "p": 0.57,
+     "older": 0.43,
+     "newer": 0.397,
+     "n": 245,
+     "ok": true
+    },
+    "US": {
+     "dir": "UP",
+     "p": 0.514,
+     "older": 0.499,
+     "newer": 0.514,
+     "n": 546,
+     "ok": false
+    }
+   },
+   "night_ls_n": 3,
+   "night_ls_roi": -1.107,
+   "night_ls_ok": false,
+   "night_fav_n": 94,
+   "night_fav_roi": 0.016,
+   "night_fav_ok": false,
+   "bounce_by_session": {
+    "ASIA": 0.135,
+    "EU": 0.136,
+    "EVE": 0.048,
+    "US": 0.131
+   },
+   "ls_test_n": 1,
+   "ls_test_roi": -1.111,
+   "ls_ok": false,
+   "fav_test_n": 183,
+   "fav_test_roi": 0.04,
+   "fav_ok": true,
+   "active": true,
+   "ihm": {
+    "n": 741,
+    "dir": "follow",
+    "hit": 0.536,
+    "hit_recent": 0.561,
+    "ok": false
+   }
+  },
+  "SILVER": {
+   "table": {
+    "1.0|T+|V+|F-|run": [
+     65,
+     0.2
+    ],
+    "1.0|T+|V-|F+|run": [
+     58,
+     0.328
+    ],
+    "1.0|T+|V-|F-|run": [
+     225,
+     0.187
+    ],
+    "1.0|T+|V-|F-|turn": [
+     45,
+     0.111
+    ],
+    "1.0|T-|V+|F+|run": [
+     95,
+     0.284
+    ],
+    "1.0|T-|V+|F+|turn": [
+     46,
+     0.152
+    ],
+    "1.0|T-|V+|F-|run": [
+     428,
+     0.171
+    ],
+    "1.0|T-|V+|F-|turn": [
+     201,
+     0.194
+    ],
+    "1.0|T-|V-|F-|run": [
+     77,
+     0.208
+    ],
+    "1.0|T-|V-|F-|turn": [
+     31,
+     0.194
+    ],
+    "2.0|T+|V-|F-|run": [
+     40,
+     0.125
+    ],
+    "2.0|T+|V-|F-|turn": [
+     36,
+     0.028
+    ],
+    "2.0|T-|V+|F-|run": [
+     98,
+     0.194
+    ],
+    "2.0|T-|V+|F-|turn": [
+     130,
+     0.085
+    ],
+    "99|T-|V+|F-|turn": [
+     57,
+     0.0
+    ]
+   },
+   "stable": {
+    "ASIA|1.0|T+|run": [
+     116,
+     0.267
+    ],
+    "ASIA|1.0|T-|run": [
+     174,
+     0.207
+    ],
+    "ASIA|1.0|T-|turn": [
+     89,
+     0.213
+    ],
+    "ASIA|2.0|T+|run": [
+     28,
+     0.179
+    ],
+    "ASIA|2.0|T-|run": [
+     63,
+     0.206
+    ],
+    "ASIA|2.0|T-|turn": [
+     58,
+     0.155
+    ],
+    "ASIA|99|T-|turn": [
+     33,
+     0.0
+    ],
+    "EU|1.0|T+|run": [
+     111,
+     0.225
+    ],
+    "EU|1.0|T+|turn": [
+     27,
+     0.148
+    ],
+    "EU|1.0|T-|run": [
+     192,
+     0.219
+    ],
+    "EU|1.0|T-|turn": [
+     86,
+     0.233
+    ],
+    "EU|2.0|T-|run": [
+     34,
+     0.206
+    ],
+    "EU|2.0|T-|turn": [
+     51,
+     0.039
+    ],
+    "EVE|1.0|T+|run": [
+     42,
+     0.119
+    ],
+    "EVE|1.0|T-|run": [
+     82,
+     0.134
+    ],
+    "EVE|1.0|T-|turn": [
+     30,
+     0.1
+    ],
+    "US|1.0|T+|run": [
+     97,
+     0.186
+    ],
+    "US|1.0|T-|run": [
+     172,
+     0.186
+    ],
+    "US|1.0|T-|turn": [
+     83,
+     0.145
+    ],
+    "US|2.0|T-|run": [
+     31,
+     0.194
+    ],
+    "US|2.0|T-|turn": [
+     44,
+     0.045
+    ]
+   },
+   "setups": 2682,
+   "src": "yahoo futures 30d",
+   "drift": {
+    "ASIA": {
+     "dir": "DOWN",
+     "p": 0.521,
+     "older": 0.479,
+     "newer": 0.446,
+     "n": 588,
+     "ok": false
+    },
+    "EU": {
+     "dir": "UP",
+     "p": 0.532,
+     "older": 0.5,
+     "newer": 0.532,
+     "n": 546,
+     "ok": false
+    },
+    "EVE": {
+     "dir": "DOWN",
+     "p": 0.556,
+     "older": 0.444,
+     "newer": 0.423,
+     "n": 242,
+     "ok": true
+    },
+    "US": {
+     "dir": "UP",
+     "p": 0.511,
+     "older": 0.489,
+     "newer": 0.511,
+     "n": 546,
+     "ok": false
+    }
+   },
+   "night_ls_n": 8,
+   "night_ls_roi": -1.15,
+   "night_ls_ok": false,
+   "night_fav_n": 80,
+   "night_fav_roi": 0.055,
+   "night_fav_ok": true,
+   "bounce_by_session": {
+    "ASIA": 0.143,
+    "EU": 0.142,
+    "EVE": 0.097,
+    "US": 0.105
+   },
+   "ls_test_n": 0,
+   "ls_test_roi": 0,
+   "ls_ok": false,
+   "fav_test_n": 186,
+   "fav_test_roi": 0.07,
+   "fav_ok": true,
+   "active": true,
+   "ihm": {
+    "n": 735,
+    "dir": "reverse",
+    "hit": 0.548,
+    "hit_recent": 0.443,
+    "ok": false
+   }
+  },
+  "COPPER": {
+   "table": {
+    "1.0|T+|V+|F-|run": [
+     49,
+     0.204
+    ],
+    "1.0|T+|V-|F+|run": [
+     68,
+     0.265
+    ],
+    "1.0|T+|V-|F-|run": [
+     237,
+     0.181
+    ],
+    "1.0|T+|V-|F-|turn": [
+     51,
+     0.196
+    ],
+    "1.0|T-|V+|F+|run": [
+     108,
+     0.222
+    ],
+    "1.0|T-|V+|F+|turn": [
+     47,
+     0.213
+    ],
+    "1.0|T-|V+|F-|run": [
+     410,
+     0.215
+    ],
+    "1.0|T-|V+|F-|turn": [
+     151,
+     0.166
+    ],
+    "1.0|T-|V-|F-|run": [
+     66,
+     0.227
+    ],
+    "1.0|T-|V-|F-|turn": [
+     28,
+     0.143
+    ],
+    "2.0|T+|V-|F-|run": [
+     41,
+     0.098
+    ],
+    "2.0|T+|V-|F-|turn": [
+     29,
+     0.138
+    ],
+    "2.0|T-|V+|F-|run": [
+     92,
+     0.109
+    ],
+    "2.0|T-|V+|F-|turn": [
+     109,
+     0.128
+    ],
+    "99|T-|V+|F-|turn": [
+     67,
+     0.015
+    ]
+   },
+   "stable": {
+    "ASIA|1.0|T+|run": [
+     129,
+     0.225
+    ],
+    "ASIA|1.0|T+|turn": [
+     25,
+     0.12
+    ],
+    "ASIA|1.0|T-|run": [
+     176,
+     0.21
+    ],
+    "ASIA|1.0|T-|turn": [
+     65,
+     0.246
+    ],
+    "ASIA|2.0|T+|run": [
+     27,
+     0.148
+    ],
+    "ASIA|2.0|T-|run": [
+     49,
+     0.122
+    ],
+    "ASIA|2.0|T-|turn": [
+     47,
+     0.085
+    ],
+    "ASIA|99|T-|turn": [
+     44,
+     0.023
+    ],
+    "EU|1.0|T+|run": [
+     113,
+     0.248
+    ],
+    "EU|1.0|T-|run": [
+     193,
+     0.306
+    ],
+    "EU|1.0|T-|turn": [
+     81,
+     0.198
+    ],
+    "EU|2.0|T-|run": [
+     39,
+     0.103
+    ],
+    "EU|2.0|T-|turn": [
+     54,
+     0.167
+    ],
+    "EVE|1.0|T-|run": [
+     59,
+     0.068
+    ],
+    "US|1.0|T+|run": [
+     100,
+     0.15
+    ],
+    "US|1.0|T+|turn": [
+     26,
+     0.154
+    ],
+    "US|1.0|T-|run": [
+     178,
+     0.174
+    ],
+    "US|1.0|T-|turn": [
+     63,
+     0.095
+    ],
+    "US|2.0|T-|run": [
+     26,
+     0.077
+    ],
+    "US|2.0|T-|turn": [
+     40,
+     0.075
+    ]
+   },
+   "setups": 2542,
+   "src": "yahoo futures 30d",
+   "drift": {
+    "ASIA": {
+     "dir": "UP",
+     "p": 0.506,
+     "older": 0.495,
+     "newer": 0.506,
+     "n": 584,
+     "ok": false
+    },
+    "EU": {
+     "dir": "UP",
+     "p": 0.506,
+     "older": 0.51,
+     "newer": 0.506,
+     "n": 546,
+     "ok": false
+    },
+    "EVE": {
+     "dir": "DOWN",
+     "p": 0.54,
+     "older": 0.444,
+     "newer": 0.46,
+     "n": 189,
+     "ok": true
+    },
+    "US": {
+     "dir": "UP",
+     "p": 0.543,
+     "older": 0.496,
+     "newer": 0.543,
+     "n": 546,
+     "ok": false
+    }
+   },
+   "night_ls_n": 11,
+   "night_ls_roi": -1.14,
+   "night_ls_ok": false,
+   "night_fav_n": 40,
+   "night_fav_roi": 0.074,
+   "night_fav_ok": true,
+   "bounce_by_session": {
+    "ASIA": 0.131,
+    "EU": 0.16,
+    "EVE": 0.052,
+    "US": 0.073
+   },
+   "ls_test_n": 13,
+   "ls_test_roi": 0.292,
+   "ls_ok": false,
+   "fav_test_n": 94,
+   "fav_test_roi": 0.054,
+   "fav_ok": true,
+   "active": true,
+   "ihm": {
+    "n": 156,
+    "dir": "follow",
+    "hit": 0.538,
+    "hit_recent": 0.553,
+    "ok": false
+   }
+  },
+  "PLATINUM": {
+   "table": {
+    "1.0|T+|V+|F-|run": [
+     58,
+     0.224
+    ],
+    "1.0|T+|V-|F+|run": [
+     79,
+     0.19
+    ],
+    "1.0|T+|V-|F-|run": [
+     214,
+     0.14
+    ],
+    "1.0|T+|V-|F-|turn": [
+     43,
+     0.07
+    ],
+    "1.0|T-|V+|F+|run": [
+     128,
+     0.18
+    ],
+    "1.0|T-|V+|F+|turn": [
+     54,
+     0.278
+    ],
+    "1.0|T-|V+|F-|run": [
+     402,
+     0.194
+    ],
+    "1.0|T-|V+|F-|turn": [
+     156,
+     0.141
+    ],
+    "1.0|T-|V-|F+|run": [
+     25,
+     0.04
+    ],
+    "1.0|T-|V-|F-|run": [
+     71,
+     0.197
+    ],
+    "1.0|T-|V-|F-|turn": [
+     31,
+     0.194
+    ],
+    "2.0|T+|V-|F-|run": [
+     32,
+     0.188
+    ],
+    "2.0|T+|V-|F-|turn": [
+     38,
+     0.105
+    ],
+    "2.0|T-|V+|F-|run": [
+     73,
+     0.082
+    ],
+    "2.0|T-|V+|F-|turn": [
+     116,
+     0.06
+    ],
+    "99|T-|V+|F-|turn": [
+     45,
+     0.0
+    ]
+   },
+   "stable": {
+    "ASIA|1.0|T+|run": [
+     114,
+     0.219
+    ],
+    "ASIA|1.0|T-|run": [
+     181,
+     0.182
+    ],
+    "ASIA|1.0|T-|turn": [
+     75,
+     0.147
+    ],
+    "ASIA|2.0|T-|run": [
+     37,
+     0.135
+    ],
+    "ASIA|2.0|T-|turn": [
+     55,
+     0.073
+    ],
+    "EU|1.0|T+|run": [
+     123,
+     0.179
+    ],
+    "EU|1.0|T+|turn": [
+     25,
+     0.16
+    ],
+    "EU|1.0|T-|run": [
+     194,
+     0.237
+    ],
+    "EU|1.0|T-|turn": [
+     77,
+     0.247
+    ],
+    "EU|2.0|T-|run": [
+     34,
+     0.059
+    ],
+    "EU|2.0|T-|turn": [
+     54,
+     0.093
+    ],
+    "EVE|1.0|T+|run": [
+     26,
+     0.077
+    ],
+    "EVE|1.0|T-|run": [
+     55,
+     0.055
+    ],
+    "US|1.0|T+|run": [
+     105,
+     0.143
+    ],
+    "US|1.0|T-|run": [
+     196,
+     0.173
+    ],
+    "US|1.0|T-|turn": [
+     79,
+     0.177
+    ],
+    "US|2.0|T-|turn": [
+     46,
+     0.065
+    ]
+   },
+   "setups": 2533,
+   "src": "yahoo futures 30d",
+   "drift": {
+    "ASIA": {
+     "dir": "DOWN",
+     "p": 0.533,
+     "older": 0.467,
+     "newer": 0.391,
+     "n": 555,
+     "ok": false
+    },
+    "EU": {
+     "dir": "UP",
+     "p": 0.523,
+     "older": 0.467,
+     "newer": 0.523,
+     "n": 545,
+     "ok": false
+    },
+    "EVE": {
+     "dir": "UP",
+     "p": 0.557,
+     "older": 0.421,
+     "newer": 0.557,
+     "n": 182,
+     "ok": false
+    },
+    "US": {
+     "dir": "DOWN",
+     "p": 0.509,
+     "older": 0.523,
+     "newer": 0.491,
+     "n": 544,
+     "ok": false
+    }
+   },
+   "night_ls_n": 0,
+   "night_ls_roi": 0,
+   "night_ls_ok": false,
+   "night_fav_n": 109,
+   "night_fav_roi": 0.038,
+   "night_fav_ok": true,
+   "bounce_by_session": {
+    "ASIA": 0.108,
+    "EU": 0.149,
+    "EVE": 0.016,
+    "US": 0.12
+   },
+   "ls_test_n": 2,
+   "ls_test_roi": 1.549,
+   "ls_ok": false,
+   "fav_test_n": 182,
+   "fav_test_roi": 0.034,
+   "fav_ok": true,
+   "active": true,
+   "ihm": {
+    "n": 209,
+    "dir": "follow",
+    "hit": 0.483,
+    "hit_recent": 0.413,
+    "ok": false
+   }
+  },
+  "PALLADIUM": {
+   "table": {
+    "1.0|T+|V+|F-|run": [
+     44,
+     0.182
+    ],
+    "1.0|T+|V-|F+|run": [
+     55,
+     0.109
+    ],
+    "1.0|T+|V-|F-|run": [
+     152,
+     0.178
+    ],
+    "1.0|T-|V+|F+|run": [
+     99,
+     0.202
+    ],
+    "1.0|T-|V+|F+|turn": [
+     28,
+     0.179
+    ],
+    "1.0|T-|V+|F-|run": [
+     259,
+     0.208
+    ],
+    "1.0|T-|V+|F-|turn": [
+     81,
+     0.198
+    ],
+    "1.0|T-|V-|F-|run": [
+     46,
+     0.261
+    ],
+    "2.0|T-|V+|F-|run": [
+     59,
+     0.068
+    ],
+    "2.0|T-|V+|F-|turn": [
+     62,
+     0.113
+    ],
+    "99|T-|V+|F-|turn": [
+     26,
+     0.0
+    ]
+   },
+   "stable": {
+    "ASIA|1.0|T+|run": [
+     71,
+     0.141
+    ],
+    "ASIA|1.0|T-|run": [
+     103,
+     0.175
+    ],
+    "ASIA|1.0|T-|turn": [
+     33,
+     0.182
+    ],
+    "EU|1.0|T+|run": [
+     102,
+     0.206
+    ],
+    "EU|1.0|T-|run": [
+     152,
+     0.204
+    ],
+    "EU|1.0|T-|turn": [
+     49,
+     0.224
+    ],
+    "EU|2.0|T-|run": [
+     35,
+     0.057
+    ],
+    "EU|2.0|T-|turn": [
+     40,
+     0.025
+    ],
+    "US|1.0|T+|run": [
+     88,
+     0.125
+    ],
+    "US|1.0|T-|run": [
+     151,
+     0.252
+    ],
+    "US|1.0|T-|turn": [
+     41,
+     0.22
+    ],
+    "US|2.0|T-|turn": [
+     31,
+     0.129
+    ]
+   },
+   "setups": 1594,
+   "src": "yahoo futures 30d",
+   "drift": {
+    "ASIA": {
+     "dir": "DOWN",
+     "p": 0.509,
+     "older": 0.491,
+     "newer": 0.48,
+     "n": 318,
+     "ok": false
+    },
+    "EU": {
+     "dir": "DOWN",
+     "p": 0.529,
+     "older": 0.512,
+     "newer": 0.471,
+     "n": 468,
+     "ok": false
+    },
+    "US": {
+     "dir": "UP",
+     "p": 0.503,
+     "older": 0.503,
+     "newer": 0.541,
+     "n": 439,
+     "ok": false
+    }
+   },
+   "night_ls_n": 0,
+   "night_ls_roi": 0,
+   "night_ls_ok": false,
+   "night_fav_n": 66,
+   "night_fav_roi": 0.059,
+   "night_fav_ok": true,
+   "bounce_by_session": {
+    "ASIA": 0.123,
+    "EU": 0.114,
+    "EVE": 0.091,
+    "US": 0.131
+   },
+   "ls_test_n": 0,
+   "ls_test_roi": 0,
+   "ls_ok": false,
+   "fav_test_n": 107,
+   "fav_test_roi": 0.042,
+   "fav_ok": true,
+   "active": true,
+   "ihm": {
+    "n": 139,
+    "dir": "reverse",
+    "hit": 0.54,
+    "hit_recent": 0.595,
     "ok": true
    }
   }
