@@ -1078,6 +1078,9 @@ def k15_call(mkt, m, px, st, lv, cal, night=False):
     kind = "ls" if turning else "fav"
     up = (bdir > 0) if kind == "ls" else (bdir < 0); side = "YES" if up else "NO"
     cost = c["ya"] if up else c["na"]; p = cell[1] if kind == "ls" else 1 - cell[1]
+    tested = cal.get(f"night_{kind}_ok" if night else f"{kind}_ok")
+    if kind == "fav" and not tested: return False                       # edge picks only where the edge held on unseen data
+    if kind == "ls" and mkt not in MARKETS and mkt not in METALS: return False  # untested longshots only on commodities
     xe = regime_extra(st, mkt) + (0.02 if st.get("thin", {}).get(mkt) else 0)
     if kind == "ls" and (xe or not (0 < cost <= LS_MAX_COST and p - cost - kfee(cost) >= LS_MIN_EDGE)): return False
     if kind == "fav" and not (0 < cost < 0.92 and p - cost - kfee(cost) >= FAV_MIN_EDGE + xe): return False
