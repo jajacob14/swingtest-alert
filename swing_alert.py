@@ -25,6 +25,7 @@ FEE = 0.03  # % per side: spread + slippage
 BARS = {"1m": ("1Min", 1), "5m": ("5Min", 5), "15m": ("15Min", 15), "1h": ("1Hour", 60), "1d": ("1Day", 1440)}
 INTRADAY = ("1m", "5m")  # flat by the close, never held overnight
 HOLD = {"1m": 60, "5m": 48, "15m": 32, "1h": 40, "1d": 20}  # max bars in a trade (time stop)
+FAST_DEFAULT = dict(strategy="ignite", z=2.5, look=30, vr=1.5, stop=1.5, tgt=8.0, trail=1.5, interval="1m", hold=30)
 DEFAULT = dict(interval="1h", strategy="squeeze", min_sq=6, trend=1, stop=1.5, tgt=3.0, trail=2.5, hold=40)
 EXTRA_EVENTS = [e for e in os.getenv("EXTRA_EVENTS", "").split(",") if e]  # "2026-11-30 OPEC+ meeting"
 ALPACA = bool(os.getenv("ALPACA_KEY"))
@@ -109,6 +110,13 @@ def signals(d, p):
         N = p["lookback"]
         L = (c > d.High.rolling(N).max().shift()) & up
         S = (c < d.Low.rolling(N).min().shift()) & dn
+    elif p["strategy"] == "ignite":  # spike starting: sharp 3-bar push out of a quiet range on rising volume
+        ret = np.log(c).diff(); sig = ret.rolling(390, min_periods=60).std()
+        z3 = np.log(c / c.shift(3)) / (sig * np.sqrt(3))
+        hh, ll = d.High.rolling(p["look"]).max().shift(3), d.Low.rolling(p["look"]).min().shift(3)
+        vr = d.Volume.rolling(3).mean() / (d.Volume.rolling(390, min_periods=60).mean() + 1e-9)
+        L = (z3 > p["z"]) & (c > hh) & (vr > p["vr"])
+        S = (z3 < -p["z"]) & (c < ll) & (vr > p["vr"])
     elif p["strategy"] == "fade":  # buy stretched lows / sell stretched highs, once momentum turns
         L = (d.bbz.shift() < -p["k"]) & (c > c.shift()) & (d.rsi < 35)
         S = (d.bbz.shift() > p["k"]) & (c < c.shift()) & (d.rsi > 65)
@@ -177,13 +185,15 @@ def stats(t):
 ENTRIES = ([dict(strategy="squeeze", min_sq=m, trend=t) for m in (4, 8) for t in (0, 1)]
            + [dict(strategy="breakout", lookback=n, trend=t) for n in (10, 20, 40) for t in (0, 1)]
            + [dict(strategy="rsi2", lo=x) for x in (5, 10)]
-           + [dict(strategy="fade", k=k) for k in (2.0, 2.5)])
+           + [dict(strategy="fade", k=k) for k in (2.0, 2.5)]
+           + [dict(strategy="ignite", z=z, look=lk, vr=v) for z in (2.0, 2.5, 3.0) for lk in (15, 30) for v in (1.0, 1.5)])
 ENTRIES += [{**e, "volcap": 0.95} for e in ENTRIES]
-EXITS = [dict(stop=s, tgt=g, trail=r) for s in (1.0, 1.5, 2.5) for g in (1.5, 2.5, 4.0) for r in (0, 2.5)]
+EXITS = [dict(stop=s, tgt=g, trail=r) for s in (1.0, 1.5, 2.5) for g in (1.5, 2.5, 4.0, 8.0) for r in (0, 1.5, 2.5)]
+FAST_HOLD = 30  # fast trades: max 30 one-minute bars
 
 
 def opt_market(mkt):
-    best = None
+    best, fast = None, None
     for iv, days in (("1m", 60), ("5m", 250), ("15m", 700), ("1h", 1500)):
         if best and iv == "1h": break  # 1h only as fallback when no fast setup validates
         try:
@@ -192,26 +202,30 @@ def opt_market(mkt):
             print(mkt, iv, "data error:", e); continue
         cut = int(len(d) * 0.7); cands = []
         for e in ENTRIES:
+            if e["strategy"] == "ignite" and iv != "1m": continue
             L, S = signals(d, {**e, "interval": iv})
             for x in EXITS:
-                p = {**e, **x, "interval": iv, "hold": HOLD[iv]}
+                p = {**e, **x, "interval": iv, "hold": FAST_HOLD if iv == "1m" else HOLD[iv]}
                 tr = stats(simulate(d, p, L, S, 0, cut))
-                if tr["n"] >= 30 and tr["pf"] > 1.1: cands.append((tr["t"], p, tr, L, S))
-        for _, p, tr, L, S in sorted(cands, key=lambda z: -z[0])[:5]:  # top in-sample, confirm out-of-sample
+                if tr["n"] >= 30 and tr["pf"] > 1.05: cands.append((tr["t"], p, tr, L, S))
+        days_test = max(1, (d.index[-1] - d.index[cut]).days * 5 / 7)
+        for _, p, tr, L, S in sorted(cands, key=lambda z: -z[0])[:8]:  # top in-sample, confirm out-of-sample
             te = stats(simulate(d, p, L, S, cut))
+            row = {**p, "train": tr, "test": te, "trades_per_day": round(te["n"] / days_test, 1), "bars": len(d)}
+            if iv == "1m" and te["n"] >= 15 and te["pf"] >= 1.1 and (fast is None or te["t"] > fast["test"]["t"]):
+                fast = row
             if te["n"] >= 15 and te["pf"] >= 1.15 and (best is None or te["t"] > best["test"]["t"]):
-                days_test = max(1, (d.index[-1] - d.index[cut]).days * 5 / 7)
-                best = {**p, "train": tr, "test": te, "trades_per_day": round(te["n"] / days_test, 1),
-                        "bars": len(d), "src": "alpaca" if ALPACA else "yahoo"}
-                break
-        print(f"{mkt} {iv}: {len(d)} bars, {len(cands)} candidates, best so far: {best and best['interval']}", flush=True)
-    return mkt, ({**best, "status": "active"} if best else {**DEFAULT, "status": "watch"})
+                best = row
+        print(f"{mkt} {iv}: {len(d)} bars, {len(cands)} candidates, best={best and best['interval']} fast={fast and fast['strategy']}", flush=True)
+    return mkt, ({**best, "status": "active"} if best else {**DEFAULT, "status": "watch"}), fast
 
 
 def optimize():
     from concurrent.futures import ProcessPoolExecutor
     with ProcessPoolExecutor(3) as ex:
-        res = dict(ex.map(opt_market, MARKETS))
+        out = list(ex.map(opt_market, MARKETS))
+    res = {m: p for m, p, _ in out}
+    res["_fast"] = {m: ({**f, "status": "active"} if f else {**FAST_DEFAULT, "status": "unproven"}) for m, _, f in out}
     for m, p in res.items(): print(m, json.dumps(p))
     res["_updated"] = dt.datetime.now(ET).isoformat(timespec="minutes")
     json.dump(res, open(PARAMS_FILE, "w"), indent=1)
@@ -287,7 +301,7 @@ KSERIES = {"BRENT": ["KXBRENTD"], "WTI": ["KXWTIH", "KXWTI"], "NATGAS": ["KXNATG
 NAME = {"BRENT": "BRENT", "WTI": "WTI", "NATGAS": "NAT GAS"}
 REASON = {"STOP": "hit your stop: cut the loss", "TARGET": "hit the target 🎯", "TIME": "idea timed out",
           "END OF DAY": "market closing soon"}
-_KC = {}
+_KC, _KR = {}, {}
 
 
 def money(mkt, x): return f"${x:.3f}" if mkt == "NATGAS" else f"${x:.2f}"
@@ -326,8 +340,10 @@ def kalshi_book(mkt, min_left=8):
 def kconv(mkt, etf_now):
     """Function that turns a fund (ETF) price level into the matching Kalshi price."""
     b = kalshi_book(mkt) if os.getenv("KALSHI", "1") == "1" else None
-    r = b["px"] / etf_now if b else 1.0
-    return lambda x: money(mkt, x * r)
+    if not b: return lambda x: money(mkt, x)
+    c = _KR.get(mkt)
+    if not c or c[0] != b["t"]: c = _KR[mkt] = (b["t"], b["px"] / etf_now)  # re-anchor only when Kalshi refreshes
+    return lambda x: money(mkt, x * c[1])
 
 
 def kalshi_pick(mkt, up, min_left=8):
@@ -532,6 +548,46 @@ def pulse(data, st):
 def s_pnl(pos, px): return pos["side"] * (px - pos["entry"]) / pos["entry"] * 100
 
 
+def fast_entry(mkt, d1, fp, st, cool):
+    """Spike starting on 1-min bars → BUY IN NOW alert + track a fast trade."""
+    L, S = signals(d1, fp); bar = str(d1.index[-1])
+    if not (L[-1] or S[-1]) or st.setdefault("flast", {}).get(mkt) == bar: return False
+    st["flast"][mkt] = bar
+    up, r = bool(L[-1]), d1.iloc[-1]; lv = kconv(mkt, r.Close)
+    pos = open_pos(1 if up else -1, r.Close, r.atr, fp); pos.update(t0=time.time(), atr=r.atr, trail=fp["trail"], hold=fp["hold"])
+    st.setdefault("fpos", {})[mkt] = pos; cool[(mkt, "spike")] = cool[(mkt, "trend")] = time.time()
+    t = fp.get("test")
+    notify(f"{NAME[mkt]}  🚀 BUY IN NOW · {'spike starting UP' if up else 'drop starting DOWN'}",
+           f"Now: {lv(r.Close)}\n{kalshi_pick(mkt, up)}\n🛑 Sell right away if it hits {lv(pos['stop'])}\n"
+           f"I'll ping you when to sell (usually within {fp['hold']} min).\n"
+           + (f"📊 Past: wins {t['win']:.0%}, {t['n']} trades, profitable overall" if t else "⚠️ New pattern: keep this bet small"),
+           "urgent", mkt)
+    return True
+
+
+def manage_fast(mkt, px, st):
+    """Every tick: trail the fast trade with the live price; SELL NOW when the move stalls, fails or times out."""
+    pos = st.get("fpos", {}).get(mkt)
+    if not pos: return False
+    s_ = pos["side"]; pos["best"] = max(pos["best"], px) if s_ > 0 else min(pos["best"], px)
+    gain_atr = s_ * (pos["best"] - pos["entry"]) / pos["atr"]
+    if pos["trail"] and gain_atr >= 1:  # once up ≥1 ATR, lock profit with a trailing stop
+        t = pos["best"] - s_ * pos["trail"] * pos["atr"]
+        if s_ * (t - pos["stop"]) > 0: pos["stop"] = t
+    why = None
+    if (px <= pos["stop"]) if s_ > 0 else (px >= pos["stop"]):
+        why = "LOCK" if s_ * (pos["stop"] - pos["entry"]) > 0 else "CUT"
+    elif (px >= pos["tgt"]) if s_ > 0 else (px <= pos["tgt"]): why = "TARGET"
+    elif time.time() - pos["t0"] > pos["hold"] * 60 or dt.datetime.now(ET).time() >= dt.time(15, 55): why = "DONE"
+    if not why: return False
+    lv, pnl, mins = kconv(mkt, px), s_pnl(pos, px), (time.time() - pos["t0"]) / 60
+    title = {"LOCK": "💰 SELL NOW · lock in profit", "TARGET": "💰 SELL NOW · target hit 🎯",
+             "CUT": "🛑 SELL NOW · cut the loss", "DONE": "⏱ SELL NOW · move is over"}[why]
+    notify(f"{NAME[mkt]}  {title}", f"Now: {lv(px)}\nMove since buy-in: {pnl:+.2f}% in {mins:.0f} min {'👍' if pnl > 0 else '👎'}",
+           "urgent", mkt)
+    del st["fpos"][mkt]; return True
+
+
 def snapshots():
     """Latest trade price per ETF (real-time, one request)."""
     hdr = {"APCA-API-KEY-ID": os.environ["ALPACA_KEY"], "APCA-API-SECRET-KEY": os.environ["ALPACA_SECRET"]}
@@ -575,11 +631,18 @@ def live():
                             had = mkt in st.get("pos", {}); process(mkt, indicators(b), p, st, sent)
                             changed |= had != (mkt in st.get("pos", {}))
                 st["sent"] = sorted(sent)[-300:]
+                for mkt, (_, etf) in MARKETS.items():  # fast engine: spike-start detector on closed 1-min bars
+                    if etf not in data or mkt in st.get("fpos", {}): continue
+                    m1 = data[etf]; m1 = m1[m1.index + pd.Timedelta(minutes=1) <= pd.Timestamp.now(tz="UTC")]
+                    if len(m1) >= 400:
+                        fp = {**FAST_DEFAULT, **(params.get("_fast") or {}).get(mkt, {})}
+                        changed |= fast_entry(mkt, indicators(m1.tail(1500)), fp, st, cool)
             px = snapshots(); nt += 1  # every tick: live price → spike/dip, trend, stop/target checks
             for mkt, (_, etf) in MARKETS.items():
                 if etf not in data or not px.get(etf): continue
                 m = data[etf]; m = m[m.index + pd.Timedelta(minutes=1) <= pd.Timestamp.now(tz="UTC")]
                 cur = pd.Timestamp.now(tz="UTC").floor("min"); p_ = float(px[etf])
+                changed |= manage_fast(mkt, p_, st)
                 row = pd.DataFrame({"Open": p_, "High": p_, "Low": p_, "Close": p_, "Volume": m.Volume.iloc[-1]}, index=[cur])
                 changed |= bool(fast_checks(mkt, pd.concat([m, row]), st, cool))
             json.dump(st, open(STATE_FILE, "w"), indent=1, default=float)
