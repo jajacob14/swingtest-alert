@@ -646,6 +646,7 @@ def k15(mkt):
     try:
         ms = requests.get(f"{KALSHI}/markets", params={"series_ticker": K15[mkt], "status": "open", "limit": 5}, timeout=10).json().get("markets", [])
     except Exception: return None
+    ms = [x for x in ms if x.get("floor_strike") is not None]  # start price not set yet → not tradable yet
     if not ms: return None
     m = min(ms, key=lambda x: x["close_time"]); f = lambda k: float(m.get(k) or 0)
     _KC[key] = dict(ticker=m["ticker"], k=float(m["floor_strike"]), close=pd.Timestamp(m["close_time"]), ya=f("yes_ask_dollars"),
