@@ -642,7 +642,7 @@ K15 = {"BRENT": "KXBRENT15M", "WTI": "KXWTI15M", "NATGAS": "KXNATGAS15M", "GOLD"
 def k15(mkt):
     """Current Kalshi 15-minute up/down contract for this market (cached 15s)."""
     key = f"15|{mkt}"
-    if (c := _KC.get(key)) and time.time() - c["t"] < 15: return c
+    if (c := _KC.get(key)) and time.time() - c["t"] < 8: return c
     try:
         ms = requests.get(f"{KALSHI}/markets", params={"series_ticker": K15[mkt], "status": "open", "limit": 5}, timeout=10).json().get("markets", [])
     except Exception: return None
@@ -1244,7 +1244,7 @@ def night_price(mkt, y):
     b = kalshi_book(mkt) if KSERIES.get(mkt) else None
     if b: return b["px"]
     c = k15(mkt)
-    if not c or len(y) < 60: return None
+    if not c or len(y) < 60: return kraken_gold() if mkt == "GOLD" else None
     mid = (c["ya"] + c["yb"]) / 2; T = (c["close"] - pd.Timestamp.now(tz="UTC")).total_seconds() / 60
     if not 0.05 < mid < 0.95 or T <= 0: return kraken_gold() if mkt == "GOLD" else None
     sig = float(np.log(y.Close).diff().tail(390).std())
@@ -1327,7 +1327,7 @@ def live():
     """Watch prices every TICK_SEC (15s): instant alerts on events; strategy on each closed bar; check-in on the clock."""
     if not ALPACA: sys.exit("live mode needs ALPACA_KEY / ALPACA_SECRET")
     t0, maxmin = time.time(), float(os.getenv("LIVE_MAX_MIN") or 1e9); nt = 0
-    pulse_min, tick = int(os.getenv("PULSE_MIN") or 10), int(os.getenv("TICK_SEC") or 15)
+    pulse_min, tick = int(os.getenv("PULSE_MIN") or 10), int(os.getenv("TICK_SEC") or 10)
     cool, data, params, nh, yc = {}, {}, load_params(), {}, {}
     if not MAIN_ON:  # drop any old slow-signal positions so they don't block 15-min calls
         st0 = load_state(); st0["pos"] = {}; json.dump(st0, open(STATE_FILE, "w"), indent=1, default=float)
