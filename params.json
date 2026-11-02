@@ -200,5 +200,28 @@
    "status": "active"
   }
  },
- "_updated": "2026-11-02T13:34-05:00"
+ "_updated": "2026-11-02T13:34-05:00",
+ "_cal": {
+  "BRENT": {
+   "table": {},
+   "test_trades": 0,
+   "test_roi": 0,
+   "test_win": 0.0,
+   "active": false
+  },
+  "WTI": {
+   "table": {},
+   "test_trades": 0,
+   "test_roi": 0,
+   "test_win": 0.0,
+   "active": false
+  },
+  "NATGAS": {
+   "table": {},
+   "test_trades": 0,
+   "test_roi": 0,
+   "test_win": 0.0,
+   "active": false
+  }
+ }
 }
