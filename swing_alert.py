@@ -281,13 +281,76 @@ def size_txt(px, stop):
     return f"Size: {sh} shares (${sh * px:,.0f}) risks {risk:g}% of ${acct:,.0f}"
 
 
+# ---------------- Kalshi (all prices shown in Kalshi terms) ----------------
+KALSHI = "https://api.elections.kalshi.com/trade-api/v2"
+KSERIES = {"BRENT": ["KXBRENTD"], "WTI": ["KXWTIH", "KXWTI"], "NATGAS": ["KXNATGASD"]}
+NAME = {"BRENT": "BRENT", "WTI": "WTI", "NATGAS": "NAT GAS"}
+REASON = {"STOP": "hit your stop: cut the loss", "TARGET": "hit the target 🎯", "TIME": "idea timed out",
+          "END OF DAY": "market closing soon"}
+_KC = {}
+
+
+def money(mkt, x): return f"${x:.3f}" if mkt == "NATGAS" else f"${x:.2f}"
+
+
+def implied(rows):
+    """Price where Kalshi YES is ~50¢ = the market's live price estimate."""
+    pts = [(r["k"], (r["yb"] + r["ya"]) / 2) for r in rows if r["ya"] > 0]
+    for (k1, p1), (k2, p2) in zip(pts, pts[1:]):
+        if p1 >= 0.5 >= p2 and p1 != p2: return k1 + (p1 - 0.5) / (p1 - p2) * (k2 - k1)
+
+
+def kalshi_book(mkt, min_left=8):
+    """Soonest-closing open Kalshi event for this market (≥8 min left) with strikes + implied price. Cached 60s."""
+    key = f"{mkt}|{min_left}"
+    if (c := _KC.get(key)) and time.time() - c["t"] < 60: return c
+    now, evs = pd.Timestamp.now(tz="UTC"), {}
+    for ser in KSERIES[mkt]:
+        try:
+            ms = requests.get(f"{KALSHI}/markets", params={"series_ticker": ser, "status": "open", "limit": 300},
+                              timeout=15).json().get("markets", [])
+        except Exception: continue
+        for m in ms:
+            if m.get("strike_type") != "greater" or m.get("floor_strike") is None: continue
+            close = pd.Timestamp(m["close_time"])
+            if close - now < pd.Timedelta(minutes=min_left): continue
+            f = lambda k: float(m.get(k) or 0)
+            evs.setdefault((close, m["event_ticker"]), []).append(
+                dict(k=float(m["floor_strike"]), yb=f("yes_bid_dollars"), ya=f("yes_ask_dollars"), na=f("no_ask_dollars")))
+    for (close, ev), rows in sorted(evs.items()):
+        rows.sort(key=lambda r: r["k"])
+        if px := implied(rows):
+            _KC[key] = dict(event=ev, close=close, rows=rows, px=px, t=time.time()); return _KC[key]
+
+
+def kconv(mkt, etf_now):
+    """Function that turns a fund (ETF) price level into the matching Kalshi price."""
+    b = kalshi_book(mkt) if os.getenv("KALSHI", "1") == "1" else None
+    r = b["px"] / etf_now if b else 1.0
+    return lambda x: money(mkt, x * r)
+
+
+def kalshi_pick(mkt, up, min_left=8):
+    b = kalshi_book(mkt, min_left) or kalshi_book(mkt)
+    if not b: return "(no open Kalshi contract right now)"
+    when = b["close"].tz_convert(ET).strftime("%-I:%M %p")
+    if up: r, side, cost = next(((r, "YES", r["ya"]) for r in b["rows"] if r["k"] > b["px"] and 0 < r["ya"] < 1), (None,) * 3)
+    else: r, side, cost = next(((r, "NO", r["na"]) for r in reversed(b["rows"]) if r["k"] < b["px"] and 0 < r["na"] < 1), (None,) * 3)
+    if not r: return "(no good Kalshi strike right now)"
+    return f'👉 BUY {side} · "Above {money(mkt, r["k"])}" · {when}\n    cost {cost * 100:.0f}¢ → pays $1 if right'
+
+
+def hold_txt(p):
+    m = p["hold"] * BARS[p["interval"]][1]
+    return f"{m} min" if m < 90 else f"{m / 60:.0f} hrs"
+
+
 def process(mkt, d, p, st, sent):
     """Run strategy on closed bars d (with indicators): manage open trade or alert a fresh entry."""
-    etf, iv = MARKETS[mkt][1 if ALPACA else 0], p["interval"]
-    st.setdefault("pos", {}); st.setdefault("last", {})
+    iv = p["interval"]; st.setdefault("pos", {}); st.setdefault("last", {})
     last = st["last"].get(mkt)
     idx = [i for i in range(len(d)) if str(d.index[i]) > last][-8:] if last else [len(d) - 1]
-    L, S = signals(d, p); eod = eod_mask(d.index, iv)
+    L, S = signals(d, p); eod = eod_mask(d.index, iv); lv = kconv(mkt, d.Close.iloc[-1])
     for i in idx:
         r = d.iloc[i]; bar = str(d.index[i])
         if pos := st["pos"].get(mkt):
@@ -295,29 +358,35 @@ def process(mkt, d, p, st, sent):
             if not why and iv in INTRADAY and (eod[i] and i < len(d) - 1 or d.index[i].tz_convert(ET).time() >= dt.time(15, 55)):
                 why, px = "END OF DAY", r.Close
             if why:
-                notify(f"🔔 {mkt} EXIT {'LONG' if pos['side'] > 0 else 'SHORT'} ({why})",
-                       f"{etf} close @ ~{px:.2f}  →  {s_pnl(pos, px):+.2f}%  (entry {pos['entry']:.2f})", "high", mkt)
-                del st["pos"][mkt]
+                exit_alert(mkt, pos, px, why, lv); del st["pos"][mkt]
             continue
         if p["status"] == "active" and (L[i] or S[i]) and i == len(d) - 1:
             side = 1 if L[i] else -1; pos = open_pos(side, r.Close, r.atr, p); pos["interval"] = iv; st["pos"][mkt] = pos
-            risk, rew = (abs(pos[k] - r.Close) / r.Close * 100 for k in ("stop", "tgt"))
-            notify(f"🚀 {mkt} {'BUY' if side > 0 else 'SELL SHORT'} now",
-                   f"{etf} ~{r.Close:.2f}  ({p['strategy']}, {iv} bars)\nStop {pos['stop']:.2f} (-{risk:.2f}%)\n"
-                   f"Target {pos['tgt']:.2f} (+{rew:.2f}%)" + (f"\nTrail {p['trail']}×ATR" if p["trail"] else "")
-                   + f"\nMax hold {p['hold']} bars" + (" · flat by close" if iv in INTRADAY else "")
-                   + f"\n{size_txt(r.Close, pos['stop'])}\n{fmt_stats(p)}", "urgent", mkt)
+            t = p.get("test") or {}
+            notify(f"{NAME[mkt]}  {'⬆️ BET UP' if side > 0 else '⬇️ BET DOWN'}",
+                   f"Now: {lv(r.Close)}\n{kalshi_pick(mkt, side > 0, min(p['hold'] * BARS[iv][1], 180))}\n"
+                   f"🎯 Profit zone: {lv(pos['tgt'])}\n🛑 Sell the bet if it hits {lv(pos['stop'])}\n"
+                   f"⏱ Good for about {hold_txt(p)}"
+                   + (f"\n📊 Past results: wins {t['win']:.0%}, winners bigger than losers" if t else ""), "urgent", mkt)
         elif iv not in INTRADAY and r.sq and r.sq_bars == 6 and (k := f"SQ|{mkt}|{bar}") not in sent:
-            sent.add(k); notify(f"👀 {mkt} coiling", f"{etf} {r.Close:.2f}: volatility squeezed {int(r.sq_bars)} bars. "
-                                f"Breakout likely soon; watch for entry alert.", "low", mkt)
+            sent.add(k); notify(f"{NAME[mkt]}  👀 BIG MOVE BREWING",
+                                f"Now: {lv(r.Close)}\nPrice is unusually quiet; a sharp move often follows.\n"
+                                f"Don't bet yet. Wait for BET UP / BET DOWN.", "low", mkt)
     st["last"][mkt] = str(d.index[-1])
+
+
+def exit_alert(mkt, pos, px, why, lv):
+    pnl = s_pnl(pos, px); good = pnl > 0
+    notify(f"{NAME[mkt]}  {'✅' if good else '🛑'} SELL YOUR {'UP' if pos['side'] > 0 else 'DOWN'} BET NOW",
+           f"Now: {lv(px)}\nWhy: {REASON.get(why, why.lower())}\nMove since entry: {pnl:+.2f}% {'👍' if good else '👎'}",
+           "urgent", mkt)
 
 
 def scan(only=None):
     st = load_state(); sent = set(st.get("sent", [])); params = load_params()
     for e in events():
         if (k := f"EV|{e}|{dt.date.today()}") not in sent:
-            sent.add(k); notify("⚠️ Volatility event soon", e + "\nExpect fast moves: tighten risk or stay flat.", "high")
+            sent.add(k); notify("📅 BIG REPORT TODAY", e + "\nExpect sudden jumps around that time.", "high")
     for mkt in only or MARKETS:
         p = {**DEFAULT, **params.get(mkt, {})}; iv = p["interval"]
         try:
@@ -334,24 +403,22 @@ def scan(only=None):
 def brief():
     params, st, lines = load_params(), load_state(), []
     for mkt in MARKETS:
-        etf = MARKETS[mkt][1 if ALPACA else 0]; p = {**DEFAULT, **params.get(mkt, {})}
         try:
             d = indicators(fetch(mkt, "1h", 45)); dd = fetch(mkt, "1d", 60)
-        except Exception as e:
-            lines.append(f"{mkt}: data error"); continue
-        r, c = d.iloc[-1], dd.Close
-        chg = (r.Close / c.iloc[-2] - 1) * 100 if dd.index[-1].date() >= d.index[-1].date() else (r.Close / c.iloc[-1] - 1) * 100
-        tr = (dd.High - dd.Low).tail(14).mean() / c.iloc[-1] * 100
-        trend = "UP" if r.Close > r.ema and r.mom > 0 else "DOWN" if r.Close < r.ema and r.mom < 0 else "MIXED"
+        except Exception:
+            lines.append(f"{COLOR[mkt][0]} {NAME[mkt]}: no data"); continue
+        r, c = d.iloc[-1], dd.Close; lv = kconv(mkt, r.Close)
+        prev = c.iloc[-2] if dd.index[-1].date() >= d.index[-1].date() else c.iloc[-1]
+        chg = (r.Close / prev - 1) * 100
+        rng = (dd.High - dd.Low).tail(14).mean() / c.iloc[-1] * 100
+        trend = "UP ↗️" if r.Close > r.ema and r.mom > 0 else "DOWN ↘️" if r.Close < r.ema and r.mom < 0 else "SIDEWAYS ➡️"
         pos = (st.get("pos") or {}).get(mkt)
-        ptxt = f"OPEN {'LONG' if pos['side'] > 0 else 'SHORT'} @ {pos['entry']:.2f}, stop {pos['stop']:.2f}" if pos else "flat"
-        lines.append(f"{mkt} ({etf}) {r.Close:.2f} {chg:+.1f}% | trend {trend} | RSI {r.rsi:.0f}"
-                     f"{' | SQUEEZE ' + str(int(r.sq_bars)) + 'h' if r.sq else ''}\n"
-                     f"  exp. daily move ±{tr:.1f}% | 5d range {dd.Low.tail(5).min():.2f}–{dd.High.tail(5).max():.2f}\n"
-                     f"  {ptxt}"
-                     f" | system: {p['status']} ({p['strategy']}/{p['interval']})")
-    ev = events(hours=14); ctx = eia_context()
-    notify(f"📊 Energy brief {dt.datetime.now(ET):%a %b %d}", "\n".join(lines + (["Today: " + "; ".join(ev)] if ev else []) + ([ctx] if ctx else [])))
+        lines.append(f"{COLOR[mkt][0]} {NAME[mkt]}  {lv(r.Close)}  {'▲' if chg >= 0 else '▼'}{abs(chg):.1f}%\n"
+                     f"    Trend: {trend}\n    Usual daily swing: ±{rng:.1f}%"
+                     + ("\n    ⚡ Quiet → big move likely" if r.sq else "")
+                     + (f"\n    You have an {'UP' if pos['side'] > 0 else 'DOWN'} bet open" if pos else ""))
+    ev = events(hours=14)
+    notify(f"📋 Market check · {dt.datetime.now(ET):%-I:%M %p}", "\n\n".join(lines + ([f"📅 Today: " + "; ".join(ev)] if ev else [])))
 
 
 def doctor():
@@ -405,65 +472,61 @@ def resample(m, n):
 
 
 def fast_checks(mkt, m, st, cool):
-    """1-minute detectors: spikes/dips, day high/low breaks, live stop/target hits."""
-    etf, now = MARKETS[mkt][1], time.time()
+    """1-minute detectors: spikes/dips, trend flips, pre-move, day high/low, live stop/target hits."""
+    now = time.time()
     def fire(kind, title, body, pr="high", mins=15):
         if now - cool.get((mkt, kind), 0) > mins * 60:
-            cool[(mkt, kind)] = now; notify(title, body, pr, mkt)
+            cool[(mkt, kind)] = now; notify(f"{NAME[mkt]}  {title}", body, pr, mkt)
     c = m.Close; px = c.iloc[-1]
     if len(c) < 60: return
+    lv = kconv(mkt, px)
     sig = np.log(c).diff().tail(780).std()
     r5 = np.log(px / c.iloc[-6]); z = r5 / (sig * np.sqrt(5) + 1e-12)
-    vr = m.Volume.tail(5).mean() / (m.Volume.tail(780).mean() + 1e-9)
     if abs(z) >= 2.5 and abs(r5) * 100 >= MINMOVE[mkt]:
-        up = r5 > 0
-        fire("spike", f"{'⚡ SPIKE' if up else '🩸 DIP'} {mkt} {r5 * 100:+.2f}% in 5 min",
-             f"{etf} {px:.2f} | {abs(z):.1f}σ move | volume {vr:.1f}× normal\n"
-             + ("Stretched: watch for a pullback / fade entry." if abs(z) > 4.5 else
-                "Momentum building: breakout entry may follow."), "urgent", 10)
+        up, wild = r5 > 0, abs(z) > 4.5
+        fire("spike", f"{'⚡ JUMPED' if up else '🩸 DROPPED'} {abs(r5) * 100:.1f}% in 5 min",
+             f"Now: {lv(px)}\n" + (f"Very stretched; it often snaps back. Don't chase.\nBounce idea:\n{kalshi_pick(mkt, not up)}"
+                                    if wild else f"Strong push; it may keep going.\nRide it:\n{kalshi_pick(mkt, up)}"), "urgent", 10)
     b5 = resample(m, 5)
-    if len(b5) > 60:  # pre-move: 5-min volatility coiled + volume waking up + momentum turning
+    if len(b5) > 60:
         d5 = indicators(b5); r, pr = d5.iloc[-1], d5.iloc[-2]; vr3 = m.Volume.tail(3).mean() / (m.Volume.tail(390).mean() + 1e-9)
-        bias = "UP" if r.mom > 0 and r.mom > pr.mom else "DOWN" if r.mom < 0 and r.mom < pr.mom else None
         e9, e21 = b5.Close.ewm(span=9, adjust=False).mean(), b5.Close.ewm(span=21, adjust=False).mean()
         x_now, x_prev = np.sign(e9.iloc[-1] - e21.iloc[-1]), np.sign(e9.iloc[-2] - e21.iloc[-2])
-        if x_now != x_prev and x_now * r.mom > 0:  # 5-min trend flip confirmed by momentum
+        if x_now != x_prev and x_now * r.mom > 0:
             up = x_now > 0
-            fire("trend", f"{'↗️' if up else '↘️'} {mkt} trend turning {'UP' if up else 'DOWN'}",
-                 f"{etf} {px:.2f}: 5-min EMA9 crossed {'above' if up else 'below'} EMA21, momentum {r.mom:+.3f}, "
-                 f"RSI {r.rsi:.0f}.\n{'Dips may get bought' if up else 'Rallies may get sold'}; wait for entry alert to act.", "high", 20)
+            fire("trend", f"{'↗️ TURNING UP' if up else '↘️ TURNING DOWN'}",
+                 f"Now: {lv(px)}\nShort-term trend just flipped {'up' if up else 'down'}.\nPossible bet:\n{kalshi_pick(mkt, up)}", "high", 20)
+        bias = "UP" if r.mom > 0 and r.mom > pr.mom else "DOWN" if r.mom < 0 and r.mom < pr.mom else None
         if r.sq and r.sq_bars >= 6 and vr3 > 1.5 and bias:
-            fire("premove", f"🎯 {mkt} pre-move: leaning {bias}",
-                 f"{etf} {px:.2f}: 5-min range squeezed {int(r.sq_bars)} bars, volume waking {vr3:.1f}×, momentum turning "
-                 f"{bias.lower()}.\nBig move likely soon. Get ready; entry alert fires on confirmation.", "high", 30)
+            fire("premove", f"🎯 MOVE COMING · leaning {bias}",
+                 f"Now: {lv(px)}\nPrice coiled tight and buyers/sellers are waking up.\nGet ready:\n{kalshi_pick(mkt, bias == 'UP')}", "high", 30)
     et = m.index.tz_convert(ET); today = m[et.date == et[-1].date()]
     if len(today) > 30:
         prev = today.iloc[:-1]
-        if px > prev.High.max(): fire("hod", f"📈 {mkt} new day HIGH", f"{etf} {px:.2f} broke {prev.High.max():.2f}", "default", 30)
-        if px < prev.Low.min(): fire("lod", f"📉 {mkt} new day LOW", f"{etf} {px:.2f} broke {prev.Low.min():.2f}", "default", 30)
+        if px > prev.High.max(): fire("hod", "📈 NEW HIGH for today", f"Now: {lv(px)}  (old high {lv(prev.High.max())})", "default", 30)
+        if px < prev.Low.min(): fire("lod", "📉 NEW LOW for today", f"Now: {lv(px)}  (old low {lv(prev.Low.min())})", "default", 30)
     if pos := st.get("pos", {}).get(mkt):
         s, hi, lo = pos["side"], m.High.iloc[-1], m.Low.iloc[-1]
         hit = ("STOP", pos["stop"]) if (lo <= pos["stop"] if s > 0 else hi >= pos["stop"]) else \
               ("TARGET", pos["tgt"]) if (hi >= pos["tgt"] if s > 0 else lo <= pos["tgt"]) else None
         if hit:
-            pnl = s * (hit[1] - pos["entry"]) / pos["entry"] * 100
-            notify(f"🔔 {mkt} EXIT NOW ({hit[0]})", f"{etf} ~{hit[1]:.2f} → {pnl:+.2f}% (entry {pos['entry']:.2f})", "urgent", mkt)
-            del st["pos"][mkt]; return True
+            exit_alert(mkt, pos, hit[1], hit[0], lv); del st["pos"][mkt]; return True
         if abs(px - pos["stop"]) < 0.25 * abs(pos["entry"] - pos["stop"]):
-            fire("nearstop", f"⚠️ {mkt} near stop", f"{etf} {px:.2f}, stop {pos['stop']:.2f}", "high", 30)
+            fire("nearstop", "⚠️ CLOSE TO YOUR STOP", f"Now: {lv(px)}\nStop: {lv(pos['stop'])}\nBe ready to sell the bet.", "high", 30)
 
 
 def pulse(data, st):
     lines = []
     for mkt, (_, etf) in MARKETS.items():
         if (m := data.get(etf)) is None or len(m) < 20: continue
-        c = m.Close; et = m.index.tz_convert(ET); y = m[et.date < et[-1].date()]
+        c = m.Close; et = m.index.tz_convert(ET); y = m[et.date < et[-1].date()]; lv = kconv(mkt, c.iloc[-1])
         day = (c.iloc[-1] / y.Close.iloc[-1] - 1) * 100 if len(y) else 0
         m15 = (c.iloc[-1] / c.iloc[-16] - 1) * 100
-        r = rsi(c, 14).iloc[-1]; pos = st.get("pos", {}).get(mkt)
-        lines.append(f"{COLOR[mkt][0]} {mkt} {c.iloc[-1]:.2f}  day {day:+.1f}%  15m {m15:+.2f}%  RSI {r:.0f}"
-                     + (f"  [{'LONG' if pos['side'] > 0 else 'SHORT'} {s_pnl(pos, c.iloc[-1]):+.1f}%]" if pos else ""))
-    if lines: notify(f"📡 Pulse {dt.datetime.now(ET):%H:%M}", "\n".join(lines), "low")
+        arrow = "↗️" if m15 > 0.1 else "↘️" if m15 < -0.1 else "➡️"
+        pos = st.get("pos", {}).get(mkt)
+        lines.append(f"{COLOR[mkt][0]} {NAME[mkt]:<8}{lv(c.iloc[-1]):>9}  {arrow} {'▲' if day >= 0 else '▼'}{abs(day):.1f}%"
+                     + (f"\n     your {'UP' if pos['side'] > 0 else 'DOWN'} bet: {s_pnl(pos, c.iloc[-1]):+.1f}%" if pos else ""))
+    if lines: notify(f"📡 Check-in · {dt.datetime.now(ET):%-I:%M %p}", "\n".join(lines) + "\n(arrow = last 15 min)", "low")
 
 
 def s_pnl(pos, px): return pos["side"] * (px - pos["entry"]) / pos["entry"] * 100
@@ -488,7 +551,7 @@ def live():
             st = load_state(); changed = False
             for e in events(hours=0.25):
                 if (k := f"EV15|{e}|{now.date()}") not in st.setdefault("sent", []):
-                    st["sent"].append(k); notify("⏰ 15 min to report", e, "urgent")
+                    st["sent"].append(k); notify("⏰ REPORT IN 15 MIN", e + "\nPrices can jump hard. Avoid new bets until after.", "urgent")
             for mkt, (_, etf) in MARKETS.items():
                 if etf in data:
                     m = data[etf]; m = m[m.index + pd.Timedelta(minutes=1) <= pd.Timestamp.now(tz="UTC")]  # closed 1m bars
@@ -515,9 +578,6 @@ def live():
             print("live error:", e)
         time.sleep(max(5, 62 - dt.datetime.now().second))  # wake ~2s after each new minute
     persist()
-
-
-KALSHI = "https://api.elections.kalshi.com/trade-api/v2"
 
 
 def kalshi_discover():
