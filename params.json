@@ -1,63 +1,66 @@
 {
  "BRENT": {
   "strategy": "breakout",
-  "lookback": 20,
+  "lookback": 10,
   "trend": 0,
   "volcap": 0.95,
-  "stop": 1.5,
+  "stop": 1.0,
   "tgt": 4.0,
   "trail": 2.5,
-  "interval": "1h",
-  "hold": 40,
+  "interval": "15m",
+  "hold": 32,
   "train": {
-   "n": 240,
-   "win": 0.42,
-   "avg": 0.253,
-   "total": 60.7,
-   "pf": 1.53,
-   "dd": -14.4,
-   "t": 2.61
+   "n": 551,
+   "win": 0.34,
+   "avg": 0.062,
+   "total": 34.3,
+   "pf": 1.26,
+   "dd": -12.8,
+   "t": 1.86
   },
   "test": {
-   "n": 89,
-   "win": 0.4,
-   "avg": 0.491,
-   "total": 43.7,
-   "pf": 1.71,
-   "dd": -12.0,
-   "t": 1.87
+   "n": 238,
+   "win": 0.34,
+   "avg": 0.092,
+   "total": 21.8,
+   "pf": 1.32,
+   "dd": -9.1,
+   "t": 1.64
   },
-  "bars": 5656,
+  "trades_per_day": 1.9,
+  "bars": 9833,
   "src": "alpaca",
   "status": "active"
  },
  "WTI": {
   "strategy": "fade",
-  "k": 2.0,
-  "stop": 2.5,
-  "tgt": 4.0,
+  "k": 2.5,
+  "volcap": 0.95,
+  "stop": 1.0,
+  "tgt": 2.5,
   "trail": 2.5,
-  "interval": "1h",
-  "hold": 40,
+  "interval": "5m",
+  "hold": 48,
   "train": {
-   "n": 100,
-   "win": 0.4,
-   "avg": 0.412,
-   "total": 41.2,
-   "pf": 1.73,
-   "dd": -10.5,
-   "t": 2.14
+   "n": 75,
+   "win": 0.35,
+   "avg": 0.112,
+   "total": 8.4,
+   "pf": 1.51,
+   "dd": -5.9,
+   "t": 1.34
   },
   "test": {
-   "n": 57,
-   "win": 0.39,
-   "avg": 0.382,
-   "total": 21.8,
-   "pf": 1.45,
-   "dd": -11.3,
-   "t": 1.01
+   "n": 35,
+   "win": 0.49,
+   "avg": 0.094,
+   "total": 3.3,
+   "pf": 1.6,
+   "dd": -1.8,
+   "t": 1.3
   },
-  "bars": 7486,
+  "trades_per_day": 0.6,
+  "bars": 12379,
   "src": "alpaca",
   "status": "active"
  },
@@ -88,9 +91,10 @@
    "dd": -3.9,
    "t": 1.18
   },
+  "trades_per_day": 0.9,
   "bars": 14130,
   "src": "alpaca",
   "status": "active"
  },
- "_updated": "2026-11-02T11:28-05:00"
+ "_updated": "2026-11-02T11:59-05:00"
 }
