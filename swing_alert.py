@@ -1120,8 +1120,9 @@ def spike_alert(st, mkt, a, lv, cal, cool):
     notify(f"{NAME[mkt]} 🔥 SPIKE {'⬆️' if up else '⬇️'} starting · {a['score']:.0f}",
            f"{money(mkt, a['px'])} {a['spark']} {move}\n"
            f"next {a['T']:.0f}m: ±{money(mkt, a['rng'])} typical · start {money(mkt, a['start'])}\n"
-           + (f"👉 ride it: BUY {side} ≤{cost * 100 + 2:.0f}¢ (15m, {a['T']:.0f}m left) · 🧪 heads-up" if 4 <= a["T"] <= 12 and 0 < cost < 0.9
-              else "⏳ too late for this window; watch the next one"), "high", mkt)
+           + (f"⚠️ here, chasing spikes after they start has lost money ({sp.get('test_roi', 0):+.0%} tested): "
+              f"Kalshi prices them in fast. Watch it, don't chase it." if sp.get("n") else
+              f"👉 ride it: BUY {side} ≤{cost * 100 + 2:.0f}¢ ({a['T']:.0f}m left) · 🧪 untested"), "high", mkt)
     return False
 
 
