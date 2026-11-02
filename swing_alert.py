@@ -961,6 +961,48 @@ def ihm_call(mkt, m, px, st, lv, cal):
     return True
 
 
+def skip_reasons(mkt, m, px, lv):
+    """Why this 15-min window is not worth betting. Returns (reasons, hard)."""
+    from math import log, sqrt
+    c = k15(mkt)
+    if not c or len(m) < 300: return [], False
+    T = (c["close"] - pd.Timestamp.now(tz="UTC")).total_seconds() / 60
+    cx = live_ctx(m); r1 = np.log(m.Close).diff()
+    quiet = r1.tail(30).std() / (r1.tail(390).std() + 1e-12)
+    z = log(px * lv.r / c["k"]) / (cx["sig"] * sqrt(max(T, 1)))
+    fav = max(c["ya"], c["na"]); reasons, hard = [], False
+    if fav >= 0.90:
+        reasons.append(f"Already decided: favorite costs {fav * 100:.0f}¢ → at most {100 - fav * 100:.0f}¢ gain before fees"); hard = True
+    if events(hours=T / 60 + 0.05):
+        reasons.append("Oil/gas report lands inside this window: random spike risk"); hard = True
+    soft = []
+    if quiet < 0.7: soft.append(f"Very quiet: last 30 min moving {int((1 - quiet) * 100)}% less than usual")
+    if abs(px - m.Close.ewm(span=240, adjust=False).mean().iloc[-1]) / px < 0.001: soft.append("No clear trend (flat vs 4h average)")
+    if abs(cx["flow"]) < 0.15: soft.append("Buyers and sellers balanced: no push either way")
+    if abs(z) < 0.3 and 0.45 <= c["ya"] <= 0.55: soft.append(f"Coin flip at ~50¢ and the {kfee(0.5) * 100:.0f}¢ fee makes it a losing bet")
+    if len(soft) >= 2: reasons += soft
+    return reasons, hard
+
+
+def skip_board(data, st, params):
+    """~4 min into each 15-min window: one message listing markets to SKIP (with reasons) vs keep watching."""
+    now = dt.datetime.now(ET)
+    if now.minute % 15 != 4: return
+    slot = now.strftime("%Y-%m-%d %H:%M")
+    if st.get("skipslot") == slot: return
+    st["skipslot"] = slot; skips, watch = [], []
+    for mkt, (_, etf) in MARKETS.items():
+        if etf not in data or busy(st, mkt): continue
+        m = data[etf]; px = m.Close.iloc[-1]; lv = kconv(mkt, px)
+        why, hard = skip_reasons(mkt, m, px, lv)
+        (skips if why else watch).append((mkt, why))
+    if not skips: return
+    end = (now.replace(second=0, microsecond=0) + dt.timedelta(minutes=11)).strftime("%-I:%M")
+    body = "\n".join(f"{COLOR[k][0]} {NAME[k]}: DON'T BET\n" + "\n".join(f"   • {w}" for w in why) for k, why in skips)
+    if watch: body += "\n\n👀 Still watching: " + ", ".join(f"{COLOR[k][0]} {NAME[k]}" for k, _ in watch)
+    notify(f"⛔ SKIP · 15-min window ending {end}", body, "default")
+
+
 def manage_ls(mkt, px, st, lv):
     """Every tick: cash out longshots on a value jump; cut edge picks if price crosses the start; handle window end."""
     pos = st.get("lpos", {}).get(mkt)
@@ -1044,6 +1086,7 @@ def live():
                 changed |= ihm_call(mkt, m, p_, st, lv_, cal_) or k15_call(mkt, m, p_, st, lv_, cal_)
                 row = pd.DataFrame({"Open": p_, "High": p_, "Low": p_, "Close": p_, "Volume": m.Volume.iloc[-1]}, index=[cur])
                 changed |= bool(fast_checks(mkt, pd.concat([m, row]), st, cool))
+            skip_board(data, st, params)
             json.dump(st, open(STATE_FILE, "w"), indent=1, default=float)
             if changed: persist("bot: live trade")
             if now.minute < 3 and now.hour != last_hour:  # hourly: refresh params + 1h strategies
