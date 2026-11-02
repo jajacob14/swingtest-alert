@@ -240,8 +240,10 @@ def ls_bucket(dist):
 def ls_rows(df):
     """One row per 15-min window: first minute (3-12 min left) where price is stretched from the window start
     AND turning back toward it. dist = stretch in σ√T units; won = price ended back across the start."""
+    et0 = df.index.tz_convert(ET); df = df[(et0.hour * 60 + et0.minute >= 570) & (et0.hour < 16)]
+    df = df.resample("1min").last().dropna(how="all")  # keep real bars only, regular hours
     c = df.Close; et = df.index.tz_convert(ET); w = df.index.floor("15min")
-    full = pd.Series(1, index=df.index).groupby(w).transform("size") == 15
+    full = pd.Series(1, index=df.index).groupby(w).transform("size") >= 8  # IEX skips quiet minutes
     start = c.shift(1).groupby(w).transform("first"); end = c.groupby(w).transform("last")
     T = 14 - (et.minute % 15)
     sig = np.log(c).diff().rolling(390, min_periods=60).std()
@@ -269,6 +271,7 @@ def calibrate(mkt):
     roi = pnl / cost_sum if cost_sum else 0
     res = dict(table=tab, test_trades=n, test_roi=round(roi, 2), test_win=round(float(te.won.mean()), 3) if len(te) else 0,
                active=bool(n >= 15 and roi > 0.1))
+    res["setups"] = len(rows)
     print(mkt, "LONGSHOT", json.dumps(res), "| fair odds by bucket:", {b: round(_phi(-float(b) + 0.25), 2) for b in tab}, flush=True)
     return res
 
@@ -459,7 +462,8 @@ def kalshi_pick(mkt, up, min_left=8, tgt_k=None):
     return f'👉 BUY {side} · "Above {money(mkt, r["k"])}" · {when}\n    cost {cost * 100:.0f}¢ → pays $1 if right'
 
 
-TRADES_ONLY = os.getenv("ALERTS", "trades") == "trades"  # set ALERTS=all for extra heads-up alerts
+TRADES_ONLY = os.getenv("ALERTS", "trades") == "trades"
+MAIN_ON = os.getenv("MAIN_SIGNALS", "0") == "1"  # slow signals use hourly/daily contracts → off; only 15-min calls  # set ALERTS=all for extra heads-up alerts
 
 
 def new_trade(st, mkt, pos, lv, px):
@@ -563,7 +567,7 @@ def process(mkt, d, p, st, sent):
             if why:
                 exit_alert(mkt, pos, px, why, lv); del st["pos"][mkt]
             continue
-        if p["status"] == "active" and (L[i] or S[i]) and i == len(d) - 1 and not busy(st, mkt):
+        if MAIN_ON and p["status"] == "active" and (L[i] or S[i]) and i == len(d) - 1 and not busy(st, mkt):
             side = 1 if L[i] else -1; pos = open_pos(side, r.Close, r.atr, p); pos["interval"] = iv; st["pos"][mkt] = pos
             t = p.get("test") or {}; _PICK.pop(mkt, None)
             pick = kalshi_pick(mkt, side > 0, min(p['hold'] * BARS[iv][1], 180), pos["tgt"] * getattr(lv, "r", 1.0)); pos["k"] = _PICK.get(mkt)
@@ -850,6 +854,8 @@ def live():
     t0, maxmin = time.time(), float(os.getenv("LIVE_MAX_MIN") or 1e9); nt = 0
     pulse_min, tick = int(os.getenv("PULSE_MIN") or 10), int(os.getenv("TICK_SEC") or 15)
     cool, data, params = {}, {}, load_params()
+    if not MAIN_ON:  # drop any old slow-signal positions so they don't block 15-min calls
+        st0 = load_state(); st0["pos"] = {}; json.dump(st0, open(STATE_FILE, "w"), indent=1, default=float)
     last_min = last_hour = last_pulse = None
     print(f"live mode: tick {tick}s, check-in every {pulse_min} min on the clock")
     while (time.time() - t0) / 60 < maxmin:
