@@ -260,11 +260,10 @@ def ls_bucket(dist):
 
 def fetch_fut_1m(mkt, days=29):
     """Yahoo 1-minute FUTURES bars (what Kalshi settles on) for ~30 days, in 7-day chunks."""
-    import yfinance as yf
     out, end = [], dt.datetime.now(dt.timezone.utc)
     for k in range(0, days, 7):
         e = end - dt.timedelta(days=k); b = e - dt.timedelta(days=min(7, days - k))
-        df = yf.Ticker(ALL[mkt][0]).history(start=b, end=e, interval="1m", auto_adjust=False)
+        df = yf_hist(ALL[mkt][0], start=b, end=e, interval="1m")
         if len(df): out.append(df[["Open", "High", "Low", "Close", "Volume"]])
     d = pd.concat(out).sort_index(); return d[~d.index.duplicated()]
 
@@ -1220,10 +1219,19 @@ def skip_board(data, st, params):
     notify(f"⛔ SKIP · {label} session" + (" (update)" if now.minute % 15 == 7 else ""), body, "default")
 
 
-def night_bars(mkt):
-    """~10-min-delayed 1-min futures bars (context) from Yahoo."""
+def yf_hist(sym, **kw):
+    """yfinance with retries (its local cache can lock under parallel use)."""
     import yfinance as yf
-    df = yf.Ticker(ALL[mkt][0]).history(period="2d", interval="1m", auto_adjust=False)
+    for i in range(4):
+        try: return yf.Ticker(sym).history(auto_adjust=False, **kw)
+        except Exception:
+            if i == 3: raise
+            time.sleep(0.5 + i)
+
+
+def night_bars(mkt):
+    """1-min bars (context) from Yahoo: futures ~10 min delayed; crypto/FX near real-time."""
+    df = yf_hist(ALL[mkt][0], period="2d", interval="1m")
     df = df[["Open", "High", "Low", "Close", "Volume"]].dropna()
     df.index = df.index.tz_convert("UTC"); return df
 
