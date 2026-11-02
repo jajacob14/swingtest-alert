@@ -12,14 +12,38 @@
   "BRENT": "2026-11-02 20:40:00+00:00"
  },
  "fpos": {},
- "seq": 11,
+ "seq": 12,
  "lswin": {
   "WTI": "KXWTI15M-26NOV021515-15",
   "BRENT": "KXBRENT15M-26NOV021545-45",
-  "NATGAS": "KXNATGAS15M-26NOV021545-45"
+  "NATGAS": "KXNATGAS15M-26NOV021730-30"
  },
- "skipslot": "2026-11-02 16:01",
- "lpos": {},
+ "skipslot": "2026-11-02 17:16",
+ "lpos": {
+  "NATGAS": {
+   "side": -1,
+   "entry": 2.8608333333333333,
+   "stop": 0,
+   "tgt": 0,
+   "best": 2.8608333333333333,
+   "n": 0,
+   "t0": 1793657880.5264611,
+   "kind": "fav",
+   "k": {
+    "ticker": "KXNATGAS15M-26NOV021730-30",
+    "side": "NO",
+    "cost": 0.55,
+    "k": 2.86666,
+    "close": "2026-11-02 22:30:00+00:00"
+   },
+   "tp": 0.8200000000000001,
+   "bail": 0.275,
+   "parent": null,
+   "id": 12,
+   "at": "5:18 PM",
+   "at_px": "$2.861"
+  }
+ },
  "skipped": {
   "2:30\u20132:45": [
    "BRENT",
@@ -49,9 +73,30 @@
   ],
   "4:00\u20134:15": [
    "NATGAS"
+  ],
+  "5:15\u20135:30": [
+   "BRENT",
+   "WTI"
   ]
  },
  "ihm_day": {
   "NATGAS": "2026-11-02"
+ },
+ "mode": "night",
+ "regime": {},
+ "thin": {
+  "BRENT": false,
+  "WTI": false,
+  "NATGAS": false
+ },
+ "open": {
+  "BRENT": true,
+  "WTI": true,
+  "NATGAS": true,
+  "GOLD": false,
+  "SILVER": false,
+  "COPPER": false,
+  "PLATINUM": false,
+  "PALLADIUM": false
  }
 }
