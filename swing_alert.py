@@ -5,6 +5,7 @@ Commands:
   scan      check latest closed bars, send ENTRY / EXIT / SETUP / EVENT alerts   (cron: every 15 min)
   brief     market snapshot for all three to your phone                          (cron: weekday mornings)
   optimize  grid-search strategies per market on ~2-4y data, walk-forward validate, write params.json (weekly)
+  live      minute-by-minute: spike/dip, day high/low, instant stop/target, 15m strategy, pulse report
   doctor    check secrets + ntfy delivery;  testnotify  send a test push;  selftest  offline test;  loop  run scan forever
 Data: Alpaca real-time (ALPACA_KEY/ALPACA_SECRET, ETF proxies) else Yahoo futures (~10 min delayed).
 Push: NTFY_TOPIC, TELEGRAM_TOKEN+TELEGRAM_CHAT_ID, DISCORD_WEBHOOK.  Context: EIA_API_KEY, EXTRA_EVENTS.
@@ -340,6 +341,123 @@ def doctor():
         except Exception as e: print("Alpaca:", str(e)[:80])
 
 
+# ---------------- live (minute-by-minute) ----------------
+MINMOVE = {"BRENT": 0.5, "WTI": 0.5, "NATGAS": 1.0}  # min % move in 5 min to count as a spike/dip
+LIVE_OPEN, LIVE_CLOSE = dt.time(9, 25), dt.time(16, 5)
+
+
+def fetch_1m(since):
+    hdr = {"APCA-API-KEY-ID": os.environ["ALPACA_KEY"], "APCA-API-SECRET-KEY": os.environ["ALPACA_SECRET"]}
+    out, tok = {}, None
+    while True:
+        q = {"symbols": ",".join(v[1] for v in MARKETS.values()), "timeframe": "1Min", "limit": 10000,
+             "start": since.strftime("%Y-%m-%dT%H:%M:%SZ"), "feed": os.getenv("ALPACA_FEED", "iex"),
+             **({"page_token": tok} if tok else {})}
+        r = requests.get("https://data.alpaca.markets/v2/stocks/bars", headers=hdr, params=q, timeout=20)
+        r.raise_for_status(); j = r.json()
+        for sym, rows in (j.get("bars") or {}).items(): out.setdefault(sym, []).extend(rows)
+        if not (tok := j.get("next_page_token")): break
+    res = {}
+    for sym, rows in out.items():
+        df = pd.DataFrame(rows).rename(columns=dict(t="Date", o="Open", h="High", l="Low", c="Close", v="Volume"))
+        res[sym] = df.set_index(pd.to_datetime(df.Date))[["Open", "High", "Low", "Close", "Volume"]]
+    return res
+
+
+def persist(msg="bot: live state"):
+    if os.getenv("GIT_PERSIST"):
+        import subprocess as sp
+        sp.run(f'git add state.json && (git diff --cached --quiet || (git commit -qm "{msg}" && git pull -q --rebase origin main && git push -q))',
+               shell=True)
+
+
+def fast_checks(mkt, m, st, cool):
+    """1-minute detectors: spikes/dips, day high/low breaks, live stop/target hits."""
+    etf, now = MARKETS[mkt][1], time.time()
+    def fire(kind, title, body, pr="high", mins=15):
+        if now - cool.get((mkt, kind), 0) > mins * 60:
+            cool[(mkt, kind)] = now; notify(title, body, pr, mkt)
+    c = m.Close; px = c.iloc[-1]
+    if len(c) < 60: return
+    sig = np.log(c).diff().tail(780).std()
+    r5 = np.log(px / c.iloc[-6]); z = r5 / (sig * np.sqrt(5) + 1e-12)
+    vr = m.Volume.tail(5).mean() / (m.Volume.tail(780).mean() + 1e-9)
+    if abs(z) >= 3 and abs(r5) * 100 >= MINMOVE[mkt]:
+        up = r5 > 0
+        fire("spike", f"{'⚡ SPIKE' if up else '🩸 DIP'} {mkt} {r5 * 100:+.2f}% in 5 min",
+             f"{etf} {px:.2f} | {abs(z):.1f}σ move | volume {vr:.1f}× normal\n"
+             + ("Stretched: watch for a pullback / fade entry." if abs(z) > 4.5 else
+                "Momentum building: breakout entry may follow."), "urgent", 10)
+    et = m.index.tz_convert(ET); today = m[et.date == et[-1].date()]
+    if len(today) > 30:
+        prev = today.iloc[:-1]
+        if px > prev.High.max(): fire("hod", f"📈 {mkt} new day HIGH", f"{etf} {px:.2f} broke {prev.High.max():.2f}", "default", 30)
+        if px < prev.Low.min(): fire("lod", f"📉 {mkt} new day LOW", f"{etf} {px:.2f} broke {prev.Low.min():.2f}", "default", 30)
+    if pos := st.get("pos", {}).get(mkt):
+        s, hi, lo = pos["side"], m.High.iloc[-1], m.Low.iloc[-1]
+        hit = ("STOP", pos["stop"]) if (lo <= pos["stop"] if s > 0 else hi >= pos["stop"]) else \
+              ("TARGET", pos["tgt"]) if (hi >= pos["tgt"] if s > 0 else lo <= pos["tgt"]) else None
+        if hit:
+            pnl = s * (hit[1] - pos["entry"]) / pos["entry"] * 100
+            notify(f"🔔 {mkt} EXIT NOW ({hit[0]})", f"{etf} ~{hit[1]:.2f} → {pnl:+.2f}% (entry {pos['entry']:.2f})", "urgent", mkt)
+            del st["pos"][mkt]; return True
+        if abs(px - pos["stop"]) < 0.25 * abs(pos["entry"] - pos["stop"]):
+            fire("nearstop", f"⚠️ {mkt} near stop", f"{etf} {px:.2f}, stop {pos['stop']:.2f}", "high", 30)
+
+
+def pulse(data, st):
+    lines = []
+    for mkt, (_, etf) in MARKETS.items():
+        if (m := data.get(etf)) is None or len(m) < 20: continue
+        c = m.Close; et = m.index.tz_convert(ET); y = m[et.date < et[-1].date()]
+        day = (c.iloc[-1] / y.Close.iloc[-1] - 1) * 100 if len(y) else 0
+        m15 = (c.iloc[-1] / c.iloc[-16] - 1) * 100
+        r = rsi(c, 14).iloc[-1]; pos = st.get("pos", {}).get(mkt)
+        lines.append(f"{COLOR[mkt][0]} {mkt} {c.iloc[-1]:.2f}  day {day:+.1f}%  15m {m15:+.2f}%  RSI {r:.0f}"
+                     + (f"  [{'LONG' if pos['side'] > 0 else 'SHORT'} {s_pnl(pos, c.iloc[-1]):+.1f}%]" if pos else ""))
+    if lines: notify(f"📡 Pulse {dt.datetime.now(ET):%H:%M}", "\n".join(lines), "low")
+
+
+def s_pnl(pos, px): return pos["side"] * (px - pos["entry"]) / pos["entry"] * 100
+
+
+def live():
+    """Poll 1-minute bars; instant spike/dip/stop alerts; run strategy at each 15m bar close; pulse report."""
+    if not ALPACA: sys.exit("live mode needs ALPACA_KEY / ALPACA_SECRET")
+    t0, maxmin, pulse_min = time.time(), float(os.getenv("LIVE_MAX_MIN") or 1e9), int(os.getenv("PULSE_MIN") or 15)
+    cool, data, last_scan, last_pulse = {}, {}, None, None
+    print(f"live mode: max {maxmin} min, pulse every {pulse_min} min")
+    while (time.time() - t0) / 60 < maxmin:
+        now = dt.datetime.now(ET)
+        if now.weekday() >= 5 or not (LIVE_OPEN <= now.time() <= LIVE_CLOSE):
+            if os.getenv("LIVE_MAX_MIN") and now.time() > LIVE_CLOSE: print("market closed, exiting"); break
+            time.sleep(60); continue
+        try:
+            since = min((d.index[-1] for d in data.values()), default=None)
+            since = (since - pd.Timedelta(minutes=3)) if since is not None else pd.Timestamp.now(tz="UTC") - pd.Timedelta(days=4)
+            for sym, df in fetch_1m(since).items():
+                data[sym] = pd.concat([data.get(sym), df]).pipe(lambda x: x[~x.index.duplicated(keep="last")]).tail(3000)
+            st = load_state(); changed = False
+            for e in events(hours=0.25):
+                if (k := f"EV15|{e}|{now.date()}") not in st.setdefault("sent", []):
+                    st["sent"].append(k); notify("⏰ 15 min to report", e, "urgent")
+            for mkt, (_, etf) in MARKETS.items():
+                if etf in data:
+                    m = data[etf]; m = m[m.index + pd.Timedelta(minutes=1) <= pd.Timestamp.now(tz="UTC")]  # closed 1m bars
+                    changed |= bool(fast_checks(mkt, m, st, cool))
+            json.dump(st, open(STATE_FILE, "w"), indent=1, default=float)
+            if changed: persist("bot: live exit")
+            slot = now.replace(minute=now.minute - now.minute % 15, second=0, microsecond=0)
+            if slot != last_scan and now.second >= 20 and now.minute % 15 < 3:
+                last_scan = slot; scan(); persist()
+            if pulse_min and (last_pulse is None or (now - last_pulse).total_seconds() >= pulse_min * 60):
+                last_pulse = now; pulse(data, load_state())
+        except Exception as e:
+            print("live error:", e)
+        time.sleep(max(5, 62 - dt.datetime.now().second))  # wake ~2s after each new minute
+    persist()
+
+
 def selftest():
     rng = np.random.default_rng(1); n = 3000
     vol = np.where((np.arange(n) // 150) % 2, 0.003, 0.012)
@@ -356,5 +474,5 @@ if __name__ == "__main__":
     cmds = dict(scan=scan, brief=brief, optimize=optimize, doctor=doctor, selftest=selftest,
                 testnotify=lambda: [notify(f"{m} test alert", f"Color check for {m} ({MARKETS[m][1]}). Data: "
                                        + ("Alpaca real-time" if ALPACA else "Yahoo delayed"), "high", m) for m in MARKETS],
-                loop=lambda: [(scan(), time.sleep(int(os.getenv("LOOP_SEC", 120)))) for _ in iter(int, 1)])
+                live=live, loop=lambda: [(scan(), time.sleep(int(os.getenv("LOOP_SEC", 120)))) for _ in iter(int, 1)])
     cmds.get((sys.argv[1:] or ["scan"])[0], lambda: print(__doc__))()
