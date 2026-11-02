@@ -357,6 +357,26 @@ def kalshi_pick(mkt, up, min_left=8):
     return f'👉 BUY {side} · "Above {money(mkt, r["k"])}" · {when}\n    cost {cost * 100:.0f}¢ → pays $1 if right'
 
 
+TRADES_ONLY = os.getenv("ALERTS", "trades") == "trades"  # set ALERTS=all for extra heads-up alerts
+
+
+def new_trade(st, mkt, pos, lv, px):
+    st["seq"] = st.get("seq", 0) + 1
+    pos.update(id=st["seq"], at=dt.datetime.now(ET).strftime("%-I:%M %p"), at_px=lv(px))
+    return st["seq"]
+
+
+def busy(st, mkt): return mkt in st.get("pos", {}) or mkt in st.get("fpos", {})
+
+
+def sell_msg(mkt, pos, title, px, lv, extra=""):
+    pnl = s_pnl(pos, px)
+    notify(f"#{pos.get('id', '?')} {NAME[mkt]} · {title}",
+           f"You bet {'UP' if pos['side'] > 0 else 'DOWN'} at {pos.get('at_px', '')} ({pos.get('at', '')})\n"
+           f"Price now {lv(px)} · {'✅ went your way' if pnl > 0 else '❌ went against you'}"
+           + (contract_value(pos.get("k")) or "") + extra, "urgent", mkt)
+
+
 K15 = {"BRENT": "KXBRENT15M", "WTI": "KXWTI15M", "NATGAS": "KXNATGAS15M"}
 
 
@@ -423,16 +443,17 @@ def process(mkt, d, p, st, sent):
             if why:
                 exit_alert(mkt, pos, px, why, lv); del st["pos"][mkt]
             continue
-        if p["status"] == "active" and (L[i] or S[i]) and i == len(d) - 1:
+        if p["status"] == "active" and (L[i] or S[i]) and i == len(d) - 1 and not busy(st, mkt):
             side = 1 if L[i] else -1; pos = open_pos(side, r.Close, r.atr, p); pos["interval"] = iv; st["pos"][mkt] = pos
             t = p.get("test") or {}; _PICK.pop(mkt, None)
             pick = kalshi_pick(mkt, side > 0, min(p['hold'] * BARS[iv][1], 180)); pos["k"] = _PICK.get(mkt)
-            notify(f"{NAME[mkt]}  {'⬆️ BET UP' if side > 0 else '⬇️ BET DOWN'}",
-                   f"Now: {lv(r.Close)}\n{pick}\n"
-                   f"🎯 Profit zone: {lv(pos['tgt'])}\n🛑 Sell the bet if it hits {lv(pos['stop'])}\n"
-                   f"⏱ Good for about {hold_txt(p)}"
-                   + (f"\n📊 Past results: wins {t['win']:.0%}, winners bigger than losers" if t else ""), "urgent", mkt)
-        elif iv not in INTRADAY and r.sq and r.sq_bars == 6 and (k := f"SQ|{mkt}|{bar}") not in sent:
+            n = new_trade(st, mkt, pos, lv, r.Close)
+            notify(f"#{n} {NAME[mkt]} · {'BUY ⬆️ (bet UP)' if side > 0 else 'BUY ⬇️ (bet DOWN)'}",
+                   f"Price now {lv(r.Close)}\n{pick}\n"
+                   f"🎯 Expect to sell near {lv(pos['tgt'])}\n🛑 Or sooner if it hits {lv(pos['stop'])}\n"
+                   f"⏱ Usually done within {hold_txt(p)}. I'll send #{n} SELL." 
+                   + (f"\n📊 Past: {t['win']:.0%} wins, profitable overall" if t else ""), "urgent", mkt)
+        elif not TRADES_ONLY and iv not in INTRADAY and r.sq and r.sq_bars == 6 and (k := f"SQ|{mkt}|{bar}") not in sent:
             sent.add(k); notify(f"{NAME[mkt]}  👀 BIG MOVE BREWING",
                                 f"Now: {lv(r.Close)}\nPrice is unusually quiet; a sharp move often follows.\n"
                                 f"Don't bet yet. Wait for BET UP / BET DOWN.", "low", mkt)
@@ -440,10 +461,11 @@ def process(mkt, d, p, st, sent):
 
 
 def exit_alert(mkt, pos, px, why, lv):
-    pnl = s_pnl(pos, px); good = pnl > 0
-    notify(f"{NAME[mkt]}  {'✅' if good else '🛑'} SELL YOUR {'UP' if pos['side'] > 0 else 'DOWN'} BET NOW",
-           f"Now: {lv(px)}\nWhy: {REASON.get(why, why.lower())}" + (contract_value(pos.get("k")) or f"\nPrice moved {pnl:+.2f}% your way"),
-           "urgent", mkt)
+    good = s_pnl(pos, px) > 0
+    title = {"STOP": "SELL 🛑 cut the loss", "TARGET": "SELL 💰 target hit", "TIME": "SELL ⏱ move is over",
+             "END OF DAY": "SELL ⏱ market closing"}.get(why, "SELL NOW")
+    if why == "STOP" and good: title = "SELL 💰 lock in profit"
+    sell_msg(mkt, pos, title, px, lv)
 
 
 def scan(only=None):
@@ -539,6 +561,7 @@ def fast_checks(mkt, m, st, cool):
     """1-minute detectors: spikes/dips, trend flips, pre-move, day high/low, live stop/target hits."""
     now = time.time()
     def fire(kind, title, body, pr="high", mins=15):
+        if TRADES_ONLY: return
         if now - cool.get((mkt, kind), 0) > mins * 60:
             cool[(mkt, kind)] = now; notify(f"{NAME[mkt]}  {title}", body, pr, mkt)
     c = m.Close; px = c.iloc[-1]
@@ -598,6 +621,7 @@ def s_pnl(pos, px): return pos["side"] * (px - pos["entry"]) / pos["entry"] * 10
 
 def fast_entry(mkt, d1, fp, st, cool):
     """Spike starting on 1-min bars → BUY IN NOW alert + track a fast trade."""
+    if busy(st, mkt): return False
     L, S = signals(d1, fp); bar = str(d1.index[-1])
     if not (L[-1] or S[-1]) or st.setdefault("flast", {}).get(mkt) == bar: return False
     st["flast"][mkt] = bar
@@ -606,10 +630,11 @@ def fast_entry(mkt, d1, fp, st, cool):
     st.setdefault("fpos", {})[mkt] = pos; cool[(mkt, "spike")] = cool[(mkt, "trend")] = time.time()
     t = fp.get("test")
     txt, pos["k"] = pick15(mkt, up, lv(r.Close))
-    notify(f"{NAME[mkt]}  {'⬆️ BET UP NOW · rise starting' if up else '⬇️ BET DOWN NOW · drop starting'}",
-           f"{txt}\n🛑 Bail out if price hits {lv(pos['stop'])}\nI'll ping you when to sell.\n"
-           + (f"📊 Past: wins {t['win']:.0%}, {t['n']} trades, profitable overall" if t else "⚠️ New pattern: keep this bet small"),
-           "urgent", mkt)
+    n = new_trade(st, mkt, pos, lv, r.Close); aim = r.Close + (1 if up else -1) * 2 * r.atr
+    notify(f"#{n} {NAME[mkt]} · {'BUY ⬆️ spike starting' if up else 'BUY ⬇️ drop starting'}",
+           f"{txt}\n🎯 Expect to sell near {lv(aim)} (could run further)\n🛑 Or sooner if it hits {lv(pos['stop'])}\n"
+           f"⏱ Fast trade: minutes, not hours. I'll send #{n} SELL."
+           + (f"\n📊 Past: {t['win']:.0%} wins, profitable overall" if t else "\n⚠️ Untested pattern: bet small"), "urgent", mkt)
     return True
 
 
@@ -631,16 +656,15 @@ def manage_fast(mkt, px, st):
     if not why and k and k.get("close") and (pd.Timestamp(k["close"]) - pd.Timestamp.now(tz="UTC")).total_seconds() < 75:
         lv = kconv(mkt, px); kp = px * lv.r
         win = (kp >= k["k"]) if k["side"] == "YES" else (kp < k["k"])
-        notify(f"{NAME[mkt]}  ⏱ 15-MIN WINDOW ENDING",
-               f"Now: {lv(px)} vs start {money(mkt, k['k'])}\n" + ("You're WINNING ✅ Hold to collect $1 each (or sell if it's close)."
-               if win else "You're LOSING ❌ Sell now to save what's left.") + contract_value(k), "urgent", mkt)
+        sell_msg(mkt, pos, "SELL or HOLD · 15-min window ending", px, lv,
+                 f"\nStart price {money(mkt, k['k'])} → " + ("you're WINNING: hold to collect $1, or sell now to lock it."
+                 if win else "you're LOSING: sell now to save what's left."))
         del st["fpos"][mkt]; return True
     if not why: return False
     lv, pnl, mins = kconv(mkt, px), s_pnl(pos, px), (time.time() - pos["t0"]) / 60
-    title = {"LOCK": "💰 SELL NOW · lock in profit", "TARGET": "💰 SELL NOW · target hit 🎯",
-             "CUT": "🛑 SELL NOW · cut the loss", "DONE": "⏱ SELL NOW · move is over"}[why]
-    notify(f"{NAME[mkt]}  {title}", f"Now: {lv(px)} ({mins:.0f} min after the call)" + (contract_value(pos.get("k")) or f"\nPrice moved {pnl:+.2f}% your way"),
-           "urgent", mkt)
+    title = {"LOCK": "SELL 💰 lock in profit (move stalling)", "TARGET": "SELL 💰 target hit",
+             "CUT": "SELL 🛑 cut the loss", "DONE": "SELL ⏱ move is over"}[why]
+    sell_msg(mkt, pos, title, px, lv, f"\n({mins:.0f} min trade)")
     del st["fpos"][mkt]; return True
 
 
@@ -657,7 +681,7 @@ def live():
     """Watch prices every TICK_SEC (15s): instant alerts on events; strategy on each closed bar; check-in on the clock."""
     if not ALPACA: sys.exit("live mode needs ALPACA_KEY / ALPACA_SECRET")
     t0, maxmin = time.time(), float(os.getenv("LIVE_MAX_MIN") or 1e9); nt = 0
-    pulse_min, tick = int(os.getenv("PULSE_MIN") or 30), int(os.getenv("TICK_SEC") or 15)
+    pulse_min, tick = int(os.getenv("PULSE_MIN") or (0 if TRADES_ONLY else 30)), int(os.getenv("TICK_SEC") or 15)
     cool, data, params = {}, {}, load_params()
     last_min = last_hour = last_pulse = None
     print(f"live mode: tick {tick}s, check-in every {pulse_min} min on the clock")
