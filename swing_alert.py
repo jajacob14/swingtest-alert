@@ -237,10 +237,22 @@ def ls_bucket(dist):
         if dist < b: return str(b)
 
 
-def ls_rows(df):
+def fetch_fut_1m(mkt, days=29):
+    """Yahoo 1-minute FUTURES bars (what Kalshi settles on) for ~30 days, in 7-day chunks."""
+    import yfinance as yf
+    out, end = [], dt.datetime.now(dt.timezone.utc)
+    for k in range(0, days, 7):
+        e = end - dt.timedelta(days=k); b = e - dt.timedelta(days=min(7, days - k))
+        df = yf.Ticker(MARKETS[mkt][0]).history(start=b, end=e, interval="1m", auto_adjust=False)
+        if len(df): out.append(df[["Open", "High", "Low", "Close", "Volume"]])
+    d = pd.concat(out).sort_index(); return d[~d.index.duplicated()]
+
+
+def ls_rows(df, rth=True):
     """One row per 15-min window: first minute (3-12 min left) where price is stretched from the window start
     AND turning back toward it. dist = stretch in σ√T units; won = price ended back across the start."""
-    et0 = df.index.tz_convert(ET); df = df[(et0.hour * 60 + et0.minute >= 570) & (et0.hour < 16)]
+    et0 = df.index.tz_convert(ET)
+    if rth: df = df[(et0.hour * 60 + et0.minute >= 570) & (et0.hour < 16)]
     df = df.resample("1min").last().dropna(how="all")  # keep real bars only, regular hours
     c = df.Close; et = df.index.tz_convert(ET); w = df.index.floor("15min")
     full = pd.Series(1, index=df.index).groupby(w).transform("size") >= 8  # IEX skips quiet minutes
@@ -249,15 +261,19 @@ def ls_rows(df):
     sig = np.log(c).diff().rolling(390, min_periods=60).std()
     z = np.log(c / start) / (sig * np.sqrt(np.maximum(T, 1)))
     r = rsi(c, 14)
-    up = (z < -0.5) & (c > c.shift()) & (c.shift() > c.shift(2)) & (r < 45)   # below start, bouncing up
-    dn = (z > 0.5) & (c < c.shift()) & (c.shift() < c.shift(2)) & (r > 55)   # above start, rolling over
+    up = (z < -0.5) & (c > c.shift()) & (r < 45)   # below start, turning up
+    dn = (z > 0.5) & (c < c.shift()) & (r > 55)    # above start, turning down
     ok = full & (T >= 3) & (T <= 12) & (up | dn) & sig.notna()
     x = pd.DataFrame({"w": w, "dist": z.abs(), "won": np.where(up, end >= start, end < start), "T": T})[ok]
     return x.groupby("w").head(1)
 
 
 def calibrate(mkt):
-    d = fetch(mkt, "1m", 60); rows = ls_rows(d); cut = int(len(rows) * 0.7)
+    try:
+        rows = ls_rows(fetch_fut_1m(mkt), rth=False); src = "yahoo futures 30d"
+    except Exception as e:
+        print(mkt, "futures 1m failed:", e); rows = ls_rows(fetch(mkt, "1m", 60)); src = "etf 60d"
+    cut = int(len(rows) * 0.7)
     tr, te = rows.iloc[:cut], rows.iloc[cut:]
     tab = {}
     for b in LS_BUCKETS:
@@ -271,7 +287,7 @@ def calibrate(mkt):
     roi = pnl / cost_sum if cost_sum else 0
     res = dict(table=tab, test_trades=n, test_roi=round(roi, 2), test_win=round(float(te.won.mean()), 3) if len(te) else 0,
                active=bool(n >= 15 and roi > 0.1))
-    res["setups"] = len(rows)
+    res["setups"] = len(rows); res["src"] = src
     print(mkt, "LONGSHOT", json.dumps(res), "| fair odds by bucket:", {b: round(_phi(-float(b) + 0.25), 2) for b in tab}, flush=True)
     return res
 
@@ -802,8 +818,8 @@ def longshot(mkt, m, px, st, lv, cal):
     T = (c["close"] - pd.Timestamp.now(tz="UTC")).total_seconds() / 60
     if not 3 <= T <= 12 or st.setdefault("lswin", {}).get(mkt) == c["ticker"]: return False
     kp = px * lv.r; z = log(kp / c["k"]) / (sig * sqrt(T)); cl = m.Close; r = rsi(cl, 14).iloc[-1]
-    up = z < -0.5 and px > cl.iloc[-1] > cl.iloc[-2] and r < 45
-    dn = z > 0.5 and px < cl.iloc[-1] < cl.iloc[-2] and r > 55
+    up = z < -0.5 and px > cl.iloc[-1] and r < 45
+    dn = z > 0.5 and px < cl.iloc[-1] and r > 55
     if not (up or dn): return False
     cell = cal["table"].get(ls_bucket(abs(z))); side, cost = ("YES", c["ya"]) if up else ("NO", c["na"])
     if not cell or not (0 < cost <= LS_MAX_COST) or cell[1] - cost < LS_MIN_EDGE: return False
