@@ -1016,7 +1016,8 @@ def record_pred(st, mkt, a, c):
     P = st.setdefault("preds", {}).setdefault(c["ticker"], {"mkt": mkt, "close": str(c["close"]), "start": c["k"], "cp": {}})
     for b in CHECKPOINTS:
         if a["T"] <= b and str(b) not in P["cp"] and a["T"] > b - 2.5:
-            P["cp"][str(b)] = dict(wm=a.get("wm_raw", a.get("wm_p")), mid=a.get("p_up"), fc=a.get("fc_p"), x=a.get("wfeat"),
+            kq = (st.get("kp") or {}).get(mkt) or {}
+            P["cp"][str(b)] = dict(wm=a.get("wm_raw", a.get("wm_p")), mid=a.get("p_up"), fc=a.get("fc_p"), x=a.get("wfeat"), kp=kq.get("p"),
                                    proj_up=(bool(a["px"] * float(np.exp(a.get("m5", 0))) >= c["k"]) if "m5" in a else None))
 
 
@@ -1034,7 +1035,7 @@ def settle_preds(st):
         with open(PRED_LOG, "a") as f:
             for b, v in rec["cp"].items():
                 f.write(json.dumps(dict(close=close.tz_convert(ET).isoformat(timespec="minutes"), mkt=rec["mkt"], left=int(b),
-                                        wm=v.get("wm"), mid=v.get("mid"), fc=v.get("fc"), proj_up=v.get("proj_up"), up=up, x=v.get("x"),
+                                        wm=v.get("wm"), mid=v.get("mid"), fc=v.get("fc"), proj_up=v.get("proj_up"), up=up, x=v.get("x"), kp=v.get("kp"),
                                         model_v=MODEL_V)) + "\n")
         P.pop(tk, None)
 
@@ -1044,7 +1045,7 @@ def pred_learn(st):
     try: d = pd.read_json(PRED_LOG, lines=True)
     except Exception: return
     d = d[(d.get("model_v", MODEL_V) == MODEL_V)].dropna(subset=["wm", "mid"])
-    lg = lambda p: np.log(np.clip(p, 0.02, 0.98) / (1 - np.clip(p, 0.02, 0.98)))
+    lg = lambda p: np.log(np.clip(np.asarray(p, float), 0.02, 0.98) / (1 - np.clip(np.asarray(p, float), 0.02, 0.98)))
     out = {}
     for m, g in d.groupby("mkt"):
         if len(g) < 80: continue
@@ -1073,6 +1074,17 @@ def pred_learn(st):
                 win = (up == gb.up)[sel].mean(); ed.setdefault(m, {})[band] = dict(n=int(sel.sum()), win=round(float(win), 3),
                                                                                     kalshi=round(float(ks[sel].mean()), 3))
     st["edge_live"] = ed
+    ka, kl = {}, {}
+    if "kp" in d:
+        for m, g in d.dropna(subset=["kp"]).groupby("mkt"):
+            off = lg(g.mid.to_numpy()); r = lg(g.kp.to_numpy()) - off; y = g.up.astype(float).to_numpy(); al = 1.0
+            for _ in range(500):
+                p = 1 / (1 + np.exp(-(off + al * r))); al -= 0.5 * (np.mean((p - y) * r) + 0.02 * (al - 1))
+            kl_acc = float(((g.kp >= 0.5) == g.up).mean()); k_acc = float(((g.mid >= 0.5) == g.up).mean())
+            if len(g) >= 40: ka[m] = dict(alpha=round(float(min(max(al, 0.0), 2.5)), 3), n=len(g), model=round(kl_acc, 3), kalshi=round(k_acc, 3))
+            up_ = g.kp >= 0.5; ms = np.where(up_, g.kp, 1 - g.kp); ks = np.where(up_, g.mid, 1 - g.mid); sel = (ms - ks) >= 0.04
+            if sel.sum(): kl[m] = dict(n=int(sel.sum()), win=round(float((up_ == g.up)[sel].mean()), 3), kalshi=round(float(ks[sel].mean()), 3))
+    st["kalpha"], st["klive"] = ka, kl
 
 
 def retrain_window(st, params):
@@ -1704,6 +1716,8 @@ def board_line(mkt, a, st):
         up = kp["p"] >= 0.5
         out += (f"\n    Prediction: {'UP' if up else 'DOWN'} {max(kp['p'], 1 - kp['p']):.0%} vs Kalshi {(kp['mid'] if up else 1 - kp['mid']):.0%}"
                 f" ({'fresh' if kp['reg'] == 'fresh' else 'delayed'} data) · " + ("CALL SENT" if not kp.get("why_not") else f"no call: {kp['why_not']}"))
+        ka = (st.get("kalpha") or {}).get(mkt)
+        if ka: out += f"\n    Live record: model right {ka['model']:.0%} vs Kalshi {ka['kalshi']:.0%} ({ka['n']} snapshots), trust x{ka['alpha']:.2f}"
     if a["score"] >= 45 or ("start" in a and max(a["p_up"], 1 - a["p_up"]) >= 0.75) or (a.get("fc_ok") and max(a.get("fc_p", .5), 1 - a.get("fc_p", .5)) >= 0.6):
         out += "\n    " + analysis_block(mkt, a).split("\n")[1]  # trend line for the markets that matter right now
     return out
@@ -2924,10 +2938,10 @@ def kfeat_live(mkt, bars, c):
     return np.r_[d(1), d(3), d(5), c["ya"] - c["yb"], np.log1p(vol), fx.to_numpy(float), T / 12], mid
 
 
-def kp_live(M, x, mid):
+def kp_live(M, x, mid, alpha=1.0):
     z = ((x - np.array(M["mu"])) / np.array(M["sd"])).clip(-6, 6)
     lgm = float(np.log(min(max(mid, 0.01), 0.99) / (1 - min(max(mid, 0.01), 0.99))))
-    return float(1 / (1 + np.exp(-(lgm + z @ np.array(M["w"])))))
+    return float(1 / (1 + np.exp(-(lgm + alpha * (z @ np.array(M["w"]))))))  # alpha = live-learned trust for this market
 
 
 def disproven(st, mkt, T):
@@ -2943,10 +2957,12 @@ def kcall(st, mkt, bars, lv, px, params):
     T = (c["close"] - pd.Timestamp.now(tz="UTC")).total_seconds() / 60; band = "early" if T >= 8 else "late"
     x, mid = kfeat_live(mkt, bars, c)
     if x is None: return False
-    p = kp_live(M, x, mid); up = p >= 0.5; ps = p if up else 1 - p; ask = c["ya"] if up else c["na"]
+    alpha = ((st.get("kalpha") or {}).get(mkt) or {}).get("alpha", 1.0)
+    p = kp_live(M, x, mid, alpha); up = p >= 0.5; ps = p if up else 1 - p; ask = c["ya"] if up else c["na"]
+    kl = (st.get("klive") or {}).get(mkt); live_ok = bool(kl and kl["n"] >= 30 and kl["win"] - kl["kalshi"] >= 0.04)
     KP = st.setdefault("kp", {}); KP[mkt] = dict(p=round(p, 3), mid=round(mid, 3), reg=reg, T=round(T, 1), ask=ask, edge=round(ps - ask - kfee(ask), 3))
     why_not = (None if 3 <= T <= 12 else "outside the 3-12 min call window") or \
-              (None if M.get(f"{band}_ok") else f"{band} calls not proven on real Kalshi data for {NAME[mkt]}") or \
+              (None if M.get(f"{band}_ok") or live_ok else f"{band} calls not proven on real Kalshi data for {NAME[mkt]}") or \
               ("live results disproving it" if disproven(st, mkt, T) else None) or \
               ("call already open" if busy(st, mkt) else None) or ("warming up" if not live_ready(st, mkt) else None) or \
               ("already called this window" if st.setdefault("lswin", {}).get(mkt) == c["ticker"] else None) or \
