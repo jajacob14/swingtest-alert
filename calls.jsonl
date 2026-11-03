@@ -11,3 +11,4 @@
 {"t": "2026-11-02T21:30-05:00", "mkt": "GOLD", "kind": "lock", "side": "NO", "cost": 0.77, "prob": 0.9992714899783124, "at": "9:19 PM", "won": false, "close": "2026-11-02T21:30-05:00", "took_profit": false, "was_behind": false}
 {"t": "2026-11-02T21:45-05:00", "mkt": "BRENT", "kind": "lock", "side": "YES", "cost": 0.84, "prob": 0.9088734002472112, "at": "9:36 PM", "won": false, "close": "2026-11-02T21:45-05:00", "took_profit": false, "was_behind": false}
 {"t": "2026-11-02T21:45-05:00", "mkt": "WTI", "kind": "fav", "side": "YES", "cost": 0.76, "prob": 0.836, "at": "9:35 PM", "won": false, "close": "2026-11-02T21:45-05:00", "took_profit": true, "was_behind": false}
+{"t": "2026-11-02T21:45-05:00", "mkt": "SILVER", "kind": "lock", "side": "NO", "cost": 0.79, "prob": 0.9140190255245286, "at": "9:36 PM", "won": true, "close": "2026-11-02T21:45-05:00", "took_profit": true, "was_behind": false}
