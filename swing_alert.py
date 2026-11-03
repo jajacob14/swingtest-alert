@@ -1684,10 +1684,19 @@ def analysis_block(mkt, a):
     return "\n".join((l1, l2, l3))
 
 
+def signal(mkt, st):
+    """🟢⬆️ BUY / ⏸️ HOLD / 🔴⬇️ DON'T BUY for the board."""
+    kp = (st.get("kp") or {}).get(mkt)
+    if busy(st, mkt): return "⏸️ HOLD"
+    if kp and not kp.get("why_not"): return f"🟢⬆️ BUY {'UP' if kp['p'] >= 0.5 else 'DOWN'}"
+    if kp and 0 <= kp.get("edge", -1) < 0.04 and "edge too small" in (kp.get("why_not") or ""): return "⏸️ HOLD"
+    return "🔴⬇️ DON'T BUY"
+
+
 def board_line(mkt, a, st):
     """Two plain lines per market: what it's doing now, then what to do."""
     op = (st.get("lpos") or {}).get(mkt)
-    l1 = (f"{COLOR[mkt][0]} {NAME[mkt]} {money(mkt, a['px'])}  {a['ch5'] * 100:+.2f}% in 5 min  {a['spark']}  {a['label']}"
+    l1 = (f"{signal(mkt, st)} · {COLOR[mkt][0]} {NAME[mkt]} {money(mkt, a['px'])}  {a['ch5'] * 100:+.2f}% in 5 min  {a['spark']}  {a['label']}"
           + (f" ({a['score']:.0f}/100)" if a["score"] >= 45 else "") + (f"  [{call_time(op)} open]" if op else ""))
     out = l1 + "\n    " + action_line(mkt, a)
     kp = (st.get("kp") or {}).get(mkt)
