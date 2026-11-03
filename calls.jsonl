@@ -10,3 +10,4 @@
 {"t": "2026-11-02T19:30-05:00", "mkt": "COPPER", "kind": "lock", "side": "YES", "cost": 0.95, "prob": 0.9421, "at": "7:27 PM", "won": true}
 {"t": "2026-11-02T19:37-05:00", "mkt": "SILVER", "kind": "fav", "side": "YES", "cost": 0.78, "prob": 0.864, "at": "7:35 PM", "won": true}
 {"t": "2026-11-02T19:43-05:00", "mkt": "WTI", "kind": "lock", "side": "YES", "cost": 0.96, "prob": 0.9212, "at": "7:42 PM", "won": true}
+{"t": "2026-11-02T19:45-05:00", "mkt": "NATGAS", "kind": "lock", "side": "NO", "cost": 0.02, "prob": 0.9502, "at": "7:42 PM", "won": false}
