@@ -1,2 +1,3 @@
 {"t": "2026-11-02T20:30-05:00", "mkt": "PALLADIUM", "kind": "fav", "side": "NO", "cost": 0.76, "prob": 0.825, "at": "8:24 PM", "won": false, "took_profit": false, "was_behind": false}
 {"t": "2026-11-02T20:30-05:00", "mkt": "GOLD", "kind": "lock", "side": "YES", "cost": 0.84, "prob": 0.9566505452674636, "at": "8:22 PM", "won": false, "took_profit": false, "was_behind": false}
+{"t": "2026-11-02T20:30-05:00", "mkt": "SILVER", "kind": "lock", "side": "YES", "cost": 0.83, "prob": 0.9177350449818129, "at": "8:19 PM", "won": true, "took_profit": false, "was_behind": false}
