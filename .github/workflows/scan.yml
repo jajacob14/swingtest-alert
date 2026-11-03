@@ -8,7 +8,7 @@ on:
   workflow_dispatch:
     inputs:
       cmd: {description: "live | scan | brief | optimize | doctor | testnotify", default: live}
-permissions: {contents: write}
+permissions: {contents: write, actions: write}
 concurrency:
   group: swing-${{ github.event.schedule == '7 0,6,12,18 * * 0-5' || inputs.cmd == 'live' }}
   cancel-in-progress: ${{ github.event.schedule == '7 0,6,12,18 * * 0-5' || inputs.cmd == 'live' }}
@@ -37,6 +37,7 @@ jobs:
           EIA_API_KEY: ${{ secrets.EIA_API_KEY }}
           PYTH_API_KEY: ${{ secrets.PYTH_API_KEY }}
           EXTRA_EVENTS: ${{ vars.EXTRA_EVENTS }}
+          GH_TOKEN: ${{ github.token }}
           ACCOUNT_SIZE: ${{ vars.ACCOUNT_SIZE }}
           RISK_PCT: ${{ vars.RISK_PCT }}
       - name: save state
@@ -45,3 +46,8 @@ jobs:
           git add -A state.json params.json calls.jsonl preds.jsonl 2>/dev/null || true
           git commit -qm "bot: update state" || exit 0
           git pull -q --rebase origin main && git push -q
+      - name: chain the next live run (don't rely on GitHub's scheduler)
+        if: ${{ success() && (inputs.cmd == 'live' || github.event.schedule == '7 0,6,12,18 * * 0-5') }}
+        run: gh workflow run commodity-scan --ref main -f cmd=live
+        env:
+          GH_TOKEN: ${{ github.token }}

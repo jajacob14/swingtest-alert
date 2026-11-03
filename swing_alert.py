@@ -2484,6 +2484,15 @@ def live():
         except Exception as e:
             S["errs"] += 1; print("tick error:", e); traceback.print_exc()
             if S["errs"] == 30: notify("Data problem", f"Live loop failing for ~5 min ({str(e)[:80]}). Retrying automatically.", "high")
+        # in-loop schedule (GitHub's cron is unreliable): market checks + nightly re-tune
+        for hh, mm_, job in ((7, 40, "brief"), (13, 50, "brief"), (16, 35, "retune")):
+            key = f"{now.date()}-{job}-{hh}"
+            if now.weekday() < 5 and (now.hour, now.minute) >= (hh, mm_) and (now.hour, now.minute) < (hh, mm_ + 10) and S.get(key) is None:
+                S[key] = 1
+                try:
+                    if job == "brief": brief()
+                    elif os.getenv("GH_TOKEN"): os.system("gh workflow run commodity-scan --ref main -f cmd=calibrate")
+                except Exception as e: print("in-loop job", job, e)
         if now.minute < 3 and now.hour != S["last_hour"]:  # hourly: pull fresh calibration / params
             S["last_hour"] = now.hour
             try:
