@@ -964,8 +964,20 @@ def scorecard(st):
     if len(today) and "early" in today:
         er = today[today.early.fillna(False).astype(bool)]
         if len(er): lines.append(f"Early calls today: {cnt(er)[0]} right, {cnt(er)[1]} wrong ({cnt(er)[0] / len(er):.0%})")
-    if len(half):
-        lines.append("By market: " + ", ".join(f"{NAME.get(k, k)} {cnt(g)[0]}-{cnt(g)[1]}" for k, g in half.groupby("mkt")))
+    # one line per market for this window: how it ended, the call (if any), model vs Kalshi on every snapshot
+    try:
+        pw = pd.read_json(PRED_LOG, lines=True); pw["c"] = pd.to_datetime(pw["close"], utc=True).dt.tz_convert(ET)
+        pw = pw[(pw.c > lo) & (pw.c <= due)]
+    except Exception: pw = pd.DataFrame(columns=["mkt", "up", "wm", "mid", "left"])
+    for m in [k for k in ALL if k in set(pw.get("mkt", [])) | set(half.get("mkt", []))]:
+        g = pw[pw.mkt == m]; h = half[half.mkt == m] if len(half) else half
+        ended = ("UP" if bool(g.up.iloc[0]) else "DOWN") if len(g) else "?"
+        call = "no call"
+        if len(h):
+            r = h.iloc[-1]; call = f"call BUY {'UP' if r.side == 'YES' else 'DOWN'}{' (early)' if r.get('early') else ''}: {'RIGHT' if r.won else 'WRONG'}"
+        g2 = g.dropna(subset=["wm", "mid"])
+        mod = f"model {int(((g2.wm >= 0.5) == g2.up).sum())}/{len(g2)}, Kalshi {int(((g2.mid >= 0.5) == g2.up).sum())}/{len(g2)}" if len(g2) else ""
+        lines.append(f"{COLOR[m][0]} {NAME[m]}: ended {ended} · {call}" + (f" · {mod}" if mod else ""))
     try:
         pdl = pd.read_json(PRED_LOG, lines=True); pdl["c"] = pd.to_datetime(pdl["close"], utc=True).dt.tz_convert(ET)
         ps = pred_summary(pdl[(pdl.c > lo) & (pdl.c <= due)].dropna(subset=["wm", "mid"]))
