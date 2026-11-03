@@ -449,6 +449,55 @@ def forecast_stats(df):
     return res
 
 
+WFEATS = FEATS + ("dz", "tleft")
+
+
+def _fit_logit(X, Y, iters=500):
+    Xb = np.c_[np.ones(len(X)), X]; w = np.zeros(Xb.shape[1])
+    for _ in range(iters):
+        p = 1 / (1 + np.exp(-Xb @ w)); w -= 0.5 * (Xb.T @ (p - Y) / len(Y) + 0.001 * np.r_[0, w[1:]])
+    return w
+
+
+def window_stats(df):
+    """Our own window-outcome model: P(15-min window ends UP) with 3-12 min left, from trend/momentum/flow/VWAP/RSI/
+    breakout + distance to start. Tested on newest 30%: accuracy of 90%+ calls ('near locks') vs what price alone implied."""
+    df = df.resample("1min").last().dropna(how="all"); c = df.Close; w = df.index.floor("15min")
+    f, sig = feat_frame(df)
+    full = pd.Series(1, index=df.index).groupby(w).transform("size") >= 8
+    start = c.shift(1).groupby(w).transform("first"); end = c.groupby(w).transform("last")
+    T = 14 - (df.index.tz_convert(ET).minute % 15)
+    f["dz"] = (np.log(c / start) / (sig * np.sqrt(np.maximum(T, 1)))).clip(-6, 6); f["tleft"] = T / 12
+    y = (end >= start).astype(float)
+    d = pd.concat([f, y.rename("y")], axis=1)[full & (T >= 3) & (T <= 12)].dropna()
+    if len(d) < 3000: return {"ok": False, "n": len(d)}
+    cut = int(len(d) * 0.7); tr, te = d.iloc[:cut], d.iloc[cut:]
+    mu, sd = tr[list(WFEATS)].mean(), tr[list(WFEATS)].std() + 1e-9
+    wts = _fit_logit(((tr[list(WFEATS)] - mu) / sd).to_numpy(), tr.y.to_numpy())
+    pt = 1 / (1 + np.exp(-(np.c_[np.ones(len(te)), ((te[list(WFEATS)] - mu) / sd).to_numpy()] @ wts)))
+    conf = np.maximum(pt, 1 - pt); right = ((pt >= 0.5) == (te.y.to_numpy() == 1))
+    fair = np.array([_phi(abs(x)) for x in te.dz.to_numpy()])  # what price/time alone implies (≈ the market)
+    res = dict(w=[round(float(x), 5) for x in wts], mu=[round(float(x), 6) for x in mu], sd=[round(float(x), 6) for x in sd])
+    for name, lo, hi in (("lock", 0.90, 1.01), ("hc", 0.75, 0.90)):
+        msk = (conf >= lo) & (conf < hi)
+        res[f"{name}_n"] = int(msk.sum()); res[f"{name}_acc"] = round(float(right[msk].mean()), 3) if msk.any() else 0
+        res[f"{name}_fair"] = round(float(fair[msk].mean()), 3) if msk.any() else 0
+        early = msk & (te.tleft.to_numpy() * 12 >= 5)  # 5+ minutes before the end
+        res[f"{name}_early_n"] = int(early.sum()); res[f"{name}_early_acc"] = round(float(right[early].mean()), 3) if early.any() else 0
+    res["ok"] = bool(res["lock_n"] >= 100 and res["lock_acc"] >= 0.90)
+    return res
+
+
+def window_live(m, wm, dz, T):
+    """P(window ends UP) right now from our model."""
+    if not wm or not wm.get("w"): return None
+    f, _ = feat_frame(m); x = f.iloc[-1][list(FEATS)]
+    if x.isna().any(): return None
+    v = np.r_[x.to_numpy(), np.clip(dz, -6, 6), T / 12]
+    z = (v - np.array(wm["mu"])) / np.array(wm["sd"])
+    return float(1 / (1 + np.exp(-(wm["w"][0] + z @ np.array(wm["w"][1:])))))
+
+
 def forecast_live(m, fc):
     """P(up in 10 min) for the latest bar using a stored model."""
     if not fc or not fc.get("w"): return None
@@ -514,16 +563,16 @@ def spike_stats(df):
 
 
 def calibrate(mkt):
-    drift, spike, fcast, lock = {}, {}, {}, {}
+    drift, spike, fcast, lock, wmod = {}, {}, {}, {}, {}
     try:
         fdf = fetch_fut_1m(mkt); rows = ls_rows(fdf, rth=False); src = "yahoo futures 30d"; drift = drift_stats(fdf)
-        spike = spike_stats(fdf); fcast = forecast_stats(fdf); lock = lock_stats(fdf)
+        spike = spike_stats(fdf); fcast = forecast_stats(fdf); lock = lock_stats(fdf); wmod = window_stats(fdf)
     except Exception as e:
         print(mkt, "futures 1m failed:", e); rows = ls_rows(fetch(mkt, "1m", 60)); src = "etf 60d"
     cut = int(len(rows) * 0.7); tr, te = rows.iloc[:cut], rows.iloc[cut:]
     tab = {k: [len(g), round(float(g.won.mean()), 3)] for k, g in tr.groupby("key") if len(g) >= 25}
     stab = {k: [len(g), round(float(g.won.mean()), 3)] for k, g in tr.groupby("skey") if len(g) >= 25}
-    res = dict(table=tab, stable=stab, setups=len(rows), src=src, drift=drift, spike=spike, fcast=fcast, lock=lock)
+    res = dict(table=tab, stable=stab, setups=len(rows), src=src, drift=drift, spike=spike, fcast=fcast, lock=lock, wmod=wmod)
     nt = te[~te.skey.str.startswith("US")]
     for typ in ("ls", "fav"):  # overnight validation on unseen 30%, session-aware table
         pnl = cost = n = 0
@@ -1166,10 +1215,11 @@ def open_call(st, mkt, kind, side, c, lv, px, odds, why, tested, parent=None, pr
     n = new_trade(st, mkt, pos, lv, px)
     left = (c["close"] - pd.Timestamp.now(tz="UTC")).total_seconds() / 60
     up = side == "YES"; big = 1 / cost >= BIG_X
-    when = {"lock": f"to hold by {pd.Timestamp(k['close']).tz_convert(ET):%-I:%M}", "spike": "now", "fast": "in 5-10 min", "fav": "in 5-10 min", "flip": "in 5-10 min",
+    when = {"lock": f"by {pd.Timestamp(k['close']).tz_convert(ET):%-I:%M}", "spike": "now", "fast": "in 5-10 min", "fav": "in 5-10 min", "flip": "in 5-10 min",
             "ls": f"within {left:.0f} min", "drift": f"by {pd.Timestamp(k['close']).tz_convert(ET):%-I:%M}",
             "ihm": "into the close"}.get(kind, "soon")
     tg = tier(prob) if prob else ""
+    if tg == "NEAR LOCK" and kind != "lock": tg = "HIGH CONFIDENCE"  # NEAR LOCK only from our window model
     title = (f"{NAME[mkt]}: BUY {'UP (YES)' if up else 'DOWN (NO)'} · " + (f"{tg} {prob:.0%} · " if tg else "")
              + f"{'rise' if up else 'drop'} expected {when}" + (f" · BIG PAYOUT {1 / cost:.0f}x" if big else ""))
     sig = _SIG.get(mkt); tl = max(left * 0.6, 1)
@@ -1206,7 +1256,7 @@ def odds_line(p, cost, label="Odds"):
     return (f"win chance {p:.0%} vs market {cost:.0%}" + (" (good value)" if e >= 0.03 else " (fair)" if e > -0.03 else " (overpriced)"))
 
 
-def analyze(mkt, m, kp, lv, c, fc=None):
+def analyze(mkt, m, kp, lv, c, fc=None, wm=None):
     """Numbers behind the board/alerts: move, σ, breakout, volatility, spike score, range & odds for this window."""
     from math import log, sqrt
     cl = m.Close
@@ -1221,6 +1271,10 @@ def analyze(mkt, m, kp, lv, c, fc=None):
     if c:
         T = max((c["close"] - pd.Timestamp.now(tz="UTC")).total_seconds() / 60, 0.1)
         a.update(T=T, start=c["k"], rng=kp * s1 * sqrt(T), p_up=_phi(log(kp / c["k"]) / (s1 * sqrt(T))), ya=c["ya"], na=c["na"])
+        mm0 = m.copy(); mm0.iloc[-1, mm0.columns.get_loc("Close")] = p.iloc[-1]
+        wp = window_live(mm0, wm, log(kp / c["k"]) / (s1 * sqrt(T)), T)
+        if wp is not None: a.update(wm_p=wp, wm_ok=bool((wm or {}).get("ok")), wm_acc=(wm or {}).get("lock_acc", 0),
+                                    wm_n=(wm or {}).get("lock_n", 0), wm_hc=(wm or {}).get("hc_acc", 0))
     tr_, vw_, rs_, fl_ = ctx_features(p, m.Volume.fillna(0), m.index, m.Open)
     ema = p.ewm(span=240, adjust=False).mean()
     a.update(tr_pct=float(p.iloc[-1] / ema.iloc[-1] - 1), m60=float(p.iloc[-1] / p.iloc[-61] - 1) if len(p) > 61 else 0.0,
@@ -1289,12 +1343,13 @@ def action_line(mkt, a):
             parts.append(f"Lean BUY {'UP (YES)' if want_up else 'DOWN (NO)'}, ends {'above' if want_up else 'below'} {money(mkt, a['start'])}" if cost < 0.8
                          else f"{'UP (YES)' if want_up else 'DOWN (NO)'} is already priced in, skip")
         else:
-            lead_up = a["p_up"] >= 0.5; lead = max(a["p_up"], 1 - a["p_up"])
-            if lead >= 0.9:
-                parts.append(f"NEAR LOCK: BUY {'UP (YES)' if lead_up else 'DOWN (NO)'} {lead:.0%} (ends {'above' if lead_up else 'below'} "
-                             f"{money(mkt, a['start'])}, {T:.0f} min left; market already near {max(a['ya'], a['na']):.0%})")
+            wp = a.get("wm_p"); lead_up = (wp if wp is not None else a["p_up"]) >= 0.5
+            lead = max(wp, 1 - wp) if wp is not None else 0; mk = a["ya"] if lead_up else a["na"]
+            if lead >= 0.9 and a.get("wm_ok"):
+                parts.append(f"NEAR LOCK (our analysis {lead:.0%}, tested {a['wm_acc']:.0%}): BUY {'UP (YES)' if lead_up else 'DOWN (NO)'}, "
+                             f"ends {'above' if lead_up else 'below'} {money(mkt, a['start'])} in {T:.0f} min. Kalshi prices {mk:.0%}")
             elif lead >= 0.75:
-                parts.append(f"HIGH CONFIDENCE: {'UP (YES)' if lead_up else 'DOWN (NO)'} {lead:.0%} so far ({T:.0f} min left)")
+                parts.append(f"HIGH CONFIDENCE (our analysis {lead:.0%}): {'UP (YES)' if lead_up else 'DOWN (NO)'}, {T:.0f} min left. Kalshi prices {mk:.0%}")
             elif T < 4: parts.append(f"window ends in {T:.0f} min, wait for the next one")
             else: parts.append("wait")
     return ". ".join(x[0].upper() + x[1:] for x in parts if x) + "."
@@ -1307,22 +1362,20 @@ def fc_conflict(st, mkt, up):
 
 
 def lock_call(st, mkt, a, lv, cal):
-    """Leading side is a near lock (measured ≥90%): one tracked call per window with the % and the honest payout."""
-    if "start" not in a or busy(st, mkt) or a["T"] < 1.5: return False
-    up = a["p_up"] >= 0.5; lead = a["p_up"] if up else 1 - a["p_up"]
-    if lead < 0.92: return False
-    rate, n = lock_rate(cal, lead)
+    """NEAR LOCK from our own analysis: window model ≥90% AND proven ≥90% on unseen data, ideally 5-10 min out,
+    and Kalshi hasn't fully priced it (so it's worth buying)."""
+    if "wm_p" not in a or not a.get("wm_ok") or busy(st, mkt) or not 3 <= a["T"] <= 11: return False
+    up = a["wm_p"] >= 0.5; conf = max(a["wm_p"], 1 - a["wm_p"])
+    if conf < 0.90: return False
     c = k15(mkt)
-    if rate < 0.90 or not c or st.setdefault("lockwin", {}).get(mkt) == c["ticker"]: return False
+    if not c or st.setdefault("lockwin", {}).get(mkt) == c["ticker"]: return False
     if event_window(mkt, dt.datetime.now(ET), a["T"]) or regime_extra(st, mkt): return False  # jumps break locks
     cost = c["ya"] if up else c["na"]
-    if not 0 < cost < 0.99: return False
-    st["lockwin"][mkt] = c["ticker"]; gain = (1 - cost - kfee(cost)) / cost
-    why = (f"price is {abs(a['px'] / a['start'] - 1) * 100:.2f}% {'above' if up else 'below'} the start with {a['T']:.0f} min left; "
-           f"history: {rate:.1%} of {n:,} cases like this held" if n else "far from the start with little time left")
-    open_call(st, mkt, "lock", "YES" if up else "NO", c, lv, a["px"],
-              f"market already prices it at {cost:.0%}, so profit is small: about +{gain:.0%} on stake if it holds", why,
-              bool(n), prob=rate)
+    if not 0 < cost < 0.93 or conf - cost - kfee(cost) < 0.03: return False  # market already agrees: nothing to gain
+    st["lockwin"][mkt] = c["ticker"]
+    why = (f"our analysis says {conf:.0%} ({'UP' if up else 'DOWN'}); its 90%+ calls were right {a['wm_acc']:.0%} of "
+           f"{a['wm_n']:,} times on unseen days; Kalshi only prices {cost:.0%}; " + ctx_short(dict(trend=1 if a.get('tr_pct', 0) > 0 else -1, flow=a.get('flow', 0)), up))
+    open_call(st, mkt, "lock", "YES" if up else "NO", c, lv, a["px"], odds_line(conf, cost), why, True, prob=conf)
     return True
 
 
@@ -1658,7 +1711,7 @@ def night_tick(st, params, cool, nh, yc, only=None):
                         or k15_call(mkt, m.iloc[:-1], kp, st, lv, cal_, night=True))
         regime_update(st, mkt, y); boards[mkt] = (m, kp, lv)  # volatility from one clean source
         try:
-            a = analyze(mkt, m, kp, lv, k15(mkt), (cal_ or {}).get("fcast")); st.setdefault("ana", {})[mkt] = a
+            a = analyze(mkt, m, kp, lv, k15(mkt), (cal_ or {}).get("fcast"), (cal_ or {}).get("wmod")); st.setdefault("ana", {})[mkt] = a
             if a: changed |= spike_alert(st, mkt, a, lv, cal_, cool) or lock_call(st, mkt, a, lv, cal_)
         except Exception as e: print("analyze", mkt, e)
         st.setdefault("thin", {})[mkt] = bool(len(y) and pd.Timestamp.now(tz="UTC") - y.index[-1] > pd.Timedelta(minutes=25))
@@ -1825,7 +1878,7 @@ def live():
             regime_update(st, mkt, data[etf])
             try:
                 _m = data[etf]; _m = _m[_m.index + pd.Timedelta(minutes=1) <= pd.Timestamp.now(tz="UTC")]
-                _lv = kconv(mkt, float(px[etf])); _a = analyze(mkt, _m, float(px[etf]) * _lv.r, _lv, k15(mkt), ((params.get("_cal") or {}).get(mkt) or {}).get("fcast"))
+                _lv = kconv(mkt, float(px[etf])); _a = analyze(mkt, _m, float(px[etf]) * _lv.r, _lv, k15(mkt), ((params.get("_cal") or {}).get(mkt) or {}).get("fcast"), ((params.get("_cal") or {}).get(mkt) or {}).get("wmod"))
                 st.setdefault("ana", {})[mkt] = _a
                 _c = (params.get("_cal") or {}).get(mkt)
                 if _a: changed |= spike_alert(st, mkt, _a, _lv, _c, cool) or lock_call(st, mkt, _a, _lv, _c)
