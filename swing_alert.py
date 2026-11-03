@@ -2692,6 +2692,25 @@ def boomdebug():
               "r10 desc", r10.describe().round(3).to_dict())
 
 
+def khist_probe():
+    """Can we get settled 15-min windows + minute candles from Kalshi's public API?"""
+    for ser in ("KXGOLD15M", "KXWTI15M"):
+        rows, cur = [], None
+        for _ in range(10):
+            q = {"series_ticker": ser, "status": "settled", "limit": 1000, **({"cursor": cur} if cur else {})}
+            j = requests.get(f"{KALSHI}/markets", params=q, timeout=30).json(); rows += j.get("markets", []); cur = j.get("cursor")
+            if not cur: break
+        print("KH", ser, "settled windows:", len(rows), "| oldest", min((r["close_time"] for r in rows), default=None),
+              "| sample", {k: rows[0].get(k) for k in ("ticker", "floor_strike", "result", "close_time", "open_time")} if rows else None)
+        if rows:
+            m = rows[0]; t1 = int(pd.Timestamp(m["close_time"]).timestamp()); t0 = t1 - 900
+            for path in (f"/series/{ser}/markets/{m['ticker']}/candlesticks", f"/markets/{m['ticker']}/candlesticks"):
+                r = requests.get(f"{KALSHI}{path}", params={"start_ts": t0, "end_ts": t1, "period_interval": 1}, timeout=30)
+                print("KH candles", path, r.status_code, r.text[:400])
+            r = requests.get(f"{KALSHI}/markets/trades", params={"ticker": m["ticker"], "limit": 5}, timeout=30)
+            print("KH trades", r.status_code, r.text[:300])
+
+
 def selftest():
     rng = np.random.default_rng(1); n = 3000
     vol = np.where((np.arange(n) // 150) % 2, 0.003, 0.012)
@@ -2708,5 +2727,5 @@ if __name__ == "__main__":
     cmds = dict(scan=scan, brief=brief, optimize=optimize, doctor=doctor, selftest=selftest,
                 testnotify=lambda: [notify(f"{m} test alert", f"Color check for {m} ({MARKETS[m][1]}). Data: "
                                        + ("Alpaca real-time" if ALPACA else "Yahoo delayed"), "high", m) for m in MARKETS],
-                live=live, boomdebug=boomdebug, tally=tally, perf=perf, kraw=kraw, nighttest=nighttest, livetest=lambda: (os.environ.update(LIVE_MAX_MIN='2', GIT_PERSIST='', STATE_FILE='/tmp/st.json'), live()), audit=audit, calibrate=calibrate_only, discover2=discover2, kalshi=kalshi_discover, kcheck=kcheck, loop=lambda: [(scan(), time.sleep(int(os.getenv("LOOP_SEC", 120)))) for _ in iter(int, 1)])
+                live=live, khist=khist_probe, boomdebug=boomdebug, tally=tally, perf=perf, kraw=kraw, nighttest=nighttest, livetest=lambda: (os.environ.update(LIVE_MAX_MIN='2', GIT_PERSIST='', STATE_FILE='/tmp/st.json'), live()), audit=audit, calibrate=calibrate_only, discover2=discover2, kalshi=kalshi_discover, kcheck=kcheck, loop=lambda: [(scan(), time.sleep(int(os.getenv("LOOP_SEC", 120)))) for _ in iter(int, 1)])
     cmds.get((sys.argv[1:] or ["scan"])[0], lambda: print(__doc__))()
