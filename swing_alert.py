@@ -484,8 +484,8 @@ def window_stats(df):
         res[f"{name}_fair"] = round(float(fair[msk].mean()), 3) if msk.any() else 0
         early = msk & (te.tleft.to_numpy() * 12 >= 5)  # 5+ minutes before the end
         res[f"{name}_early_n"] = int(early.sum()); res[f"{name}_early_acc"] = round(float(right[early].mean()), 3) if early.any() else 0
-    early = (te.tleft.to_numpy() * 12 >= 8) & (conf >= 0.6)  # 8-12 min left, model leaning 60%+
     fz = np.array([_phi(x) for x in te.dz.to_numpy()]); fair_side = np.where(pt >= 0.5, fz, 1 - fz)
+    early = (te.tleft.to_numpy() * 12 >= 8) & (conf >= 0.6) & (fair_side >= 0.30) & (fair_side <= 0.55)  # same as live: market near even
     res["early_n"] = int(early.sum())
     res["early_acc"] = round(float(right[early].mean()), 3) if early.any() else 0
     res["early_fair"] = round(float(fair_side[early].mean()), 3) if early.any() else 0  # what price alone implied for that side
