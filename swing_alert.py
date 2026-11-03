@@ -573,8 +573,9 @@ def calibrate(mkt):
     tab = {k: [len(g), round(float(g.won.mean()), 3)] for k, g in tr.groupby("key") if len(g) >= 25}
     stab = {k: [len(g), round(float(g.won.mean()), 3)] for k, g in tr.groupby("skey") if len(g) >= 25}
     res = dict(table=tab, stable=stab, setups=len(rows), src=src, drift=drift, spike=spike, fcast=fcast, lock=lock, wmod=wmod)
-    nt = te[~te.skey.str.startswith("US")]
-    for typ in ("ls", "fav"):  # overnight validation on unseen 30%, session-aware table
+    for scope, part in (("all", te), ("night", te[~te.skey.str.startswith("US")])):
+     for typ in ("ls", "fav"):  # validation on unseen 30%, session-aware table (same table day & night)
+        nt = part
         pnl = cost = n = 0
         for _, r in nt.iterrows():
             cell = stab.get(r.skey)
@@ -583,8 +584,8 @@ def calibrate(mkt):
             p = cell[1] if typ == "ls" else 1 - cell[1]; won = r.won if typ == "ls" else not r.won
             if (price <= LS_MAX_COST if typ == "ls" else price < 0.92) and p - price - kfee(price) >= (LS_MIN_EDGE if typ == "ls" else FAV_MIN_EDGE):
                 pnl += won - price - kfee(price); cost += price; n += 1
-        res[f"night_{typ}_n"], res[f"night_{typ}_roi"] = n, round(pnl / cost, 3) if cost else 0
-        res[f"night_{typ}_ok"] = bool(n >= 15 and cost and pnl / cost > 0.03)
+        res[f"{scope}_{typ}_n"], res[f"{scope}_{typ}_roi"] = n, round(pnl / cost, 3) if cost else 0
+        res[f"{scope}_{typ}_ok"] = bool(n >= 15 and cost and pnl / cost > 0.03)
     res["bounce_by_session"] = {sname: round(float(g.won.mean()), 3) for sname, g in
                                 rows[rows.turn].groupby(rows[rows.turn].skey.str.split("|").str[0])}
     for typ in ("ls", "fav"):  # test on unseen 30%: buy when history odds beat a fair price (+2¢ spread)
@@ -806,7 +807,8 @@ MAIN_ON = os.getenv("MAIN_SIGNALS", "0") == "1"  # slow signals use hourly/daily
 
 
 BIG_X = float(os.getenv("BIG_X") or 10)
-MIN_PROB = float(os.getenv("MIN_PROB") or 0.62)      # every call must have at least this win chance
+MIN_PROB = float(os.getenv("MIN_PROB") or 0.62)
+FAST_ON = os.getenv("FAST_CALLS", "0") == "1"           # 1-min momentum calls tested below MIN_PROB: off (same rules day & night)      # every call must have at least this win chance
 LONGSHOTS = os.getenv("LONGSHOTS", "0") == "1"        # low-win-rate cheap bets: off unless enabled
 CALL_LOG = "calls.jsonl"
 
@@ -1390,6 +1392,11 @@ def action_line(mkt, a):
     return ". ".join(x[0].upper() + x[1:] for x in parts if x) + "."
 
 
+def live_ready(st, mkt):
+    """Calls need ≥20 min of real-time 1-min data so short-term features are current (day or night)."""
+    return st.get("live_min", {}).get(mkt, 0) >= 20
+
+
 def fc_conflict(st, mkt, up):
     """True if a validated 10-min forecast strongly points the other way."""
     a = (st.get("ana") or {}).get(mkt) or {}
@@ -1399,14 +1406,15 @@ def fc_conflict(st, mkt, up):
 def lock_call(st, mkt, a, lv, cal):
     """NEAR LOCK from our own analysis: window model ≥90% AND proven ≥90% on unseen data, ideally 5-10 min out,
     and Kalshi hasn't fully priced it (so it's worth buying)."""
-    if "wm_p" not in a or not a.get("wm_ok") or busy(st, mkt) or not 3 <= a["T"] <= 11: return False
+    if "wm_p" not in a or not a.get("wm_ok") or busy(st, mkt) or not 4 <= a["T"] <= 11 or not live_ready(st, mkt): return False
     up = a["wm_p"] >= 0.5; conf = max(a["wm_p"], 1 - a["wm_p"])
     if conf < 0.90: return False
     c = k15(mkt)
     if not c or st.setdefault("lockwin", {}).get(mkt) == c["ticker"]: return False
     if event_window(mkt, dt.datetime.now(ET), a["T"]) or regime_extra(st, mkt): return False  # jumps break locks
     cost = c["ya"] if up else c["na"]
-    if not 0.60 <= cost < 0.93 or conf - cost - kfee(cost) < 0.03: return False  # Kalshi must lean our way; need some edge
+    if not 0.70 <= cost < 0.93 or conf - cost - kfee(cost) < 0.03: return False  # Kalshi must lean our way; need some edge
+    if fc_conflict(st, mkt, up) or not agrees(st, mkt, up): return False  # forecast + last 5 min must agree
     if conf - cost > 0.25: return False  # huge disagreement with Kalshi = our data is probably off: skip
     st["lockwin"][mkt] = c["ticker"]
     why = (f"our analysis says {conf:.0%} ({'UP' if up else 'DOWN'}); its 90%+ calls were right {a['wm_acc']:.0%} of "
@@ -1417,7 +1425,7 @@ def lock_call(st, mkt, a, lv, cal):
 
 def spike_alert(st, mkt, a, lv, cal, cool):
     """🔥 Spike starting: a ✅ call where the spike score backtested profitable, otherwise a 🧪 heads-up."""
-    if a["score"] < 70 or not a["dir"] or "start" not in a or busy(st, mkt): return False
+    if a["score"] < 70 or not a["dir"] or "start" not in a or busy(st, mkt) or not live_ready(st, mkt): return False
     if time.time() - cool.get((mkt, "spk"), 0) < 900: return False
     cool[(mkt, "spk")] = time.time(); up = a["dir"] > 0; c = k15(mkt)
     side = "YES" if up else "NO"; cost = (a["ya"] if up else a["na"]); sp = (cal or {}).get("spike") or {}
@@ -1461,7 +1469,8 @@ def fast_entry(mkt, d1, fp, st, cool):
 def k15_call(mkt, m, px, st, lv, cal, night=False):
     """🎯 longshot (cheap bounce side) or 💪 edge pick (favored side), from calibrated history + context."""
     from math import log, sqrt
-    if busy(st, mkt) or not cal or not cal.get("stable" if night else "table") or len(m) < 300: return False
+    if busy(st, mkt) or not cal or not cal.get("stable") or len(m) < 300: return False
+    if not live_ready(st, mkt): return False
     c = k15(mkt)
     if not c: return False
     T = (c["close"] - pd.Timestamp.now(tz="UTC")).total_seconds() / 60
@@ -1474,17 +1483,14 @@ def k15_call(mkt, m, px, st, lv, cal, night=False):
     bdir = -1 if z > 0 else 1; cl = m.Close
     turning = (px > cl.iloc[-1] and cx["rsi"] < 45) if bdir > 0 else (px < cl.iloc[-1] and cx["rsi"] > 55)
     sname = session(dt.datetime.now(ET))
-    if night:
-        cell = (cal.get("stable") or {}).get(f"{sname}|{ls_bucket(abs(z))}|{'T+' if cx['trend'] == bdir else 'T-'}|{'turn' if turning else 'run'}")
-    else:
-        cell = cal["table"].get(ctx_key(abs(z), bdir, cx["trend"], px, cx["vwap"], turning, cx["flow"]))
+    cell = (cal.get("stable") or {}).get(f"{sname}|{ls_bucket(abs(z))}|{'T+' if cx['trend'] == bdir else 'T-'}|{'turn' if turning else 'run'}")
     if not cell: return False
     kind = "ls" if turning else "fav"
     if kind == "ls" and not LONGSHOTS: return False
     if kind == "fav" and T > 10: return False  # first minutes of a window are noise
     up = (bdir > 0) if kind == "ls" else (bdir < 0); side = "YES" if up else "NO"
     cost = c["ya"] if up else c["na"]; p = cell[1] if kind == "ls" else 1 - cell[1]
-    tested = cal.get(f"night_{kind}_ok" if night else f"{kind}_ok")
+    tested = cal.get(f"all_{kind}_ok", cal.get(f"night_{kind}_ok"))
     a_ = (st.get("ana") or {}).get(mkt) or {}
     if a_.get("score", 0) >= 70 and a_.get("dir") and (a_["dir"] > 0) != up: return False  # never fade a live spike
     if fc_conflict(st, mkt, up): return False                                                # never fight the forecast
@@ -1497,8 +1503,7 @@ def k15_call(mkt, m, px, st, lv, cal, night=False):
     if p - cost > 0.25: return False  # suspect data: don't bet on a huge disagreement with Kalshi
     why = (("snap-back setup" if kind == "ls" else "move still running") + f", {p:.0%} win rate in history, " + ctx_short(cx, up)
            + (", thin hours" if st.get("thin", {}).get(mkt) else ""))
-    open_call(st, mkt, kind, side, c, lv, px, odds_line(p, cost), why,
-              cal.get(f"night_{kind}_ok" if night else f"{kind}_ok"), prob=p)
+    open_call(st, mkt, kind, side, c, lv, px, odds_line(p, cost), why, tested, prob=p)
     return True
 
 
@@ -1528,7 +1533,7 @@ def drift_call(mkt, m, px, st, lv, cal):
     """Early in a 15-min window, price still at the start: bet the session's validated up/down tendency."""
     from math import log, sqrt
     now = dt.datetime.now(ET); d = ((cal or {}).get("drift") or {}).get(session(now))
-    if not d or not d.get("ok") or busy(st, mkt) or len(m) < 120: return False
+    if not d or not d.get("ok") or busy(st, mkt) or len(m) < 120 or not live_ready(st, mkt): return False
     c = k15(mkt)
     if not c or st.setdefault("lswin", {}).get(mkt) == c["ticker"]: return False
     T = (c["close"] - pd.Timestamp.now(tz="UTC")).total_seconds() / 60
@@ -1731,11 +1736,15 @@ def night_tick(st, params, cool, nh, yc, only=None):
         if mkt not in yc: continue
         y = yc[mkt][1]; kp = night_price(mkt, y)
         if kp is None or len(y) < 300: continue
+        if mkt not in nh and (st.get("nh") or {}).get(mkt):  # restore live history saved by the previous run
+            nh[mkt] = [(pd.Timestamp(t), float(p)) for t, p in st["nh"][mkt]]
         h = nh.setdefault(mkt, [])
         if len(h) >= 3:  # glitch filter: ignore a reading that jumps >6 normal 1-min moves from the recent median
             med = float(np.median([p for _, p in h[-3:]])); s1 = float(np.log(y.Close).diff().tail(390).std() or 1e-4)
             if abs(np.log(kp / med)) > 6 * s1: print("glitch", mkt, kp, "vs", med); kp = med
-        h.append((pd.Timestamp.now(tz="UTC"), kp)); del h[:-240]
+        h.append((pd.Timestamp.now(tz="UTC"), kp)); h[:] = [x for x in h if x[0] > pd.Timestamp.now(tz="UTC") - pd.Timedelta(minutes=240)]
+        mins = sorted({t.floor("min") for t, _ in h}); st.setdefault("live_min", {})[mkt] = len(mins)
+        st.setdefault("nh", {})[mkt] = [[str(t), round(p, 6)] for t, p in h[::max(1, len(h) // 240)][-240:]]
         hb = pd.Series([p for _, p in h], index=[t for t, _ in h]).resample("1min").ohlc().dropna()
         hb = hb.rename(columns=str.title).assign(Volume=0.0)
         ov = hb.Close.reindex(y.index).dropna()  # minutes where both Kalshi and (delayed) Yahoo exist
@@ -1908,7 +1917,7 @@ def live():
             for mkt, (_, etf) in MARKETS.items():  # fast engine: spike-start detector on closed 1-min bars
                 if etf not in data or mkt in st.get("fpos", {}): continue
                 m1 = data[etf]; m1 = m1[m1.index + pd.Timedelta(minutes=1) <= pd.Timestamp.now(tz="UTC")]
-                if len(m1) >= 400 and now.time() < dt.time(15, 50):
+                if FAST_ON and len(m1) >= 400 and now.time() < dt.time(15, 50):
                     fp = {**FAST_DEFAULT, **(params.get("_fast") or {}).get(mkt, {})}
                     changed |= fast_entry(mkt, indicators(m1.tail(1500)), fp, st, cool)
         px = snapshots(); S['nt'] += 1  # every tick: live price → spike/dip, trend, stop/target checks
@@ -1916,6 +1925,8 @@ def live():
           try:
             if etf not in data or not px.get(etf): continue
             if not k15(mkt): continue  # Kalshi closed this market's 15-min contracts
+            _recent = data[etf].index[data[etf].index > pd.Timestamp.now(tz="UTC") - pd.Timedelta(minutes=60)]
+            st.setdefault("live_min", {})[mkt] = len(_recent)
             regime_update(st, mkt, data[etf])
             try:
                 _m = data[etf]; _m = _m[_m.index + pd.Timedelta(minutes=1) <= pd.Timestamp.now(tz="UTC")]
@@ -1930,7 +1941,8 @@ def live():
             lv_ = kconv(mkt, p_); changed |= manage_ls(mkt, p_, st, lv_)
             if dt.datetime.now(ET).time() >= dt.time(15, 50): continue  # no new calls into the close
             cal_ = (params.get("_cal") or {}).get(mkt)
-            changed |= ihm_call(mkt, m, p_, st, lv_, cal_) or k15_call(mkt, m, p_, st, lv_, cal_)
+            changed |= (ihm_call(mkt, m, p_, st, lv_, cal_) or drift_call(mkt, m, p_, st, lv_, cal_)
+                        or k15_call(mkt, m, p_, st, lv_, cal_))
             row = pd.DataFrame({"Open": p_, "High": p_, "Low": p_, "Close": p_, "Volume": m.Volume.iloc[-1]}, index=[cur])
             changed |= bool(fast_checks(mkt, pd.concat([m, row]), st, cool))
           except Exception as e:
@@ -1960,7 +1972,7 @@ def live():
             st = load_state()
             if st.get("mode") != shown and not (st.get("mode") == "idle" and shown == "night"):  # announce once
                 notify(f"Mode: {'overnight (day data down)' if shown == 'night*' else {'day': 'day', 'night': 'overnight', 'closed': 'closed'}[shown]}", MODE_TXT[shown], "default")
-                st["mode"] = shown; nh.clear(); yc.clear()
+                st["mode"] = shown; yc.clear()  # keep live price history across mode switches
             if mode == "night":
                 changed, boards = night_tick(st, S["params"], cool, nh, yc); night_boards(st, boards)
                 if not boards:  # every market closed (e.g. weekend): idle, still report results
