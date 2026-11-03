@@ -976,7 +976,8 @@ def scorecard(st):
         if len(h):
             r = h.iloc[-1]; call = f"call BUY {'UP' if r.side == 'YES' else 'DOWN'}{' (early)' if r.get('early') else ''}: {'RIGHT' if r.won else 'WRONG'}"
         g2 = g.dropna(subset=["wm", "mid"])
-        mod = f"model {int(((g2.wm >= 0.5) == g2.up).sum())}/{len(g2)}, Kalshi {int(((g2.mid >= 0.5) == g2.up).sum())}/{len(g2)}" if len(g2) else ""
+        mod = (f"model {int(((g2.wm >= 0.5) == g2.up).sum())}/{len(g2)}, Kalshi {int(((g2.mid >= 0.5) == g2.up).sum())}/{len(g2)}"
+               + (" (partial window)" if len(g2) < 4 else "")) if len(g2) else ""
         lines.append(f"{COLOR[m][0]} {NAME[m]}: ended {ended} · {call}" + (f" · {mod}" if mod else ""))
     try:
         pdl = pd.read_json(PRED_LOG, lines=True); pdl["c"] = pd.to_datetime(pdl["close"], utc=True).dt.tz_convert(ET)
@@ -986,6 +987,10 @@ def scorecard(st):
             lines.append("  by minutes left: " + ", ".join(f"{b}m {v[0]:.0%} vs {v[1]:.0%}" for b, v in sorted(ps["by"].items(), reverse=True)))
     except Exception: pass
     lines.append("All results above are settled by Kalshi. Scored on whether each call's prediction was right at the close.")
+    ED = st.get("edge_live") or {}
+    if ED:
+        pr = [NAME.get(m, m) for m in ALL if any(proven(st, m, t) for t in (12, 5))]
+        lines.append("Calls allowed (model proven to beat Kalshi live): " + (", ".join(pr) if pr else "none yet, still collecting proof"))
     L = st.get("wm_live") or {}; E = st.get("early_live") or {}
     if L: lines.append("Learning: live-retrained models active for " + ", ".join(NAME.get(m, m) for m, v in L.items() if v["loss_live"] <= v["loss_backtest"]) if any(v["loss_live"] <= v["loss_backtest"] for v in L.values()) else "Learning: collecting live data (backtest models still better)")
     if E: lines.append("Live EARLY record: " + ", ".join(f"{NAME.get(m, m)} {v['acc']:.0%} vs Kalshi {v['mid']:.0%} ({v['n']})" for m, v in E.items()))
@@ -1007,7 +1012,7 @@ CHECKPOINTS = (12, 9, 6, 3)  # minutes left when every window's predictions are 
 
 def record_pred(st, mkt, a, c):
     """Snapshot our predictions for this window at 12/9/6/3 min left (all windows, not just calls)."""
-    if not c or "start" not in a: return
+    if not c or "start" not in a or not live_ready(st, mkt): return
     P = st.setdefault("preds", {}).setdefault(c["ticker"], {"mkt": mkt, "close": str(c["close"]), "start": c["k"], "cp": {}})
     for b in CHECKPOINTS:
         if a["T"] <= b and str(b) not in P["cp"] and a["T"] > b - 2.5:
@@ -1057,6 +1062,17 @@ def pred_learn(st):
             acc = float(((e.wm >= 0.5) == e.up).mean()); sm = float(np.where(e.wm >= 0.5, e.mid, 1 - e.mid).mean())
             el[m] = dict(n=len(e), acc=round(acc, 3), mid=round(sm, 3))
     st["early_live"] = el
+    # would our calls have beaten Kalshi's actual price? For snapshots where the model is 5+ pts more confident than
+    # Kalshi on its side: realized win rate − Kalshi's price for that side. Positive = real edge.
+    ed = {}
+    for m, g in d.groupby("mkt"):
+        for band, gb in (("early", g[g.left >= 9]), ("late", g[g.left < 9])):
+            up = gb.wm >= 0.5; ms = np.where(up, gb.wm, 1 - gb.wm); ks = np.where(up, gb.mid, 1 - gb.mid)
+            sel = (ms - ks) >= 0.05
+            if sel.sum():
+                win = (up == gb.up)[sel].mean(); ed.setdefault(m, {})[band] = dict(n=int(sel.sum()), win=round(float(win), 3),
+                                                                                    kalshi=round(float(ks[sel].mean()), 3))
+    st["edge_live"] = ed
 
 
 def retrain_window(st, params):
@@ -1542,6 +1558,9 @@ def level_for(start, q_side, up, mins, sig):
 def open_call(st, mkt, kind, side, c, lv, px, odds, why, tested, parent=None, prob=None):
     """Create a numbered call on the current 15-min contract and send the BUY message."""
     cost = c["ya"] if side == "YES" else c["na"]
+    left0 = (c["close"] - pd.Timestamp.now(tz="UTC")).total_seconds() / 60
+    if not proven(st, mkt, left0):  # no live proof of beating Kalshi here → no call
+        st.setdefault("blocked", {})[mkt] = dt.datetime.now(ET).strftime("%-I:%M %p"); return None
     k = dict(ticker=c["ticker"], side=side, cost=cost, k=c["k"], close=str(c["close"]))
     tp = (min(0.95, max(2.5 * cost, cost + 0.25)) if kind == "ls" else
           0.97 if kind == "lock" else min(0.92, cost + max(0.12, (1 - cost) * 0.55)))  # scalp: sell into the move
@@ -1735,6 +1754,15 @@ def live_ready(st, mkt):
     return st.get("live_min", {}).get(mkt, 0) >= 20
 
 
+LIVE_PROOF_N = int(os.getenv("LIVE_PROOF_N") or 30)
+
+
+def proven(st, mkt, T):
+    """Calls need LIVE proof that the model beats Kalshi's real price in this market at this point of the window."""
+    e = ((st.get("edge_live") or {}).get(mkt) or {}).get("early" if T >= 9 else "late")
+    return bool(e and e["n"] >= LIVE_PROOF_N and e["win"] - e["kalshi"] >= 0.03)
+
+
 def fc_conflict(st, mkt, up):
     """True if a validated 10-min forecast strongly points the other way."""
     a = (st.get("ana") or {}).get(mkt) or {}
@@ -1845,7 +1873,7 @@ def boom_call(st, mkt, a, lv, cal):
     dz0 = mkt_dz(c)[0]; add_px = level_for(c["k"], _phi(dz0 + 0.5 * d) if up else 1 - _phi(dz0 + 0.5 * d), up, max(a["T"] - 2, 1), a["s1"])
     why = (f"booming: projected {a['m10'] * 100:+.2f}% in 10 min, spike score {a['score']:.0f}/100 and building, momentum and trend aligned. "
            f"Backtest: {bt['test_win']:.0%} of these trades made money, {bt['test_roi']:+.0%} return on unseen days")
-    open_call(st, mkt, "boom", "YES" if up else "NO", c, lv, a["px"], odds_line(p, cost), why, True, prob=p)
+    if open_call(st, mkt, "boom", "YES" if up else "NO", c, lv, a["px"], odds_line(p, cost), why, True, prob=p) is None: return False
     pos = st["lpos"][mkt]; pos.update(dz0=dz0, dir=d, added=False, peak=a["score"], costs=[cost])
     notify(f"{NAME[mkt]}: BOOMING PLAN", f"1) Buy {'UP' if up else 'DOWN'} with HALF your stake now."
            + (f"\n2) DOUBLE DOWN (add the other half) only if {NAME[mkt].title()} {'reaches' if up else 'drops to'} about "
