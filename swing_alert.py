@@ -756,7 +756,29 @@ TRADES_ONLY = os.getenv("ALERTS", "trades") == "trades"
 MAIN_ON = os.getenv("MAIN_SIGNALS", "0") == "1"  # slow signals use hourly/daily contracts → off; only 15-min calls  # set ALERTS=all for extra heads-up alerts
 
 
-BIG_X = float(os.getenv("BIG_X") or 10)  # payout multiple that counts as a big-payout (green) bet
+BIG_X = float(os.getenv("BIG_X") or 10)
+MIN_PROB = float(os.getenv("MIN_PROB") or 0.62)      # every call must have at least this win chance
+LONGSHOTS = os.getenv("LONGSHOTS", "0") == "1"        # low-win-rate cheap bets: off unless enabled
+CALL_LOG = "calls.jsonl"
+
+
+def log_call(mkt, pos, won):
+    """Permanent record of every call's outcome (for live accuracy tracking)."""
+    k = pos.get("k") or {}
+    rec = dict(t=dt.datetime.now(ET).isoformat(timespec="minutes"), mkt=mkt, kind=pos.get("kind"), side=k.get("side"),
+               cost=k.get("cost"), prob=pos.get("prob"), at=pos.get("at"), won=bool(won))
+    try:
+        with open(CALL_LOG, "a") as f: f.write(json.dumps(rec) + "\n")
+    except Exception as e: print("log_call", e)
+
+
+def agrees(st, mkt, up):
+    """Multi-timeframe agreement: last 5 min moving the call's way, and trend or order flow backing it."""
+    a = (st.get("ana") or {}).get(mkt) or {}
+    if not a: return True
+    sgn = 1 if up else -1
+    if a.get("ch5", 0) * sgn < -0.0003: return False
+    return a.get("tr_pct", 0) * sgn > 0 or a.get("flow", 0) * sgn > 0.1  # payout multiple that counts as a big-payout (green) bet
 
 
 def badge(cost):
@@ -974,7 +996,7 @@ def fetch_1m(since):
 def persist(msg="bot: live state"):
     if os.getenv("GIT_PERSIST"):
         import subprocess as sp
-        sp.run(f'git add state.json && (git diff --cached --quiet || (git commit -qm "{msg}" && git pull -q --rebase origin main && git push -q))',
+        sp.run(f'git add state.json; git add {CALL_LOG} 2>/dev/null; (git diff --cached --quiet || (git commit -qm "{msg}" && git pull -q --rebase origin main && git push -q))',
                shell=True)
 
 
@@ -1135,11 +1157,11 @@ def open_call(st, mkt, kind, side, c, lv, px, odds, why, tested, parent=None, pr
     """Create a numbered call on the current 15-min contract and send the BUY message."""
     cost = c["ya"] if side == "YES" else c["na"]
     k = dict(ticker=c["ticker"], side=side, cost=cost, k=c["k"], close=str(c["close"]))
-    tp = min(0.95, max(2.5 * cost, cost + 0.25)) if kind == "ls" else min(0.92, cost + max(0.15, (1 - cost) * 0.6))
+    tp = min(0.95, max(2.5 * cost, cost + 0.25)) if kind == "ls" else max(0.92, cost + 0.05)
     bail = max(0.03, cost * 0.5)
     if kind == "lock": tp, bail = 0.995, 0.60  # hold to the end; bail only if it really reverses
     pos = dict(side=1 if side == "YES" else -1, entry=px, stop=0, tgt=0, best=px, n=0, t0=time.time(), kind=kind, k=k,
-               tp=tp, bail=bail, parent=parent)
+               tp=tp, bail=bail, parent=parent, prob=prob)
     st.setdefault("lpos", {})[mkt] = pos; st.setdefault("lswin", {})[mkt] = c["ticker"]
     n = new_trade(st, mkt, pos, lv, px)
     left = (c["close"] - pd.Timestamp.now(tz="UTC")).total_seconds() / 60
@@ -1151,13 +1173,10 @@ def open_call(st, mkt, kind, side, c, lv, px, odds, why, tested, parent=None, pr
     title = (f"{NAME[mkt]}: BUY {'UP (YES)' if up else 'DOWN (NO)'} · " + (f"{tg} {prob:.0%} · " if tg else "")
              + f"{'rise' if up else 'drop'} expected {when}" + (f" · BIG PAYOUT {1 / cost:.0f}x" if big else ""))
     sig = _SIG.get(mkt); tl = max(left * 0.6, 1)
-    tpx = level_for(k["k"], tp, up, tl, sig); bpx = level_for(k["k"], bail, up, tl, sig)
+    tpx = level_for(k["k"], tp, up, tl, sig)
     pk = lambda x: money(mkt, x)
-    if kind == "lock" and bpx:
-        exits = f"Hold to the end. Get out only if it {'falls back below' if up else 'climbs back above'} about {pk(bpx)}."
-    else: exits = (f"Take profit if it {'rises to' if up else 'drops to'} about {pk(tpx)}. "
-             f"Get out if it {'falls back below' if up else 'climbs back above'} about {pk(bpx)}." if tpx and bpx
-             else "Take profit once it's clearly winning; get out if it reverses.")
+    exits = ("Plan: hold to the end (that's what was tested)." + (f" Lock in early if it {'rises to' if up else 'drops to'} about "
+             f"{pk(tpx)}." if tpx and kind != "lock" else ""))
     notify(title,
            f"Buy {'UP (YES)' if up else 'DOWN (NO)'}: wins if {NAME[mkt].title()} ends {'at or above' if up else 'below'} "
            f"{money(mkt, k['k'])} at {pd.Timestamp(k['close']).tz_convert(ET):%-I:%M} ({left:.0f} min left). Now {lv(px)}.\n"
@@ -1315,8 +1334,8 @@ def spike_alert(st, mkt, a, lv, cal, cool):
     side = "YES" if up else "NO"; cost = (a["ya"] if up else a["na"]); sp = (cal or {}).get("spike") or {}
     move = f"{a['ch5'] * 100:+.2f}% in 5 min ({abs(a['z3']):.1f}x a normal move)" + (f", broke the 30-min {'high' if up else 'low'} "
            f"{money(mkt, a['hi30'] if up else a['lo30'])}" if (up and a['px'] > a['hi30']) or (not up and a['px'] < a['lo30']) else "")
-    if c and sp.get("ok") and 4 <= a["T"] <= 12 and 0 < cost < 0.85:
-        p = min(0.95, (a["p_up"] if up else 1 - a["p_up"]) + max(0.0, sp.get("test_roi", 0)) * cost)
+    p = min(0.95, (a["p_up"] if up else 1 - a["p_up"]) + max(0.0, sp.get("test_roi", 0)) * cost)
+    if c and sp.get("ok") and 4 <= a["T"] <= 12 and 0 < cost < 0.85 and p >= MIN_PROB and not fc_conflict(st, mkt, up):
         open_call(st, mkt, "spike", side, c, lv, a["px"], odds_line(p, cost), f"spike starting, {move}", True, prob=p)
         return True
     notify(f"{NAME[mkt]} SPIKE {'UP' if up else 'DOWN'} starting now",
@@ -1338,9 +1357,10 @@ def fast_entry(mkt, d1, fp, st, cool):
     left = (c["close"] - pd.Timestamp.now(tz="UTC")).total_seconds() / 60
     if left < 4: return False
     side = "YES" if up else "NO"; cost = c["ya"] if up else c["na"]
-    if not 0 < cost < 0.9 or fc_conflict(st, mkt, up): return False
+    if not 0 < cost < 0.9 or fc_conflict(st, mkt, up) or not agrees(st, mkt, up): return False
     cx = live_ctx(d1); cx["px"] = px
     fu = fair_up(px * lv.r, c["k"], left, cx["sig"]); p = (fu if up else 1 - fu) if fu is not None else 0.5
+    if p < MIN_PROB: return False
     t = fp.get("test") or {}
     why = "momentum turning, " + ctx_short(cx, up)
     open_call(st, mkt, "fast", side, c, lv, px, odds_line(p, cost, "Odds now") +
@@ -1371,6 +1391,8 @@ def k15_call(mkt, m, px, st, lv, cal, night=False):
         cell = cal["table"].get(ctx_key(abs(z), bdir, cx["trend"], px, cx["vwap"], turning, cx["flow"]))
     if not cell: return False
     kind = "ls" if turning else "fav"
+    if kind == "ls" and not LONGSHOTS: return False
+    if kind == "fav" and T > 10: return False  # first minutes of a window are noise
     up = (bdir > 0) if kind == "ls" else (bdir < 0); side = "YES" if up else "NO"
     cost = c["ya"] if up else c["na"]; p = cell[1] if kind == "ls" else 1 - cell[1]
     tested = cal.get(f"night_{kind}_ok" if night else f"{kind}_ok")
@@ -1382,6 +1404,7 @@ def k15_call(mkt, m, px, st, lv, cal, night=False):
     xe = regime_extra(st, mkt) + (0.02 if st.get("thin", {}).get(mkt) else 0)
     if kind == "ls" and (xe or not (0 < cost <= LS_MAX_COST and p - cost - kfee(cost) >= LS_MIN_EDGE)): return False
     if kind == "fav" and not (0 < cost < 0.92 and p - cost - kfee(cost) >= FAV_MIN_EDGE + xe): return False
+    if kind == "fav" and (p < MIN_PROB or not agrees(st, mkt, up)): return False
     why = (("snap-back setup" if kind == "ls" else "move still running") + f", {p:.0%} win rate in history, " + ctx_short(cx, up)
            + (", thin hours" if st.get("thin", {}).get(mkt) else ""))
     open_call(st, mkt, kind, side, c, lv, px, odds_line(p, cost), why,
@@ -1403,7 +1426,7 @@ def ihm_call(mkt, m, px, st, lv, cal):
     sig = b.iloc[-1] / a.iloc[-1] - 1; c = k15(mkt)
     if not c or abs(sig) < 0.001: return False
     up = (sig > 0) == (ih.get("dir", "follow") == "follow"); side = "YES" if up else "NO"; cost = c["ya"] if up else c["na"]
-    if not (0 < cost < 0.9 and ih["hit"] - cost - kfee(cost) >= 0.02): return False
+    if not (0 < cost < 0.9 and ih["hit"] - cost - kfee(cost) >= 0.02) or ih["hit"] < MIN_PROB: return False
     st["ihm_day"][mkt] = str(now.date()); cx = live_ctx(m); cx["px"] = px
     why = f"end-of-day pattern, {ih['hit']:.0%} win rate, " + ctx_short(cx, up)
     open_call(st, mkt, "ihm", side, c, lv, px, odds_line(ih["hit"], cost), why, True, prob=ih["hit"])
@@ -1423,7 +1446,7 @@ def drift_call(mkt, m, px, st, lv, cal):
     sig = float(np.log(m.Close).diff().tail(390).std())
     if not sig or abs(log(px * lv.r / c["k"])) / (sig * sqrt(T)) > 0.3: return False
     up = d["dir"] == "UP"; side = "YES" if up else "NO"; cost = c["ya"] if up else c["na"]
-    if fc_conflict(st, mkt, up): return False
+    if fc_conflict(st, mkt, up) or d["p"] < MIN_PROB: return False
     if not (0 < cost < 0.8 and d["p"] - cost - kfee(cost) >= 0.02 + regime_extra(st, mkt)): return False
     cx = live_ctx(m); cx["px"] = px
     why = f"{SH_SESS[session(now)]} session tends {d['dir'].lower()}, {d['p']:.0%} win rate, " + ctx_short(cx, up)
@@ -1441,25 +1464,23 @@ def manage_ls(mkt, px, st, lv):
         _, won = contract_status(k)
         if won is None: return False
         follow_msg(mkt, pos, "", f"RESULT: WON (+{(100 - cost) / cost:.0%} on stake)" if won else "RESULT: LOST (stake gone)")
+        log_call(mkt, pos, won)
         del st["lpos"][mkt]; return True
     if pos.get("held"): return False
     bid = c["yb"] if k["side"] == "YES" else c["nb"]; gain = bid * 100 - cost
     if bid >= pos.get("tp", 0.9):
         follow_msg(mkt, pos, "", f"TAKE PROFIT NOW (bet up {gain / cost:+.0%})")
-        del st["lpos"][mkt]; return True
-    if bid <= pos.get("bail", 0) and left >= 4 and pos.get("kind") != "flip":
-        follow_msg(mkt, pos, "", f"GET OUT NOW, call was wrong (bet {gain / cost:+.0%})")
-        del st["lpos"][mkt]
-        opp = "NO" if k["side"] == "YES" else "YES"; oa = c["na"] if opp == "NO" else c["ya"]
-        if 0 < oa <= 0.85:  # moves tend to continue within a window → flip
-            open_call(st, mkt, "flip", opp, c, lv, px, odds_line(min(0.97, 1 - bid), oa),
-                      f"the {call_time(pos)} was wrong, momentum runs the other way", False, parent=pos.get("at"))
+        log_call(mkt, pos, True); del st["lpos"][mkt]; return True
+    if bid <= 0.25 and left >= 3 and not pos.get("behind"):  # info only: binary bets are best held to the end
+        pos["behind"] = True
+        follow_msg(mkt, pos, "", f"BEHIND (worth {bid * 100:.0f}% now)",
+                   f" It can still come back with {left:.0f} min left. Holding is usually best; sell only if you want out.")
         return True
     if left < 1.25:
         if bid >= 0.5:
             follow_msg(mkt, pos, "", "HOLD TO THE END, winning, pays in full at the close"); pos["held"] = True; return True
-        follow_msg(mkt, pos, "", f"LOSING with {left:.0f} min left: get out now or let it expire")
-        del st["lpos"][mkt]; return True
+        follow_msg(mkt, pos, "", f"LOSING with {left:.0f} min left: likely lost")
+        pos["held"] = True; return True
     return False
 
 
@@ -1616,7 +1637,11 @@ def night_tick(st, params, cool, nh, yc, only=None):
         if mkt not in yc: continue
         y = yc[mkt][1]; kp = night_price(mkt, y)
         if kp is None or len(y) < 300: continue
-        h = nh.setdefault(mkt, []); h.append((pd.Timestamp.now(tz="UTC"), kp)); del h[:-240]
+        h = nh.setdefault(mkt, [])
+        if len(h) >= 3:  # glitch filter: ignore a reading that jumps >6 normal 1-min moves from the recent median
+            med = float(np.median([p for _, p in h[-3:]])); s1 = float(np.log(y.Close).diff().tail(390).std() or 1e-4)
+            if abs(np.log(kp / med)) > 6 * s1: print("glitch", mkt, kp, "vs", med); kp = med
+        h.append((pd.Timestamp.now(tz="UTC"), kp)); del h[:-240]
         hb = pd.Series([p for _, p in h], index=[t for t, _ in h]).resample("1min").ohlc().dropna()
         hb = hb.rename(columns=str.title).assign(Volume=0.0)
         ov = hb.Close.reindex(y.index).dropna()  # minutes where both Kalshi and (delayed) Yahoo exist
@@ -1728,7 +1753,7 @@ def settle_only(st):
             if pd.Timestamp(pos["k"]["close"]) > pd.Timestamp.now(tz="UTC"): continue
             txt, won = contract_status(pos["k"])
             if won is None: continue
-            follow_msg(mkt, pos, "", f"RESULT: {'WON' if won else 'LOST'}")
+            follow_msg(mkt, pos, "", f"RESULT: {'WON' if won else 'LOST'}"); log_call(mkt, pos, won)
             del st["lpos"][mkt]; changed = True
         except Exception as e: print("settle", mkt, e)
     return changed
@@ -1978,6 +2003,12 @@ def perf():
     buys = [m for m in msgs if re.search(r"BUY (UP|DOWN)|BUY signal|BUY (YES|NO) |· BUY ", m.get("title") or "")]
     outs = [m for m in msgs if re.search(r"TAKE PROFIT|GET OUT|SELL NOW|RESULT|HOLD|LOSING|SELL what|WON|LOST", m.get("title") or "")]
     print("PERF messages", len(msgs), "buys", len(buys), "outcomes", len(outs))
+    try:
+        log = pd.read_json(CALL_LOG, lines=True)
+        print("PERF LOG", len(log), "calls · win rate", f"{log.won.mean():.0%}")
+        for k, g in log.groupby("kind"): print("PERF LOG", k, len(g), f"{g.won.mean():.0%}")
+        for k, g in log.groupby("mkt"): print("PERF LOG", k, len(g), f"{g.won.mean():.0%}")
+    except Exception as e: print("PERF LOG none yet", e)
     from collections import Counter
     cnt = Counter()
     for m in outs:

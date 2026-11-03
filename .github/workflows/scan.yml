@@ -11,7 +11,7 @@ on:
 permissions: {contents: write}
 concurrency:
   group: swing-${{ github.event.schedule == '7 0,6,12,18 * * 0-5' || inputs.cmd == 'live' }}
-  cancel-in-progress: false
+  cancel-in-progress: ${{ github.event.schedule == '7 0,6,12,18 * * 0-5' || inputs.cmd == 'live' }}
 jobs:
   run:
     runs-on: ubuntu-latest
@@ -42,6 +42,6 @@ jobs:
       - name: save state
         run: |
           git config user.name bot; git config user.email bot@users.noreply.github.com
-          git add -A state.json params.json 2>/dev/null || true
+          git add -A state.json params.json calls.jsonl 2>/dev/null || true
           git commit -qm "bot: update state" || exit 0
           git pull -q --rebase origin main && git push -q
