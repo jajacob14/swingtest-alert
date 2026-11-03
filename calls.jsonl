@@ -7,3 +7,4 @@
 {"t": "2026-11-02T19:27-05:00", "mkt": "COPPER", "kind": "fav", "side": "YES", "cost": 0.86, "prob": 0.931, "at": "7:20 PM", "won": true}
 {"t": "2026-11-02T19:28-05:00", "mkt": "SILVER", "kind": "lock", "side": "YES", "cost": 0.985, "prob": 0.9422, "at": "7:26 PM", "won": true}
 {"t": "2026-11-02T19:30-05:00", "mkt": "NATGAS", "kind": "fav", "side": "NO", "cost": 0.39, "prob": 0.912, "at": "7:20 PM", "won": false}
+{"t": "2026-11-02T19:30-05:00", "mkt": "COPPER", "kind": "lock", "side": "YES", "cost": 0.95, "prob": 0.9421, "at": "7:27 PM", "won": true}
