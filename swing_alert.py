@@ -2258,6 +2258,22 @@ def perf():
     for m in outs[-60:]: print("PERF OUT", dt.datetime.fromtimestamp(m["time"], ET).strftime("%H:%M"), "|", m["title"][:100])
 
 
+def tally(since_hour=None):
+    """One notification: right vs wrong for this evening (settled calls), by call type and market."""
+    since_hour = int(os.getenv("TALLY_FROM") or 18)
+    d = pd.read_json(CALL_LOG, lines=True)
+    d["c"] = pd.to_datetime(d["close"].fillna(d["t"]), utc=True).dt.tz_convert(ET)
+    now = dt.datetime.now(ET); start = (now if now.hour >= since_hour else now - dt.timedelta(days=1)).replace(hour=since_hour, minute=0, second=0, microsecond=0)
+    d = d[d.c >= start]
+    if not len(d): notify("Evening tally", "No settled calls yet this evening."); return
+    r, w = int(d.won.sum()), int((~d.won.astype(bool)).sum())
+    lines = [f"Since {start:%-I:%M %p}: {r} right, {w} wrong ({r / (r + w):.0%}). Calls claimed {d.prob.mean():.0%} on average."]
+    for k, g in d.groupby("kind"): lines.append(f"{KIND.get(k, k)}: {int(g.won.sum())}-{int((~g.won.astype(bool)).sum())}")
+    lines.append("By market: " + ", ".join(f"{NAME.get(k, k)} {int(g.won.sum())}-{int((~g.won.astype(bool)).sum())}" for k, g in d.groupby("mkt")))
+    lines.append("Fix applied: predictions now anchored to Kalshi's own 15-min price and re-fit to these results.")
+    notify(f"Evening tally: {r} right, {w} wrong", "\n".join(lines), "high")
+
+
 def selftest():
     rng = np.random.default_rng(1); n = 3000
     vol = np.where((np.arange(n) // 150) % 2, 0.003, 0.012)
@@ -2274,5 +2290,5 @@ if __name__ == "__main__":
     cmds = dict(scan=scan, brief=brief, optimize=optimize, doctor=doctor, selftest=selftest,
                 testnotify=lambda: [notify(f"{m} test alert", f"Color check for {m} ({MARKETS[m][1]}). Data: "
                                        + ("Alpaca real-time" if ALPACA else "Yahoo delayed"), "high", m) for m in MARKETS],
-                live=live, perf=perf, kraw=kraw, nighttest=nighttest, livetest=lambda: (os.environ.update(LIVE_MAX_MIN='2', GIT_PERSIST='', STATE_FILE='/tmp/st.json'), live()), audit=audit, calibrate=calibrate_only, discover2=discover2, kalshi=kalshi_discover, kcheck=kcheck, loop=lambda: [(scan(), time.sleep(int(os.getenv("LOOP_SEC", 120)))) for _ in iter(int, 1)])
+                live=live, tally=tally, perf=perf, kraw=kraw, nighttest=nighttest, livetest=lambda: (os.environ.update(LIVE_MAX_MIN='2', GIT_PERSIST='', STATE_FILE='/tmp/st.json'), live()), audit=audit, calibrate=calibrate_only, discover2=discover2, kalshi=kalshi_discover, kcheck=kcheck, loop=lambda: [(scan(), time.sleep(int(os.getenv("LOOP_SEC", 120)))) for _ in iter(int, 1)])
     cmds.get((sys.argv[1:] or ["scan"])[0], lambda: print(__doc__))()
