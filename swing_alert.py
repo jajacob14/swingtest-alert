@@ -489,7 +489,7 @@ def window_stats(df):
     res["early_n"] = int(early.sum())
     res["early_acc"] = round(float(right[early].mean()), 3) if early.any() else 0
     res["early_fair"] = round(float(fair_side[early].mean()), 3) if early.any() else 0  # what price alone implied for that side
-    res["early_ok"] = bool(res["early_n"] >= 150 and res["early_acc"] >= 0.60 and res["early_acc"] - res["early_fair"] >= 0.03)
+    res["early_ok"] = bool(res["early_n"] >= 60 and res["early_acc"] >= 0.60 and res["early_acc"] - res["early_fair"] >= 0.08)
     res["ok"] = bool(res["lock_n"] >= 100 and res["lock_acc"] >= 0.90)
     return res
 
