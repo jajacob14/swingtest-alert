@@ -2420,6 +2420,18 @@ def tally(since_hour=None):
     notify(f"Evening tally: {r} right, {w} wrong", "\n".join(lines), "high")
 
 
+def boomdebug():
+    p = load_params()
+    for mkt in ("GOLD", "NATGAS"):
+        df = fetch_fut_1m(mkt).resample("1min").last().dropna(how="all"); pm = p["_cal"][mkt]["proj"]
+        f, sig = proj_frame(df); X = f[list(PFEATS)]
+        print("BD", mkt, "rows", len(df), "feat NaN rows", int(X.isna().any(axis=1).sum()), "cols NaN:", X.isna().sum().to_dict())
+        z = np.c_[np.ones(len(X)), ((X - np.array(pm["mu"])) / np.array(pm["sd"])).to_numpy()]
+        r10 = pd.Series(z @ np.array(pm["b10"]), index=df.index)
+        print("BD", mkt, "r10 |>=0.3|", int((r10.abs() >= 0.3).sum()), "score |>=.45|", int((f.score.abs() >= 0.45).sum()),
+              "r10 desc", r10.describe().round(3).to_dict())
+
+
 def selftest():
     rng = np.random.default_rng(1); n = 3000
     vol = np.where((np.arange(n) // 150) % 2, 0.003, 0.012)
@@ -2436,5 +2448,5 @@ if __name__ == "__main__":
     cmds = dict(scan=scan, brief=brief, optimize=optimize, doctor=doctor, selftest=selftest,
                 testnotify=lambda: [notify(f"{m} test alert", f"Color check for {m} ({MARKETS[m][1]}). Data: "
                                        + ("Alpaca real-time" if ALPACA else "Yahoo delayed"), "high", m) for m in MARKETS],
-                live=live, tally=tally, perf=perf, kraw=kraw, nighttest=nighttest, livetest=lambda: (os.environ.update(LIVE_MAX_MIN='2', GIT_PERSIST='', STATE_FILE='/tmp/st.json'), live()), audit=audit, calibrate=calibrate_only, discover2=discover2, kalshi=kalshi_discover, kcheck=kcheck, loop=lambda: [(scan(), time.sleep(int(os.getenv("LOOP_SEC", 120)))) for _ in iter(int, 1)])
+                live=live, boomdebug=boomdebug, tally=tally, perf=perf, kraw=kraw, nighttest=nighttest, livetest=lambda: (os.environ.update(LIVE_MAX_MIN='2', GIT_PERSIST='', STATE_FILE='/tmp/st.json'), live()), audit=audit, calibrate=calibrate_only, discover2=discover2, kalshi=kalshi_discover, kcheck=kcheck, loop=lambda: [(scan(), time.sleep(int(os.getenv("LOOP_SEC", 120)))) for _ in iter(int, 1)])
     cmds.get((sys.argv[1:] or ["scan"])[0], lambda: print(__doc__))()
