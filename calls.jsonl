@@ -15,3 +15,4 @@
 {"t": "2026-11-02T19:45-05:00", "mkt": "PLATINUM", "kind": "lock", "side": "YES", "cost": 0.96, "prob": 0.9931, "at": "7:37 PM", "won": false}
 {"t": "2026-11-02T19:45-05:00", "mkt": "GOLD", "kind": "lock", "side": "YES", "cost": 0.973, "prob": 0.9872, "at": "7:37 PM", "won": false}
 {"t": "2026-11-02T19:45-05:00", "mkt": "SILVER", "kind": "lock", "side": "YES", "cost": 0.968, "prob": 0.9422, "at": "7:39 PM", "won": false}
+{"t": "2026-11-02T19:55-05:00", "mkt": "BRENT", "kind": "fav", "side": "NO", "cost": 0.84, "prob": 0.938, "at": "7:51 PM", "won": true}
