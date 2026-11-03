@@ -982,13 +982,28 @@ def learn_update(st):
         st.pop("platt", None)
 
 
+def market_profile(cal):
+    """Silver-like evidence test on a market's own backtests: (1) high-confidence calls beat price-alone by ≥4 pts,
+    (2) sharp-move warnings work both ways (≥1.8x), (3) 10-min direction ≥54%. → strong / partial / weak."""
+    w, p = (cal or {}).get("wmod") or {}, (cal or {}).get("proj") or {}
+    tests = [w.get("hc_acc", 0) - w.get("hc_fair", 1) >= 0.04,
+             min(p.get("lift_up", 0) or 0, p.get("lift_dn", 0) or 0) >= 1.8,
+             (p.get("dir_hit") or 0) >= 0.54]
+    k = sum(bool(x) for x in tests)
+    return "strong" if k == 3 else "partial" if k == 2 else "weak"
+
+
+PROFILE_EXTRA = {"strong": 0.0, "partial": 0.04, "weak": 0.08}
+
+
 def need_prob(st, mkt, kind):
     """Win chance a call must have: base 62%, raised for combos losing live, lowered (min 60%) for ones beating forecast."""
+    extra = PROFILE_EXTRA.get((st.get("profile") or {}).get(mkt, "partial"), 0.04)
     L = (st.get("learn") or {}).get(f"{mkt}|{kind}")
-    if not L or L["n"] < 3: return MIN_PROB
+    if not L or L["n"] < 3: return MIN_PROB + extra
     gap = L["rate"] - L["expected"]
     if L["n"] >= 5 and L["rate"] < 0.45: return 1.01            # keeps losing → switched off
-    return float(min(0.95, max(0.60, MIN_PROB - 0.5 * gap)))    # behind forecast → stricter; ahead → a bit looser
+    return float(min(0.95, max(0.60 + extra, MIN_PROB + extra - 0.5 * gap)))  # behind forecast → stricter; ahead → looser
 
 
 def blend_prob(st, mkt, kind, p):
@@ -1410,7 +1425,8 @@ def open_call(st, mkt, kind, side, c, lv, px, odds, why, tested, parent=None, pr
              f"about {pk(tpx)})" if tpx else "") + ". If it doesn't get there, hold to the end."
              if kind != "lock" else "Hold to the end (near lock).")
     L = (st.get("learn") or {}).get(f"{mkt}|{kind}")
-    rec = f" Live record for this call type here: {L.get('raw', '')}." if L else ""
+    rec = (f" Live record for this call type here: {L.get('raw', '')}." if L else "") + \
+          f" Market profile: {(st.get('profile') or {}).get(mkt, 'partial')}."
     notify(title,
            f"Buy {'UP' if up else 'DOWN'}: wins if {NAME[mkt].title()} ends {'at or above' if up else 'below'} "
            f"{money(mkt, k['k'])} at {pd.Timestamp(k['close']).tz_convert(ET):%-I:%M} ({left:.0f} min left). Now {lv(px)}.\n"
@@ -1583,6 +1599,7 @@ def lock_call(st, mkt, a, lv, cal):
     """NEAR LOCK from our own analysis: window model ≥90% AND proven ≥90% on unseen data, ideally 5-10 min out,
     and Kalshi hasn't fully priced it (so it's worth buying)."""
     if "wm_p" not in a or not a.get("wm_ok") or busy(st, mkt) or not 4 <= a["T"] <= 11 or not live_ready(st, mkt): return False
+    if (st.get("profile") or {}).get(mkt) != "strong": return False  # near locks only where the evidence is Silver-like
     up = a["wm_p"] >= 0.5; conf = blend_prob(st, mkt, "lock", max(a["wm_p"], 1 - a["wm_p"]))
     if conf < max(0.90, need_prob(st, mkt, "lock")): return False
     c = k15(mkt)
@@ -2251,6 +2268,7 @@ def live():
                 except Exception as e: print("alpaca recheck:", e)
         try:
             st = load_state()
+            st["profile"] = {m: market_profile((S["params"].get("_cal") or {}).get(m)) for m in ALL}
             if st.get("mode") != shown and not (st.get("mode") == "idle" and shown == "night"):  # announce once
                 notify(f"Mode: {'overnight (day data down)' if shown == 'night*' else {'day': 'day', 'night': 'overnight', 'closed': 'closed'}[shown]}", MODE_TXT[shown], "default")
                 st["mode"] = shown; yc.clear()  # keep live price history across mode switches
