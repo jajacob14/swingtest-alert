@@ -1970,6 +1970,26 @@ def kraw():
     for r in sorted(rows, key=lambda r: (r[3] or "", r[2], r[0])): print("OPEN", *r, sep=" | ")
 
 
+def perf():
+    """Score every call sent in the last 12h (from the ntfy topic history)."""
+    t = os.getenv("NTFY_TOPIC")
+    msgs = [json.loads(x) for x in requests.get(f"https://ntfy.sh/{t}/json", params={"poll": 1, "since": "12h"}, timeout=30).text.splitlines() if x.strip()]
+    msgs = [m for m in msgs if m.get("event") == "message"]
+    buys = [m for m in msgs if re.search(r"BUY (UP|DOWN)|BUY signal|BUY (YES|NO) |· BUY ", m.get("title") or "")]
+    outs = [m for m in msgs if re.search(r"TAKE PROFIT|GET OUT|SELL NOW|RESULT|HOLD|LOSING|SELL what|WON|LOST", m.get("title") or "")]
+    print("PERF messages", len(msgs), "buys", len(buys), "outcomes", len(outs))
+    from collections import Counter
+    cnt = Counter()
+    for m in outs:
+        ti = m["title"]
+        k = ("profit" if "TAKE PROFIT" in ti or "take profit" in ti else "wrong" if "wrong" in ti else "won" if "WON" in ti else
+             "lost" if "LOST" in ti else "hold" if "HOLD" in ti else "losing_end" if "LOSING" in ti or "what's left" in ti else "other")
+        cnt[k] += 1
+    print("PERF outcomes", dict(cnt))
+    for m in buys[-40:]: print("PERF BUY", dt.datetime.fromtimestamp(m["time"], ET).strftime("%H:%M"), "|", m["title"][:90], "|", (m.get("message") or "").split("\n")[3 if len((m.get("message") or "").split("\n")) > 3 else 0][:80])
+    for m in outs[-60:]: print("PERF OUT", dt.datetime.fromtimestamp(m["time"], ET).strftime("%H:%M"), "|", m["title"][:100])
+
+
 def selftest():
     rng = np.random.default_rng(1); n = 3000
     vol = np.where((np.arange(n) // 150) % 2, 0.003, 0.012)
@@ -1986,5 +2006,5 @@ if __name__ == "__main__":
     cmds = dict(scan=scan, brief=brief, optimize=optimize, doctor=doctor, selftest=selftest,
                 testnotify=lambda: [notify(f"{m} test alert", f"Color check for {m} ({MARKETS[m][1]}). Data: "
                                        + ("Alpaca real-time" if ALPACA else "Yahoo delayed"), "high", m) for m in MARKETS],
-                live=live, kraw=kraw, nighttest=nighttest, livetest=lambda: (os.environ.update(LIVE_MAX_MIN='2', GIT_PERSIST='', STATE_FILE='/tmp/st.json'), live()), audit=audit, calibrate=calibrate_only, discover2=discover2, kalshi=kalshi_discover, kcheck=kcheck, loop=lambda: [(scan(), time.sleep(int(os.getenv("LOOP_SEC", 120)))) for _ in iter(int, 1)])
+                live=live, perf=perf, kraw=kraw, nighttest=nighttest, livetest=lambda: (os.environ.update(LIVE_MAX_MIN='2', GIT_PERSIST='', STATE_FILE='/tmp/st.json'), live()), audit=audit, calibrate=calibrate_only, discover2=discover2, kalshi=kalshi_discover, kcheck=kcheck, loop=lambda: [(scan(), time.sleep(int(os.getenv("LOOP_SEC", 120)))) for _ in iter(int, 1)])
     cmds.get((sys.argv[1:] or ["scan"])[0], lambda: print(__doc__))()
