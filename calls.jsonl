@@ -23,3 +23,6 @@
 {"t": "2026-11-02T22:45-05:00", "mkt": "PALLADIUM", "kind": "lock", "side": "NO", "cost": 0.84, "prob": 0.9042791812304927, "at": "10:37 PM", "won": false, "close": "2026-11-02T22:45-05:00", "took_profit": false, "was_behind": false}
 {"t": "2026-11-02T23:00-05:00", "mkt": "BRENT", "kind": "fav", "side": "YES", "cost": 0.76, "prob": 0.87, "at": "10:51 PM", "won": false, "close": "2026-11-02T23:00-05:00", "took_profit": false, "was_behind": true}
 {"t": "2026-11-02T23:00-05:00", "mkt": "GOLD", "kind": "lock", "side": "NO", "cost": 0.88, "prob": 0.9655437136042675, "at": "10:52 PM", "won": true, "close": "2026-11-02T23:00-05:00", "took_profit": false, "was_behind": false}
+{"t": "2026-11-02T23:00-05:00", "mkt": "NATGAS", "kind": "lock", "side": "NO", "cost": 0.82, "prob": 0.9988032261280871, "at": "10:49 PM", "won": true, "close": "2026-11-02T23:00-05:00", "took_profit": false, "was_behind": false}
+{"t": "2026-11-02T23:00-05:00", "mkt": "PLATINUM", "kind": "lock", "side": "NO", "cost": 0.9, "prob": 0.9983982546019807, "at": "10:52 PM", "won": true, "close": "2026-11-02T23:00-05:00", "took_profit": false, "was_behind": false}
+{"t": "2026-11-02T23:00-05:00", "mkt": "PALLADIUM", "kind": "lock", "side": "NO", "cost": 0.91, "prob": 0.956291801388684, "at": "10:52 PM", "won": true, "close": "2026-11-02T23:00-05:00", "took_profit": false, "was_behind": false}
