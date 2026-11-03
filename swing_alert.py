@@ -1678,6 +1678,7 @@ def board_line(mkt, a, st):
 
 def proj_line(mkt, a):
     """Projected prices in 5/10 min + sharp-move risk vs normal."""
+    if a.get("proj_off") is not None: return f"Projection off for {NAME[mkt]} (only {a['proj_off']:.0%} right live)"
     if "px10" not in a: return ""
     out = f"In 5 min ~{money(mkt, a['px5'])} ({a['m5'] * 100:+.2f}%), in 10 min ~{money(mkt, a['px10'])} ({a['m10'] * 100:+.2f}%)"
     if a.get("big_ok"):
@@ -1795,9 +1796,12 @@ def apply_pcal(st, mkt, a):
 
 
 def apply_proj_bias(st, mkt, a):
-    """Correct the projection by its live average error once there are 30+ scored projections."""
+    """Correct the projection by its live average error (30+ scored); switch it off if it's failing live (<45% on 60+)."""
     E = (st.get("pj_err") or {}).get(mkt)
     if not E or E["n"] < 30 or "px10" not in a: return
+    if E["n"] >= 60 and E["hit"] / E["n"] < 0.45:
+        for k in ("px5", "px10", "m5", "m10", "big_up", "big_dn"): a.pop(k, None)
+        a["proj_off"] = E["hit"] / E["n"]; return
     a["m10"] += E["bias"]; a["m5"] += E["bias"] / 2
     a["px10"] = a["px"] * float(np.exp(a["m10"])); a["px5"] = a["px"] * float(np.exp(a["m5"]))
     a["pj_live"] = E["hit"] / E["n"]
@@ -1813,7 +1817,7 @@ def track_projection(st, mkt, a):
     for t, p0, pp in H:
         if pd.Timestamp(t) <= now - pd.Timedelta(minutes=10):
             real = (a["px"] / p0 - 1); pred = (pp / p0 - 1)
-            if abs(pred) > 1e-5:
+            if abs(pred) > 1e-5 and abs(real) > 1e-6:  # flat 10-min outcomes don't count either way
                 E["n"] += 1; E["hit"] += int((real > 0) == (pred > 0))
                 E["bias"] = round(E["bias"] + ((real - pred) - E["bias"]) / min(E["n"], 200), 7)  # running mean of error
         else: keep.append([t, p0, pp])
@@ -2434,7 +2438,14 @@ def live():
         return changed
 
     while (time.time() - t0) / 60 < maxmin:
-        now = dt.datetime.now(ET); mode = market_mode(now); shown = mode
+        now = dt.datetime.now(ET)
+        try: pause = pd.Timestamp(open("pause_until").read().strip())
+        except Exception: pause = None
+        if pause is not None and pd.Timestamp(now) < pause:
+            if S.get("paused") != str(pause):
+                S["paused"] = str(pause); print("paused until", pause)
+            time.sleep(60); continue
+        mode = market_mode(now); shown = mode
         if mode == "day" and not day_fresh(data, now):
             mode, shown = "night", "night*"
             if time.time() - S["recheck"] > 300:  # try Alpaca again every 5 min
