@@ -8,6 +8,7 @@ on:
   workflow_dispatch:
     inputs:
       cmd: {description: "live | scan | brief | optimize | doctor | testnotify", default: live}
+      maxmin: {description: "live run length in minutes", default: "352"}
 permissions: {contents: write, actions: write}
 concurrency:
   group: swing-${{ github.event.schedule == '7 0,6,12,18 * * 0-5' || inputs.cmd == 'live' }}
@@ -24,7 +25,7 @@ jobs:
       - run: python swing_alert.py "$CMD"
         env:
           CMD: ${{ inputs.cmd || (github.event.schedule == '30 21 * * 1-5' && 'optimize') || (github.event.schedule == '7 0,6,12,18 * * 0-5' && 'live') || 'brief' }}
-          LIVE_MAX_MIN: "352"
+          LIVE_MAX_MIN: ${{ inputs.maxmin || '352' }}
           PYTHONUNBUFFERED: "1"
           GIT_PERSIST: "1"
           PULSE_MIN: ${{ vars.PULSE_MIN }}
