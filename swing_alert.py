@@ -2298,6 +2298,22 @@ def announce_open(st, mkts, openm):
 LIVEVIEW = {}  # mkt -> (bars, price, lv) from whichever engine is running it
 
 
+def overview(mkt, st):
+    """One compact next-15-min overview for an in-play market."""
+    a = (st.get("ana") or {}).get(mkt) or {}; kp = (st.get("kp") or {}).get(mkt)
+    if not a: return f"{COLOR[mkt][0]} {NAME[mkt]}: in play"
+    parts = [f"{COLOR[mkt][0]} {NAME[mkt]} {money(mkt, a['px'])}"]
+    if kp:
+        up = kp["p"] >= 0.5
+        parts.append(f"leans {'UP' if up else 'DOWN'} {max(kp['p'], 1 - kp['p']):.0%} vs Kalshi {(kp['mid'] if up else 1 - kp['mid']):.0%}")
+    if "px10" in a and "start" in a:
+        pend = a["px10"]; parts.append(f"projected ~{money(mkt, pend)} ({'above' if pend >= a['start'] else 'below'} start {money(mkt, a['start'])})")
+    tr = a.get("tr_pct"); fl = a.get("flow", 0)
+    if tr is not None: parts.append(f"4h trend {'up' if tr > 0 else 'down'}, {'buyers' if fl > 0.1 else 'sellers' if fl < -0.1 else 'balanced'}, {a.get('label', '')}")
+    parts.append("call possible" if kp and not kp.get("why_not") else f"no call yet{': ' + kp['why_not'] if kp and kp.get('why_not') else ''}")
+    return " · ".join(parts)
+
+
 def unified_boards(st):
     """One skip list (minute 1/7 of each window) and one board (every 10 min) for ALL commodities."""
     now = dt.datetime.now(ET)
@@ -2315,11 +2331,12 @@ def unified_boards(st):
                 except Exception: why = []
                 if why and mkt not in done: skips.append((mkt, why))
                 elif not why: play.append(mkt)
-            if skips:
+            first = now.minute % 15 == 1
+            if skips or (first and play):  # window start: always (with overviews); minute 7: only new skips
                 st.setdefault("skipped", {})[label] = sorted(done | {k for k, _ in skips})
-                body = "\n".join(f"{COLOR[k][0]} {NAME[k]}: skip ({', '.join(short_reason(w) for w in why)})" for k, why in skips)
-                if play: body += "\nIn play: " + ", ".join(NAME[k] for k in play)
-                notify(f"Skip list for {label}", body, "default")
+                body = "\n".join(f"{COLOR[k][0]} {NAME[k]}: skip ({', '.join(short_reason(w) for w in why)})" for k, why in skips) or "No skips."
+                if play: body += "\n\nIn play, next 15 min:\n" + "\n".join(overview(k, st) for k in play)
+                notify(f"Skip list for {label}" + ("" if first else " (update)"), body, "default")
     if now.minute % 10 == 0 and st.get("boardslot") != now.strftime("%H:%M"):
         st["boardslot"] = now.strftime("%H:%M")
         lines = [board_line(m, st["ana"][m], st) for m in ALL if m in LIVEVIEW and (st.get("ana") or {}).get(m)]
