@@ -815,7 +815,8 @@ def log_call(mkt, pos, won):
     """Permanent record of every call's outcome (for live accuracy tracking)."""
     k = pos.get("k") or {}
     rec = dict(t=dt.datetime.now(ET).isoformat(timespec="minutes"), mkt=mkt, kind=pos.get("kind"), side=k.get("side"),
-               cost=k.get("cost"), prob=pos.get("prob"), at=pos.get("at"), won=bool(won))
+               cost=k.get("cost"), prob=pos.get("prob"), at=pos.get("at"), won=bool(won),  # won = prediction right AT SETTLEMENT
+               took_profit=bool(pos.get("took_profit")), was_behind=bool(pos.get("behind")))
     try:
         with open(CALL_LOG, "a") as f: f.write(json.dumps(rec) + "\n")
     except Exception as e: print("log_call", e)
@@ -832,6 +833,7 @@ def scorecard(st):
     except Exception: log = pd.DataFrame(columns=["t", "mkt", "won"])
     if len(log):
         log["t"] = pd.to_datetime(log.t, utc=True).dt.tz_convert(ET)
+        if "kind" in log: log = log[log.kind.fillna("") != "flip"]  # re-entries never count
     today = log[log.t.dt.date == now.date()] if len(log) else log
     last = today[today.t >= now - dt.timedelta(minutes=30)] if len(today) else today
     opn = len(st.get("lpos", {}))
@@ -843,7 +845,8 @@ def scorecard(st):
     if len(last):
         by = ", ".join(f"{NAME.get(k, k)} {int(g.won.sum())}-{int((~g.won.astype(bool)).sum())}" for k, g in last.groupby("mkt"))
         lines.append(f"By market (30 min): {by}")
-    lines.append(f"Calls still open: {opn}")
+    lines.append(f"Calls still open (not scored until they settle): {opn}")
+    lines.append("Scored only on whether each original call's prediction was right when its 15-min window settled.")
     notify(f"Scorecard {now:%-I:%M %p}: {r30} right, {w30} wrong (last 30 min)", "\n".join(lines), "default")
 
 
@@ -1397,7 +1400,8 @@ def lock_call(st, mkt, a, lv, cal):
     if not c or st.setdefault("lockwin", {}).get(mkt) == c["ticker"]: return False
     if event_window(mkt, dt.datetime.now(ET), a["T"]) or regime_extra(st, mkt): return False  # jumps break locks
     cost = c["ya"] if up else c["na"]
-    if not 0 < cost < 0.93 or conf - cost - kfee(cost) < 0.03: return False  # market already agrees: nothing to gain
+    if not 0.60 <= cost < 0.93 or conf - cost - kfee(cost) < 0.03: return False  # Kalshi must lean our way; need some edge
+    if conf - cost > 0.25: return False  # huge disagreement with Kalshi = our data is probably off: skip
     st["lockwin"][mkt] = c["ticker"]
     why = (f"our analysis says {conf:.0%} ({'UP' if up else 'DOWN'}); its 90%+ calls were right {a['wm_acc']:.0%} of "
            f"{a['wm_n']:,} times on unseen days; Kalshi only prices {cost:.0%}; " + ctx_short(dict(trend=1 if a.get('tr_pct', 0) > 0 else -1, flow=a.get('flow', 0)), up))
@@ -1414,7 +1418,7 @@ def spike_alert(st, mkt, a, lv, cal, cool):
     move = f"{a['ch5'] * 100:+.2f}% in 5 min ({abs(a['z3']):.1f}x a normal move)" + (f", broke the 30-min {'high' if up else 'low'} "
            f"{money(mkt, a['hi30'] if up else a['lo30'])}" if (up and a['px'] > a['hi30']) or (not up and a['px'] < a['lo30']) else "")
     p = min(0.95, (a["p_up"] if up else 1 - a["p_up"]) + max(0.0, sp.get("test_roi", 0)) * cost)
-    if c and sp.get("ok") and 4 <= a["T"] <= 12 and 0 < cost < 0.85 and p >= MIN_PROB and not fc_conflict(st, mkt, up):
+    if c and sp.get("ok") and 4 <= a["T"] <= 12 and 0 < cost < 0.85 and p >= MIN_PROB and p - cost <= 0.25 and not fc_conflict(st, mkt, up):
         open_call(st, mkt, "spike", side, c, lv, a["px"], odds_line(p, cost), f"spike starting, {move}", True, prob=p)
         return True
     notify(f"{NAME[mkt]} SPIKE {'UP' if up else 'DOWN'} starting now",
@@ -1484,6 +1488,7 @@ def k15_call(mkt, m, px, st, lv, cal, night=False):
     if kind == "ls" and (xe or not (0 < cost <= LS_MAX_COST and p - cost - kfee(cost) >= LS_MIN_EDGE)): return False
     if kind == "fav" and not (0 < cost < 0.92 and p - cost - kfee(cost) >= FAV_MIN_EDGE + xe): return False
     if kind == "fav" and (p < MIN_PROB or not agrees(st, mkt, up)): return False
+    if p - cost > 0.25: return False  # suspect data: don't bet on a huge disagreement with Kalshi
     why = (("snap-back setup" if kind == "ls" else "move still running") + f", {p:.0%} win rate in history, " + ctx_short(cx, up)
            + (", thin hours" if st.get("thin", {}).get(mkt) else ""))
     open_call(st, mkt, kind, side, c, lv, px, odds_line(p, cost), why,
@@ -1525,7 +1530,7 @@ def drift_call(mkt, m, px, st, lv, cal):
     sig = float(np.log(m.Close).diff().tail(390).std())
     if not sig or abs(log(px * lv.r / c["k"])) / (sig * sqrt(T)) > 0.3: return False
     up = d["dir"] == "UP"; side = "YES" if up else "NO"; cost = c["ya"] if up else c["na"]
-    if fc_conflict(st, mkt, up) or d["p"] < MIN_PROB: return False
+    if fc_conflict(st, mkt, up) or d["p"] < MIN_PROB or d["p"] - cost > 0.25: return False
     if not (0 < cost < 0.8 and d["p"] - cost - kfee(cost) >= 0.02 + regime_extra(st, mkt)): return False
     cx = live_ctx(m); cx["px"] = px
     why = f"{SH_SESS[session(now)]} session tends {d['dir'].lower()}, {d['p']:.0%} win rate, " + ctx_short(cx, up)
@@ -1542,14 +1547,18 @@ def manage_ls(mkt, px, st, lv):
     if not c or c["ticker"] != k["ticker"]:  # window over → final result
         _, won = contract_status(k)
         if won is None: return False
-        follow_msg(mkt, pos, "", f"RESULT: WON (+{(100 - cost) / cost:.0%} on stake)" if won else "RESULT: LOST (stake gone)")
+        if pos.get("took_profit"):
+            follow_msg(mkt, pos, "", f"RESULT: prediction {'RIGHT' if won else 'WRONG'} at the close (profit was taken earlier)")
+        else:
+            follow_msg(mkt, pos, "", f"RESULT: RIGHT, WON (+{(100 - cost) / cost:.0%} on stake)" if won else "RESULT: WRONG, LOST (stake gone)")
         log_call(mkt, pos, won)
         del st["lpos"][mkt]; return True
     if pos.get("held"): return False
     bid = c["yb"] if k["side"] == "YES" else c["nb"]; gain = bid * 100 - cost
     if bid >= pos.get("tp", 0.9):
-        follow_msg(mkt, pos, "", f"TAKE PROFIT NOW (bet up {gain / cost:+.0%})")
-        log_call(mkt, pos, True); del st["lpos"][mkt]; return True
+        follow_msg(mkt, pos, "", f"TAKE PROFIT NOW (bet up {gain / cost:+.0%})",
+                   " Scored at the close on whether the prediction was right.")
+        pos["took_profit"] = True; pos["held"] = True; return True
     if bid <= 0.25 and left >= 3 and not pos.get("behind"):  # info only: binary bets are best held to the end
         pos["behind"] = True
         follow_msg(mkt, pos, "", f"BEHIND (worth {bid * 100:.0f}% now)",
@@ -1832,7 +1841,7 @@ def settle_only(st):
             if pd.Timestamp(pos["k"]["close"]) > pd.Timestamp.now(tz="UTC"): continue
             txt, won = contract_status(pos["k"])
             if won is None: continue
-            follow_msg(mkt, pos, "", f"RESULT: {'WON' if won else 'LOST'}"); log_call(mkt, pos, won)
+            follow_msg(mkt, pos, "", f"RESULT: {'RIGHT' if won else 'WRONG'} at the close"); log_call(mkt, pos, won)
             del st["lpos"][mkt]; changed = True
         except Exception as e: print("settle", mkt, e)
     return changed
