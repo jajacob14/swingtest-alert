@@ -76,3 +76,35 @@
 {"close": "2026-11-03T02:00-05:00", "mkt": "PLATINUM", "left": 9, "wm": 0.5370989595835125, "mid": 0.525, "fc": 0.4897281419717675, "proj_up": true, "up": false, "model_v": 2}
 {"close": "2026-11-03T02:00-05:00", "mkt": "PLATINUM", "left": 6, "wm": 0.39767906616094395, "mid": 0.39, "fc": 0.48396599282694075, "proj_up": true, "up": false, "model_v": 2}
 {"close": "2026-11-03T02:00-05:00", "mkt": "PLATINUM", "left": 3, "wm": 0.21394596869454632, "mid": 0.24, "fc": 0.48321190047022083, "proj_up": true, "up": false, "model_v": 2}
+{"close": "2026-11-03T02:15-05:00", "mkt": "GOLD", "left": 12, "wm": 0.49296063036199733, "mid": 0.545, "fc": 0.4735537960636867, "proj_up": false, "up": false, "x": null, "model_v": 2}
+{"close": "2026-11-03T02:15-05:00", "mkt": "GOLD", "left": 9, "wm": 0.44342877995944396, "mid": 0.485, "fc": 0.48339044375176665, "proj_up": false, "up": false, "x": null, "model_v": 2}
+{"close": "2026-11-03T02:15-05:00", "mkt": "GOLD", "left": 6, "wm": 0.5133135230114216, "mid": 0.535, "fc": 0.4818961684968507, "proj_up": false, "up": false, "x": null, "model_v": 2}
+{"close": "2026-11-03T02:15-05:00", "mkt": "GOLD", "left": 3, "wm": 0.4918537526122157, "mid": 0.495, "fc": 0.4873441442045786, "proj_up": false, "up": false, "x": null, "model_v": 2}
+{"close": "2026-11-03T02:15-05:00", "mkt": "SILVER", "left": 12, "wm": 0.4764675063224816, "mid": 0.55, "fc": 0.5150587017013291, "proj_up": false, "up": false, "x": null, "model_v": 2}
+{"close": "2026-11-03T02:15-05:00", "mkt": "SILVER", "left": 9, "wm": 0.3492354404671535, "mid": 0.425, "fc": 0.5405993525012331, "proj_up": false, "up": false, "x": null, "model_v": 2}
+{"close": "2026-11-03T02:15-05:00", "mkt": "SILVER", "left": 6, "wm": 0.18246141291277224, "mid": 0.275, "fc": 0.5358155296977781, "proj_up": false, "up": false, "x": null, "model_v": 2}
+{"close": "2026-11-03T02:15-05:00", "mkt": "SILVER", "left": 3, "wm": 0.28971006417391365, "mid": 0.33999999999999997, "fc": 0.49686615756273417, "proj_up": false, "up": false, "x": null, "model_v": 2}
+{"close": "2026-11-03T02:15-05:00", "mkt": "WTI", "left": 12, "wm": 0.8752629091174846, "mid": 0.825, "fc": 0.48927402775660306, "proj_up": true, "up": true, "x": null, "model_v": 2}
+{"close": "2026-11-03T02:15-05:00", "mkt": "WTI", "left": 9, "wm": 0.9795774501491158, "mid": 0.977, "fc": 0.45035721073441287, "proj_up": true, "up": true, "x": null, "model_v": 2}
+{"close": "2026-11-03T02:15-05:00", "mkt": "WTI", "left": 6, "wm": 0.9840532262229553, "mid": 0.987, "fc": 0.4627333186842286, "proj_up": true, "up": true, "x": null, "model_v": 2}
+{"close": "2026-11-03T02:15-05:00", "mkt": "WTI", "left": 3, "wm": 0.9819296472088543, "mid": 0.9935, "fc": 0.4517402812212335, "proj_up": true, "up": true, "x": null, "model_v": 2}
+{"close": "2026-11-03T02:15-05:00", "mkt": "NATGAS", "left": 12, "wm": 0.8293380627583349, "mid": 0.9, "fc": 0.3360875424544633, "proj_up": true, "up": true, "x": null, "model_v": 2}
+{"close": "2026-11-03T02:15-05:00", "mkt": "NATGAS", "left": 9, "wm": 0.9509765749629797, "mid": 0.945, "fc": 0.39798358886475454, "proj_up": true, "up": true, "x": null, "model_v": 2}
+{"close": "2026-11-03T02:15-05:00", "mkt": "NATGAS", "left": 6, "wm": 0.9589580513044295, "mid": 0.985, "fc": 0.3464973784331493, "proj_up": true, "up": true, "x": null, "model_v": 2}
+{"close": "2026-11-03T02:15-05:00", "mkt": "NATGAS", "left": 3, "wm": 0.9760445418603816, "mid": 0.995, "fc": 0.4333420156264183, "proj_up": true, "up": true, "x": null, "model_v": 2}
+{"close": "2026-11-03T02:15-05:00", "mkt": "COPPER", "left": 12, "wm": 0.6969038414056373, "mid": 0.77, "fc": 0.4911283866596093, "proj_up": true, "up": true, "x": null, "model_v": 2}
+{"close": "2026-11-03T02:15-05:00", "mkt": "COPPER", "left": 9, "wm": 0.8577987363041105, "mid": 0.895, "fc": 0.4912481176794773, "proj_up": true, "up": true, "x": null, "model_v": 2}
+{"close": "2026-11-03T02:15-05:00", "mkt": "COPPER", "left": 6, "wm": 0.878949010250075, "mid": 0.91, "fc": 0.49132254123488706, "proj_up": true, "up": true, "x": null, "model_v": 2}
+{"close": "2026-11-03T02:15-05:00", "mkt": "COPPER", "left": 3, "wm": 0.4513765919370172, "mid": 0.565, "fc": 0.4907553821580378, "proj_up": true, "up": true, "x": null, "model_v": 2}
+{"close": "2026-11-03T02:15-05:00", "mkt": "BRENT", "left": 12, "wm": 0.8638230062584067, "mid": 0.795, "fc": 0.5204376108957001, "proj_up": true, "up": true, "x": null, "model_v": 2}
+{"close": "2026-11-03T02:15-05:00", "mkt": "BRENT", "left": 9, "wm": 0.9822052166476133, "mid": 0.97, "fc": 0.5106495454626088, "proj_up": true, "up": true, "x": null, "model_v": 2}
+{"close": "2026-11-03T02:15-05:00", "mkt": "BRENT", "left": 6, "wm": 0.9893368214811268, "mid": 0.995, "fc": 0.5134697751791489, "proj_up": true, "up": true, "x": null, "model_v": 2}
+{"close": "2026-11-03T02:15-05:00", "mkt": "BRENT", "left": 3, "wm": 0.9862011515843616, "mid": 0.995, "fc": 0.49061174286415504, "proj_up": true, "up": true, "x": null, "model_v": 2}
+{"close": "2026-11-03T02:15-05:00", "mkt": "PLATINUM", "left": 12, "wm": 0.6047515821558592, "mid": 0.615, "fc": 0.47621097270393714, "proj_up": true, "up": false, "x": null, "model_v": 2}
+{"close": "2026-11-03T02:15-05:00", "mkt": "PLATINUM", "left": 9, "wm": 0.7131120853899054, "mid": 0.6950000000000001, "fc": 0.47997832459750867, "proj_up": true, "up": false, "x": null, "model_v": 2}
+{"close": "2026-11-03T02:15-05:00", "mkt": "PLATINUM", "left": 6, "wm": 0.7245099823984851, "mid": 0.715, "fc": 0.47074333294321924, "proj_up": true, "up": false, "x": null, "model_v": 2}
+{"close": "2026-11-03T02:15-05:00", "mkt": "PLATINUM", "left": 3, "wm": 0.8472910544905169, "mid": 0.785, "fc": 0.48064023387102417, "proj_up": true, "up": false, "x": null, "model_v": 2}
+{"close": "2026-11-03T02:15-05:00", "mkt": "PALLADIUM", "left": 12, "wm": 0.26236080499808384, "mid": 0.315, "fc": 0.4617159203772917, "proj_up": false, "up": false, "x": null, "model_v": 2}
+{"close": "2026-11-03T02:15-05:00", "mkt": "PALLADIUM", "left": 9, "wm": 0.020595409902987746, "mid": 0.035, "fc": 0.46962860947575846, "proj_up": false, "up": false, "x": null, "model_v": 2}
+{"close": "2026-11-03T02:15-05:00", "mkt": "PALLADIUM", "left": 6, "wm": 0.03503119150084566, "mid": 0.065, "fc": 0.49801406062752124, "proj_up": false, "up": false, "x": null, "model_v": 2}
+{"close": "2026-11-03T02:15-05:00", "mkt": "PALLADIUM", "left": 3, "wm": 0.04146423151474811, "mid": 0.07, "fc": 0.4815403120073555, "proj_up": false, "up": false, "x": null, "model_v": 2}
