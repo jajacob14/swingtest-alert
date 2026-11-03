@@ -51,32 +51,6 @@
    "behind": true,
    "held": true
   },
-  "PLATINUM": {
-   "side": 1,
-   "entry": 1459.253157894737,
-   "stop": 0,
-   "tgt": 0,
-   "best": 1459.253157894737,
-   "n": 0,
-   "t0": 1793666270.7663093,
-   "kind": "lock",
-   "k": {
-    "ticker": "KXPLATINUM15M-26NOV021945-45",
-    "side": "YES",
-    "cost": 0.96,
-    "k": 1454.606,
-    "close": "2026-11-03 00:45:00+00:00"
-   },
-   "tp": 0.995,
-   "bail": 0.6,
-   "parent": null,
-   "prob": 0.9931,
-   "id": 49,
-   "at": "7:37 PM",
-   "at_px": "$1,459.25",
-   "behind": true,
-   "held": true
-  },
   "SILVER": {
    "side": 1,
    "entry": 50.86451724137931,
@@ -101,31 +75,6 @@
    "at": "7:39 PM",
    "at_px": "$50.865",
    "behind": true,
-   "held": true
-  },
-  "BRENT": {
-   "side": 1,
-   "entry": 104.58333333333333,
-   "stop": 0,
-   "tgt": 0,
-   "best": 104.58333333333333,
-   "n": 0,
-   "t0": 1793666440.1975532,
-   "kind": "lock",
-   "k": {
-    "ticker": "KXBRENT15M-26NOV021945-45",
-    "side": "YES",
-    "cost": 0.88,
-    "k": 104.29,
-    "close": "2026-11-03 00:45:00+00:00"
-   },
-   "tp": 0.995,
-   "bail": 0.6,
-   "parent": null,
-   "prob": 0.957,
-   "id": 51,
-   "at": "7:40 PM",
-   "at_px": "$104.58",
    "held": true
   }
  },
@@ -256,13 +205,13 @@
   "PLATINUM": false
  },
  "open": {
-  "BRENT": true,
+  "BRENT": false,
   "WTI": false,
   "NATGAS": false,
   "GOLD": true,
   "SILVER": true,
   "COPPER": true,
-  "PLATINUM": true,
+  "PLATINUM": false,
   "PALLADIUM": false
  },
  "nightpulse": "19:40",
