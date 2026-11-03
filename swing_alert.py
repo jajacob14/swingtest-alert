@@ -821,6 +821,32 @@ def log_call(mkt, pos, won):
     except Exception as e: print("log_call", e)
 
 
+def scorecard(st):
+    """Every :00 and :30: right vs wrong calls in the last 30 min, plus today's running total."""
+    now = dt.datetime.now(ET)
+    if now.minute % 30 != 0: return
+    slot = now.strftime("%Y-%m-%d %H:%M")
+    if st.get("scoreslot") == slot: return
+    st["scoreslot"] = slot
+    try: log = pd.read_json(CALL_LOG, lines=True)
+    except Exception: log = pd.DataFrame(columns=["t", "mkt", "won"])
+    if len(log):
+        log["t"] = pd.to_datetime(log.t, utc=True).dt.tz_convert(ET)
+    today = log[log.t.dt.date == now.date()] if len(log) else log
+    last = today[today.t >= now - dt.timedelta(minutes=30)] if len(today) else today
+    opn = len(st.get("lpos", {}))
+    if not len(today) and not opn: return  # nothing to report yet today
+    r30, w30 = int(last.won.sum()) if len(last) else 0, int((~last.won.astype(bool)).sum()) if len(last) else 0
+    rt, wt = int(today.won.sum()) if len(today) else 0, int((~today.won.astype(bool)).sum()) if len(today) else 0
+    lines = [f"Last 30 min: {r30} right, {w30} wrong" + (f" ({r30 / (r30 + w30):.0%})" if r30 + w30 else ""),
+             f"Today: {rt} right, {wt} wrong" + (f" ({rt / (rt + wt):.0%})" if rt + wt else "")]
+    if len(last):
+        by = ", ".join(f"{NAME.get(k, k)} {int(g.won.sum())}-{int((~g.won.astype(bool)).sum())}" for k, g in last.groupby("mkt"))
+        lines.append(f"By market (30 min): {by}")
+    lines.append(f"Calls still open: {opn}")
+    notify(f"Scorecard {now:%-I:%M %p}: {r30} right, {w30} wrong (last 30 min)", "\n".join(lines), "default")
+
+
 def agrees(st, mkt, up):
     """Multi-timeframe agreement: last 5 min moving the call's way, and trend or order flow backing it."""
     a = (st.get("ana") or {}).get(mkt) or {}
@@ -1930,6 +1956,8 @@ def live():
                     mode = "closed"
                 elif st.get("mode") == "idle": st["mode"] = None
             else: changed = day_tick(st, now)
+            try: scorecard(st)
+            except Exception as e: print("scorecard", e)
             prune_state(st); json.dump(st, open(STATE_FILE, "w"), indent=1, default=float)
             if changed or time.time() - S["saved"] > 600: persist("bot: live"); S["saved"] = time.time()
             S["errs"] = 0
