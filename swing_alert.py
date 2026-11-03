@@ -863,6 +863,7 @@ MIN_PROB = float(os.getenv("MIN_PROB") or 0.62)
 FAST_ON = os.getenv("FAST_CALLS", "0") == "1"           # 1-min momentum calls tested below MIN_PROB: off (same rules day & night)      # every call must have at least this win chance
 LONGSHOTS = os.getenv("LONGSHOTS", "0") == "1"        # low-win-rate cheap bets: off unless enabled
 CALL_LOG = "calls.jsonl"
+MODEL_V = 2  # v2 = probabilities anchored to Kalshi's 15-min price; learning uses only this version's results
 
 
 def log_call(mkt, pos, won, st=None):
@@ -871,7 +872,7 @@ def log_call(mkt, pos, won, st=None):
     rec = dict(t=dt.datetime.now(ET).isoformat(timespec="minutes"), mkt=mkt, kind=pos.get("kind"), side=k.get("side"),
                cost=k.get("cost"), prob=pos.get("prob"), at=pos.get("at"), won=bool(won),  # won = prediction right AT SETTLEMENT
                close=pd.Timestamp(k["close"]).tz_convert(ET).isoformat(timespec="minutes") if k.get("close") else None,
-               took_profit=bool(pos.get("took_profit")), was_behind=bool(pos.get("behind")))
+               took_profit=bool(pos.get("took_profit")), was_behind=bool(pos.get("behind")), model_v=MODEL_V)
     try:
         with open(CALL_LOG, "a") as f: f.write(json.dumps(rec) + "\n")
     except Exception as e: print("log_call", e)
@@ -915,11 +916,21 @@ def learn_update(st):
     try: log = pd.read_json(CALL_LOG, lines=True)
     except Exception: return
     if not len(log): return
-    log = log[log.kind.fillna("") != "flip"]; out = {}
+    log = log[log.kind.fillna("") != "flip"]
+    log = log[log.get("model_v", pd.Series(1, index=log.index)).fillna(1) == MODEL_V]  # learn from the current model only
+    out = {}
+    if not len(log): st["learn"] = {}; st.pop("platt", None); return
     for (m, k), g in log.groupby(["mkt", "kind"]):
         n, w = len(g), int(g.won.astype(bool).sum()); exp_ = float(g.prob.fillna(MIN_PROB).mean())
         out[f"{m}|{k}"] = dict(n=n, w=w, rate=round(w / n, 3), expected=round(exp_, 3))
     st["learn"] = out
+    if len(log) >= 20 and log.prob.notna().sum() >= 20:  # re-fit: P(win) = σ(a + b·logit(stated))
+        g = log[log.prob.notna()]; x = np.log(np.clip(g.prob, 0.01, 0.99) / (1 - np.clip(g.prob, 0.01, 0.99))).to_numpy()
+        y = g.won.astype(float).to_numpy(); a_, b_ = 0.0, 1.0
+        for _ in range(800):
+            p = 1 / (1 + np.exp(-(a_ + b_ * x))); ga = np.mean(p - y) + 0.02 * a_; gb = np.mean((p - y) * x) + 0.02 * (b_ - 1)
+            a_ -= 0.3 * ga; b_ -= 0.3 * gb
+        st["platt"] = dict(a=round(float(a_), 4), b=round(float(b_), 4), n=int(len(g)))
 
 
 def need_prob(st, mkt, kind):
@@ -932,7 +943,10 @@ def need_prob(st, mkt, kind):
 
 
 def blend_prob(st, mkt, kind, p):
-    """Shrink the model's % toward the live record (k=10 pseudo-calls)."""
+    """Re-fit to live results (all calls), then shrink toward this market+type's own record (k=10 pseudo-calls)."""
+    pl = st.get("platt")
+    if pl:
+        q = min(max(p, 0.01), 0.99); p = float(1 / (1 + np.exp(-(pl["a"] + pl["b"] * np.log(q / (1 - q))))))
     L = (st.get("learn") or {}).get(f"{mkt}|{kind}")
     if not L or not L["n"]: return p
     adj = p + (L["rate"] - L["expected"]) * L["n"] / (L["n"] + 10)
@@ -1377,9 +1391,16 @@ def odds_line(p, cost, label="Odds"):
     return (f"win chance {p:.0%} vs market {cost:.0%}" + (" (good value)" if e >= 0.03 else " (fair)" if e > -0.03 else " (overpriced)"))
 
 
+def mkt_dz(c):
+    """Where Kalshi's 15-min contract says price is vs the start, in σ√T units (it knows the true settlement price)."""
+    from statistics import NormalDist
+    mid = (c["ya"] + c["yb"]) / 2 if c.get("yb") else c["ya"]
+    return NormalDist().inv_cdf(min(max(mid, 0.02), 0.98)), mid
+
+
 def analyze(mkt, m, kp, lv, c, fc=None, wm=None, pm=None):
     """Numbers behind the board/alerts: move, σ, breakout, volatility, spike score, range & odds for this window."""
-    from math import log, sqrt
+    from math import sqrt
     cl = m.Close
     if len(cl) < 60: return None
     p = cl.copy(); p.iloc[-1] = kp / getattr(lv, "r", 1.0)  # latest = live price (in source units)
@@ -1391,9 +1412,10 @@ def analyze(mkt, m, kp, lv, c, fc=None, wm=None, pm=None):
              hi30=float(m.High.iloc[-33:-3].max() * getattr(lv, "r", 1.0)), lo30=float(m.Low.iloc[-33:-3].min() * getattr(lv, "r", 1.0)))
     if c:
         T = max((c["close"] - pd.Timestamp.now(tz="UTC")).total_seconds() / 60, 0.1)
-        a.update(T=T, start=c["k"], rng=kp * s1 * sqrt(T), p_up=_phi(log(kp / c["k"]) / (s1 * sqrt(T))), ya=c["ya"], na=c["na"])
+        dzm, mid = mkt_dz(c)
+        a.update(T=T, start=c["k"], rng=kp * s1 * sqrt(T), p_up=mid, ya=c["ya"], na=c["na"])  # odds = Kalshi's, not our estimate
         mm0 = m.copy(); mm0.iloc[-1, mm0.columns.get_loc("Close")] = p.iloc[-1]
-        wp = window_live(mm0, wm, log(kp / c["k"]) / (s1 * sqrt(T)), T)
+        wp = window_live(mm0, wm, dzm, T)  # our signals adjust Kalshi's view; they can't replace it
         if wp is not None: a.update(wm_p=wp, wm_ok=bool((wm or {}).get("ok")), wm_acc=(wm or {}).get("lock_acc", 0),
                                     wm_n=(wm or {}).get("lock_n", 0), wm_hc=(wm or {}).get("hc_acc", 0))
     tr_, vw_, rs_, fl_ = ctx_features(p, m.Volume.fillna(0), m.index, m.Open)
@@ -1458,6 +1480,7 @@ def proj_line(mkt, a):
     if "start" in a:
         T = a["T"]; pend = a["px"] * float(np.exp((a["m10"] if T > 7 else a["m5"]) * min(T, 10) / (10 if T > 7 else 5)))
         out += f". Projected at the close: ~{money(mkt, pend)}, {'ABOVE' if pend >= a['start'] else 'BELOW'} the start {money(mkt, a['start'])}"
+    if a.get("pj_live") is not None: out += f" (projections right {a['pj_live']:.0%} live)"
     return out + ("" if a.get("p_ok") else " (low-confidence projection)")
 
 
@@ -1525,6 +1548,32 @@ def lock_call(st, mkt, a, lv, cal):
            f"{a['wm_n']:,} times on unseen days; Kalshi only prices {cost:.0%}; " + ctx_short(dict(trend=1 if a.get('tr_pct', 0) > 0 else -1, flow=a.get('flow', 0)), up))
     open_call(st, mkt, "lock", "YES" if up else "NO", c, lv, a["px"], odds_line(conf, cost), why, True, prob=conf)
     return True
+
+
+def apply_proj_bias(st, mkt, a):
+    """Correct the projection by its live average error once there are 30+ scored projections."""
+    E = (st.get("pj_err") or {}).get(mkt)
+    if not E or E["n"] < 30 or "px10" not in a: return
+    a["m10"] += E["bias"]; a["m5"] += E["bias"] / 2
+    a["px10"] = a["px"] * float(np.exp(a["m10"])); a["px5"] = a["px"] * float(np.exp(a["m5"]))
+    a["pj_live"] = E["hit"] / E["n"]
+
+
+def track_projection(st, mkt, a):
+    """Save each minute's 10-min projection; 10 min later score it vs reality (direction hit + % error)."""
+    if "px10" not in a: return
+    now = pd.Timestamp.now(tz="UTC").floor("min"); H = st.setdefault("pj_hist", {}).setdefault(mkt, [])
+    if not H or H[-1][0] != str(now): H.append([str(now), a["px"], a["px10"]])
+    E = st.setdefault("pj_err", {}).setdefault(mkt, {"n": 0, "hit": 0, "bias": 0.0})
+    keep = []
+    for t, p0, pp in H:
+        if pd.Timestamp(t) <= now - pd.Timedelta(minutes=10):
+            real = (a["px"] / p0 - 1); pred = (pp / p0 - 1)
+            if abs(pred) > 1e-5:
+                E["n"] += 1; E["hit"] += int((real > 0) == (pred > 0))
+                E["bias"] = round(E["bias"] + ((real - pred) - E["bias"]) / min(E["n"], 200), 7)  # running mean of error
+        else: keep.append([t, p0, pp])
+    st["pj_hist"][mkt] = keep[-15:]
 
 
 def premove_alert(st, mkt, a, lv, cal, cool):
@@ -1595,7 +1644,6 @@ def fast_entry(mkt, d1, fp, st, cool):
 
 def k15_call(mkt, m, px, st, lv, cal, night=False):
     """🎯 longshot (cheap bounce side) or 💪 edge pick (favored side), from calibrated history + context."""
-    from math import log, sqrt
     if busy(st, mkt) or not cal or not cal.get("stable") or len(m) < 300: return False
     if not live_ready(st, mkt): return False
     c = k15(mkt)
@@ -1605,7 +1653,7 @@ def k15_call(mkt, m, px, st, lv, cal, night=False):
     if event_window(mkt, dt.datetime.now(ET), T): return False
     cx = live_ctx(m); cx["px"] = px
     if night and _SIG.get(mkt): cx["sig"] = _SIG[mkt]  # σ from clean futures bars, not the Kalshi/Yahoo join
-    z = log(px * lv.r / c["k"]) / (cx["sig"] * sqrt(T))
+    z = mkt_dz(c)[0]  # distance from the start as Kalshi sees it (true settlement price)
     if abs(z) < 0.5: return False
     bdir = -1 if z > 0 else 1; cl = m.Close
     turning = (px > cl.iloc[-1] and cx["rsi"] < 45) if bdir > 0 else (px < cl.iloc[-1] and cx["rsi"] > 55)
@@ -1890,6 +1938,7 @@ def night_tick(st, params, cool, nh, yc, only=None):
         regime_update(st, mkt, y); boards[mkt] = (m, kp, lv)  # volatility from one clean source
         try:
             a = analyze(mkt, m, kp, lv, k15(mkt), (cal_ or {}).get("fcast"), (cal_ or {}).get("wmod"), (cal_ or {}).get("proj")); st.setdefault("ana", {})[mkt] = a
+            if a: apply_proj_bias(st, mkt, a); track_projection(st, mkt, a)
             if a: changed |= spike_alert(st, mkt, a, lv, cal_, cool) or premove_alert(st, mkt, a, lv, cal_, cool) or lock_call(st, mkt, a, lv, cal_)
         except Exception as e: print("analyze", mkt, e)
         st.setdefault("thin", {})[mkt] = bool(len(y) and pd.Timestamp.now(tz="UTC") - y.index[-1] > pd.Timedelta(minutes=25))
@@ -2061,6 +2110,7 @@ def live():
                 _lv = kconv(mkt, float(px[etf])); _a = analyze(mkt, _m, float(px[etf]) * _lv.r, _lv, k15(mkt), ((params.get("_cal") or {}).get(mkt) or {}).get("fcast"), ((params.get("_cal") or {}).get(mkt) or {}).get("wmod"),
                                 ((params.get("_cal") or {}).get(mkt) or {}).get("proj"))
                 st.setdefault("ana", {})[mkt] = _a
+                if _a: apply_proj_bias(st, mkt, _a); track_projection(st, mkt, _a)
                 _c = (params.get("_cal") or {}).get(mkt)
                 if _a: changed |= spike_alert(st, mkt, _a, _lv, _c, cool) or premove_alert(st, mkt, _a, _lv, _c, cool) or lock_call(st, mkt, _a, _lv, _c)
             except Exception as e: print("analyze", mkt, e)
