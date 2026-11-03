@@ -2821,8 +2821,9 @@ def kframe(mkt, kd, fut):
     for lg in (0, LAG_NIGHT):
         sub = kd[lag == lg]; key = (sub.t - pd.Timedelta(minutes=lg)).dt.floor("min")
         fx.append(pd.DataFrame(f.reindex(key).to_numpy(), index=sub.index, columns=list(KFEATS_F)))
-    kd = kd.join(pd.concat(fx)).dropna(subset=list(KFEATS_F))
+    kd = kd.join(pd.concat(fx))
     kd["tleft"] = kd.tleft / 12
+    kd = kd.replace([np.inf, -np.inf], np.nan).dropna(subset=list(KFEATS) + ["mid", "up"])
     return kd
 
 
