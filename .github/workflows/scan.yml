@@ -42,6 +42,6 @@ jobs:
       - name: save state
         run: |
           git config user.name bot; git config user.email bot@users.noreply.github.com
-          git add -A state.json params.json calls.jsonl 2>/dev/null || true
+          git add -A state.json params.json calls.jsonl preds.jsonl 2>/dev/null || true
           git commit -qm "bot: update state" || exit 0
           git pull -q --rebase origin main && git push -q

@@ -951,8 +951,73 @@ def scorecard(st):
     if len(half):
         lines.append("By market: " + ", ".join(f"{NAME.get(k, k)} {cnt(g)[0]}-{cnt(g)[1]}" for k, g in half.groupby("mkt")))
     if pending: lines.append(f"Still settling (not counted): {', '.join(NAME[m] for m in pending)}")
+    try:
+        pdl = pd.read_json(PRED_LOG, lines=True); pdl["c"] = pd.to_datetime(pdl["close"], utc=True).dt.tz_convert(ET)
+        ps = pred_summary(pdl[(pdl.c > lo) & (pdl.c <= due)].dropna(subset=["wm", "mid"]))
+        if ps:
+            lines.append(f"15-min predictions (all windows, {ps['n']} snapshots): model right {ps['model']:.0%} vs Kalshi {ps['kalshi']:.0%}")
+            lines.append("  by minutes left: " + ", ".join(f"{b}m {v[0]:.0%} vs {v[1]:.0%}" for b, v in sorted(ps["by"].items(), reverse=True)))
+    except Exception: pass
     lines.append("All results above are settled by Kalshi. Scored on whether each call's prediction was right at the close.")
     notify(f"Scorecard {lo:%-I:%M}–{due:%-I:%M}: {r30} right, {w30} wrong", "\n".join(lines), "default")
+
+
+PRED_LOG = "preds.jsonl"
+CHECKPOINTS = (12, 9, 6, 3)  # minutes left when every window's predictions are snapshotted
+
+
+def record_pred(st, mkt, a, c):
+    """Snapshot our predictions for this window at 12/9/6/3 min left (all windows, not just calls)."""
+    if not c or "start" not in a: return
+    P = st.setdefault("preds", {}).setdefault(c["ticker"], {"mkt": mkt, "close": str(c["close"]), "start": c["k"], "cp": {}})
+    for b in CHECKPOINTS:
+        if a["T"] <= b and str(b) not in P["cp"] and a["T"] > b - 2.5:
+            P["cp"][str(b)] = dict(wm=a.get("wm_raw", a.get("wm_p")), mid=a.get("p_up"), fc=a.get("fc_p"),
+                                   proj_up=(bool(a["px"] * float(np.exp(a.get("m5", 0))) >= c["k"]) if "m5" in a else None))
+
+
+def settle_preds(st):
+    """After a window closes, fetch Kalshi's result and grade every snapshot (once per window)."""
+    now = pd.Timestamp.now(tz="UTC"); P = st.get("preds") or {}
+    for tk, rec in list(P.items()):
+        close = pd.Timestamp(rec["close"])
+        if now < close + pd.Timedelta(seconds=60): continue
+        if now > close + pd.Timedelta(minutes=30) or not rec["cp"]: P.pop(tk, None); continue
+        try: res = requests.get(f"{KALSHI}/markets/{tk}", timeout=10).json()["market"].get("result")
+        except Exception: continue
+        if not res: continue
+        up = res.lower() == "yes"
+        with open(PRED_LOG, "a") as f:
+            for b, v in rec["cp"].items():
+                f.write(json.dumps(dict(close=close.tz_convert(ET).isoformat(timespec="minutes"), mkt=rec["mkt"], left=int(b),
+                                        wm=v.get("wm"), mid=v.get("mid"), fc=v.get("fc"), proj_up=v.get("proj_up"), up=up,
+                                        model_v=MODEL_V)) + "\n")
+        P.pop(tk, None)
+
+
+def pred_learn(st):
+    """Per market: re-fit how much to trust our window model vs Kalshi's price, from graded 15-min snapshots."""
+    try: d = pd.read_json(PRED_LOG, lines=True)
+    except Exception: return
+    d = d[(d.get("model_v", MODEL_V) == MODEL_V)].dropna(subset=["wm", "mid"])
+    lg = lambda p: np.log(np.clip(p, 0.02, 0.98) / (1 - np.clip(p, 0.02, 0.98)))
+    out = {}
+    for m, g in d.groupby("mkt"):
+        if len(g) < 80: continue
+        X = np.c_[np.ones(len(g)), lg(g.wm), lg(g.mid)]; y = g.up.astype(float).to_numpy(); w = np.array([0.0, 0.5, 0.5])
+        for _ in range(1500):
+            p = 1 / (1 + np.exp(-X @ w)); w -= 0.2 * (X.T @ (p - y) / len(y) + 0.01 * (w - np.array([0, 0.5, 0.5])))
+        out[m] = dict(a=round(float(w[0]), 4), b_model=round(float(w[1]), 4), c_kalshi=round(float(w[2]), 4), n=int(len(g)))
+    st["pcal"] = out
+
+
+def pred_summary(d):
+    """Accuracy of model vs Kalshi on graded snapshots (call side = whichever side each favours)."""
+    if not len(d): return None
+    m_ok = ((d.wm >= 0.5) == d.up).mean(); k_ok = ((d.mid >= 0.5) == d.up).mean()
+    by = {int(b): (round(float(((g.wm >= 0.5) == g.up).mean()), 3), round(float(((g.mid >= 0.5) == g.up).mean()), 3), len(g))
+          for b, g in d.groupby("left")}
+    return dict(model=round(float(m_ok), 3), kalshi=round(float(k_ok), 3), n=len(d), by=by)
 
 
 def learn_update(st):
@@ -1241,7 +1306,7 @@ def fetch_1m(since):
 def persist(msg="bot: live state"):
     if os.getenv("GIT_PERSIST"):
         import subprocess as sp
-        sp.run(f'git add state.json; git add {CALL_LOG} 2>/dev/null; (git diff --cached --quiet || (git commit -qm "{msg}" && git pull -q --rebase origin main && git push -q))',
+        sp.run(f'git add state.json; git add {CALL_LOG} {PRED_LOG} 2>/dev/null; (git diff --cached --quiet || (git commit -qm "{msg}" && git pull -q --rebase origin main && git push -q))',
                shell=True)
 
 
@@ -1614,6 +1679,16 @@ def lock_call(st, mkt, a, lv, cal):
            f"{a['wm_n']:,} times on unseen days; Kalshi only prices {cost:.0%}; " + ctx_short(dict(trend=1 if a.get('tr_pct', 0) > 0 else -1, flow=a.get('flow', 0)), up))
     open_call(st, mkt, "lock", "YES" if up else "NO", c, lv, a["px"], odds_line(conf, cost), why, True, prob=conf)
     return True
+
+
+def apply_pcal(st, mkt, a):
+    """Replace our raw window % with the learned blend of model + Kalshi (once enough windows are graded)."""
+    pc = (st.get("pcal") or {}).get(mkt)
+    if "wm_p" not in a: return
+    a["wm_raw"] = a["wm_p"]
+    if not pc or a.get("p_up") is None: return
+    lg = lambda p: float(np.log(min(max(p, 0.02), 0.98) / (1 - min(max(p, 0.02), 0.98))))
+    a["wm_p"] = float(1 / (1 + np.exp(-(pc["a"] + pc["b_model"] * lg(a["wm_raw"]) + pc["c_kalshi"] * lg(a["p_up"])))))
 
 
 def apply_proj_bias(st, mkt, a):
@@ -2055,7 +2130,7 @@ def night_tick(st, params, cool, nh, yc, only=None):
         regime_update(st, mkt, y); boards[mkt] = (m, kp, lv)  # volatility from one clean source
         try:
             a = analyze(mkt, m, kp, lv, k15(mkt), (cal_ or {}).get("fcast"), (cal_ or {}).get("wmod"), (cal_ or {}).get("proj")); st.setdefault("ana", {})[mkt] = a
-            if a: apply_proj_bias(st, mkt, a); track_projection(st, mkt, a)
+            if a: apply_pcal(st, mkt, a); apply_proj_bias(st, mkt, a); track_projection(st, mkt, a); record_pred(st, mkt, a, k15(mkt))
             if a: changed |= (boom_call(st, mkt, a, lv, cal_) or spike_alert(st, mkt, a, lv, cal_, cool)
                               or premove_alert(st, mkt, a, lv, cal_, cool) or lock_call(st, mkt, a, lv, cal_))
         except Exception as e: print("analyze", mkt, e)
@@ -2178,7 +2253,7 @@ def live():
     pulse_min, tick = int(os.getenv("PULSE_MIN") or 10), int(os.getenv("TICK_SEC") or 10)
     cool, data, nh, yc = {}, {}, {}, {}
     S = dict(params=load_params(), last_min=None, last_hour=None, last_pulse=None, nt=0, errs=0, saved=time.time(), recheck=0)
-    st0 = load_state(); learn_update(st0)
+    st0 = load_state(); learn_update(st0); pred_learn(st0)
     if not MAIN_ON: st0["pos"] = {}
     for key in ("lpos", "open", "regime", "thin", "lswin"):  # forget markets no longer tracked (e.g. crypto/FX)
         if isinstance(st0.get(key), dict): st0[key] = {k: v for k, v in st0[key].items() if k in ALL}
@@ -2228,7 +2303,7 @@ def live():
                 _lv = kconv(mkt, float(px[etf])); _a = analyze(mkt, _m, float(px[etf]) * _lv.r, _lv, k15(mkt), ((params.get("_cal") or {}).get(mkt) or {}).get("fcast"), ((params.get("_cal") or {}).get(mkt) or {}).get("wmod"),
                                 ((params.get("_cal") or {}).get(mkt) or {}).get("proj"))
                 st.setdefault("ana", {})[mkt] = _a
-                if _a: apply_proj_bias(st, mkt, _a); track_projection(st, mkt, _a)
+                if _a: apply_pcal(st, mkt, _a); apply_proj_bias(st, mkt, _a); track_projection(st, mkt, _a); record_pred(st, mkt, _a, k15(mkt))
                 _c = (params.get("_cal") or {}).get(mkt)
                 if _a: changed |= (boom_call(st, mkt, _a, _lv, _c) or spike_alert(st, mkt, _a, _lv, _c, cool)
                                    or premove_alert(st, mkt, _a, _lv, _c, cool) or lock_call(st, mkt, _a, _lv, _c))
@@ -2282,6 +2357,10 @@ def live():
                     mode = "closed"
                 elif st.get("mode") == "idle": st["mode"] = None
             else: changed = day_tick(st, now)
+            try:
+                settle_preds(st)
+                if now.minute % 15 == 3 and st.get("pl_slot") != now.strftime("%H:%M"): st["pl_slot"] = now.strftime("%H:%M"); pred_learn(st)
+            except Exception as e: print("preds", e)
             try: scorecard(st)
             except Exception as e: print("scorecard", e)
             prune_state(st); json.dump(st, open(STATE_FILE, "w"), indent=1, default=float)
@@ -2440,7 +2519,12 @@ def tally(since_hour=None):
     lines = [f"Since {start:%-I:%M %p}: {r} right, {w} wrong ({r / (r + w):.0%}). Calls claimed {d.prob.mean():.0%} on average."]
     for k, g in d.groupby("kind"): lines.append(f"{KIND.get(k, k)}: {int(g.won.sum())}-{int((~g.won.astype(bool)).sum())}")
     lines.append("By market: " + ", ".join(f"{NAME.get(k, k)} {int(g.won.sum())}-{int((~g.won.astype(bool)).sum())}" for k, g in d.groupby("mkt")))
-    lines.append("Fix applied: predictions now anchored to Kalshi's own 15-min price and re-fit to these results.")
+    try:
+        pdl = pd.read_json(PRED_LOG, lines=True); pdl["c"] = pd.to_datetime(pdl["close"], utc=True).dt.tz_convert(ET)
+        ps = pred_summary(pdl[pdl.c >= start].dropna(subset=["wm", "mid"]))
+        if ps: lines.append(f"15-min predictions, every window ({ps['n']} snapshots): model right {ps['model']:.0%} vs Kalshi {ps['kalshi']:.0%}. "
+                            "By minutes left: " + ", ".join(f"{b}m {v[0]:.0%}/{v[1]:.0%}" for b, v in sorted(ps["by"].items(), reverse=True)))
+    except Exception: pass
     notify(f"Evening tally: {r} right, {w} wrong", "\n".join(lines), "high")
 
 
