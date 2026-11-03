@@ -590,12 +590,13 @@ def proj_live(m, pm, sig1):
                 base_up=pm["base_up"], base_dn=pm["base_dn"], p_ok=pm.get("ok"), big_ok=pm.get("ok_big"), dir_hit=pm.get("dir_hit"))
 
 
-def window_live(m, wm, dz, T):
-    """P(window ends UP) right now from our model."""
+def window_live(m, wm, dz, T, out=None):
+    """P(window ends UP) right now from our model (live-retrained weights if available). out['v'] gets the inputs."""
     if not wm or not wm.get("w"): return None
     f, _ = feat_frame(m); x = f.iloc[-1][list(FEATS)]
     if x.isna().any(): return None
     v = np.r_[x.to_numpy(), np.clip(dz, -6, 6), T / 12]
+    if out is not None: out["v"] = [round(float(t), 5) for t in v]
     z = (v - np.array(wm["mu"])) / np.array(wm["sd"])
     return float(1 / (1 + np.exp(-(wm["w"][0] + z @ np.array(wm["w"][1:])))))
 
@@ -931,7 +932,7 @@ def log_call(mkt, pos, won, st=None):
 def scorecard(st):
     """Half-hour scorecard, sent only once every call whose window ended in that half-hour has a settled result."""
     now = dt.datetime.now(ET)
-    if now.minute % 30 == 0 and st.get("scoreslot") != now.strftime("%Y-%m-%d %H:%M"):
+    if now.minute % 15 == 0 and st.get("scoreslot") != now.strftime("%Y-%m-%d %H:%M"):
         st["scoreslot"] = now.strftime("%Y-%m-%d %H:%M")
         st["score_due"] = now.replace(second=0, microsecond=0).isoformat()   # report this half-hour once results are in
     due = st.get("score_due")
@@ -946,13 +947,17 @@ def scorecard(st):
     if len(log):
         log["c"] = pd.to_datetime(log["close"].fillna(log["t"]), utc=True).dt.tz_convert(ET)
         if "kind" in log: log = log[log.kind.fillna("") != "flip"]  # re-entries never count
-    lo = due - pd.Timedelta(minutes=30)
+    lo = due - pd.Timedelta(minutes=15)
     half = log[(log.c > lo) & (log.c <= due)] if len(log) else log
     today = log[(log.c.dt.date == due.date()) & (log.c <= due)] if len(log) else log
-    if not len(today) and not pending: return  # nothing to report
+    try:
+        _p = pd.read_json(PRED_LOG, lines=True); _p["c"] = pd.to_datetime(_p["close"], utc=True).dt.tz_convert(ET)
+        has_preds = bool(((_p.c > lo) & (_p.c <= due)).any())
+    except Exception: has_preds = False
+    if not len(today) and not pending and not has_preds: return  # nothing to report
     cnt = lambda d: (int(d.won.astype(bool).sum()), int((~d.won.astype(bool)).sum())) if len(d) else (0, 0)
     r30, w30 = cnt(half); rt, wt = cnt(today)
-    lines = [f"Windows {lo:%-I:%M}–{due:%-I:%M}: {r30} right, {w30} wrong" + (f" ({r30 / (r30 + w30):.0%})" if r30 + w30 else ""),
+    lines = [f"This window ({lo:%-I:%M}–{due:%-I:%M}): {r30} right, {w30} wrong" + (f" ({r30 / (r30 + w30):.0%})" if r30 + w30 else " (no calls)"),
              f"Today: {rt} right, {wt} wrong" + (f" ({rt / (rt + wt):.0%})" if rt + wt else "")]
     if len(half):
         lines.append("By market: " + ", ".join(f"{NAME.get(k, k)} {cnt(g)[0]}-{cnt(g)[1]}" for k, g in half.groupby("mkt")))
@@ -965,7 +970,10 @@ def scorecard(st):
             lines.append("  by minutes left: " + ", ".join(f"{b}m {v[0]:.0%} vs {v[1]:.0%}" for b, v in sorted(ps["by"].items(), reverse=True)))
     except Exception: pass
     lines.append("All results above are settled by Kalshi. Scored on whether each call's prediction was right at the close.")
-    notify(f"Scorecard {lo:%-I:%M}–{due:%-I:%M}: {r30} right, {w30} wrong", "\n".join(lines), "default")
+    L = st.get("wm_live") or {}; E = st.get("early_live") or {}
+    if L: lines.append("Learning: live-retrained models active for " + ", ".join(NAME.get(m, m) for m, v in L.items() if v["loss_live"] <= v["loss_backtest"]) if any(v["loss_live"] <= v["loss_backtest"] for v in L.values()) else "Learning: collecting live data (backtest models still better)")
+    if E: lines.append("Live EARLY record: " + ", ".join(f"{NAME.get(m, m)} {v['acc']:.0%} vs Kalshi {v['mid']:.0%} ({v['n']})" for m, v in E.items()))
+    notify(f"W/L {lo:%-I:%M}–{due:%-I:%M}: {r30} right, {w30} wrong · today {rt}-{wt}", "\n".join(lines), "default")
 
 
 PRED_LOG = "preds.jsonl"
@@ -978,7 +986,7 @@ def record_pred(st, mkt, a, c):
     P = st.setdefault("preds", {}).setdefault(c["ticker"], {"mkt": mkt, "close": str(c["close"]), "start": c["k"], "cp": {}})
     for b in CHECKPOINTS:
         if a["T"] <= b and str(b) not in P["cp"] and a["T"] > b - 2.5:
-            P["cp"][str(b)] = dict(wm=a.get("wm_raw", a.get("wm_p")), mid=a.get("p_up"), fc=a.get("fc_p"),
+            P["cp"][str(b)] = dict(wm=a.get("wm_raw", a.get("wm_p")), mid=a.get("p_up"), fc=a.get("fc_p"), x=a.get("wfeat"),
                                    proj_up=(bool(a["px"] * float(np.exp(a.get("m5", 0))) >= c["k"]) if "m5" in a else None))
 
 
@@ -996,7 +1004,7 @@ def settle_preds(st):
         with open(PRED_LOG, "a") as f:
             for b, v in rec["cp"].items():
                 f.write(json.dumps(dict(close=close.tz_convert(ET).isoformat(timespec="minutes"), mkt=rec["mkt"], left=int(b),
-                                        wm=v.get("wm"), mid=v.get("mid"), fc=v.get("fc"), proj_up=v.get("proj_up"), up=up,
+                                        wm=v.get("wm"), mid=v.get("mid"), fc=v.get("fc"), proj_up=v.get("proj_up"), up=up, x=v.get("x"),
                                         model_v=MODEL_V)) + "\n")
         P.pop(tk, None)
 
@@ -1015,6 +1023,43 @@ def pred_learn(st):
             p = 1 / (1 + np.exp(-X @ w)); w -= 0.2 * (X.T @ (p - y) / len(y) + 0.01 * (w - np.array([0, 0.5, 0.5])))
         out[m] = dict(a=round(float(w[0]), 4), b_model=round(float(w[1]), 4), c_kalshi=round(float(w[2]), 4), n=int(len(g)))
     st["pcal"] = out
+    # live EARLY verdict: snapshots with 9+ min left, Kalshi near even for the side the model favoured, model 60%+
+    el = {}
+    for m, g in d[d.left >= 9].groupby("mkt"):
+        side_mid = np.where(g.wm >= 0.5, g.mid, 1 - g.mid); conf = np.maximum(g.wm, 1 - g.wm)
+        e = g[(conf >= 0.6) & (side_mid >= 0.30) & (side_mid <= 0.55)]
+        if len(e):
+            acc = float(((e.wm >= 0.5) == e.up).mean()); sm = float(np.where(e.wm >= 0.5, e.mid, 1 - e.mid).mean())
+            el[m] = dict(n=len(e), acc=round(acc, 3), mid=round(sm, 3))
+    st["early_live"] = el
+
+
+def retrain_window(st, params):
+    """Learning mode: refit each market's window model on its live graded snapshots (300+), pulled toward the
+    backtest weights so it builds on them instead of starting over."""
+    try: d = pd.read_json(PRED_LOG, lines=True)
+    except Exception: return
+    if "x" not in d: return
+    d = d[d.x.notna() & (d.get("model_v", MODEL_V) == MODEL_V)]; out = {}
+    for m, g in d.groupby("mkt"):
+        wm = ((params.get("_cal") or {}).get(m) or {}).get("wmod") or {}
+        if len(g) < 300 or not wm.get("w"): continue
+        X = (np.vstack(g.x.to_numpy()) - np.array(wm["mu"])) / np.array(wm["sd"]); X = np.c_[np.ones(len(X)), X]
+        y = g.up.astype(float).to_numpy(); w0 = np.array(wm["w"]); w = w0.copy()
+        for _ in range(600):
+            p = 1 / (1 + np.exp(-X @ w)); w -= 0.2 * (X.T @ (p - y) / len(y) + 0.05 * (w - w0))  # prior = backtest model
+        p = 1 / (1 + np.exp(-X @ w)); p0 = 1 / (1 + np.exp(-X @ w0))
+        ll = lambda q: float(-np.mean(y * np.log(q + 1e-9) + (1 - y) * np.log(1 - q + 1e-9)))
+        out[m] = dict(w=[round(float(t), 5) for t in w], n=len(g), loss_live=round(ll(p), 4), loss_backtest=round(ll(p0), 4))
+    st["wm_live"] = out
+
+
+def wm_for(st, mkt, cal):
+    """Window model to use: backtest weights, replaced by live-retrained weights once they exist."""
+    wm = dict((cal or {}).get("wmod") or {})
+    lw = (st.get("wm_live") or {}).get(mkt)
+    if lw and wm.get("w") and lw["loss_live"] <= lw["loss_backtest"]: wm["w"] = lw["w"]
+    return wm
 
 
 def pred_summary(d):
@@ -1551,7 +1596,8 @@ def analyze(mkt, m, kp, lv, c, fc=None, wm=None, pm=None):
         dzm, mid = mkt_dz(c)
         a.update(T=T, start=c["k"], rng=kp * s1 * sqrt(T), p_up=mid, ya=c["ya"], na=c["na"])  # odds = Kalshi's, not our estimate
         mm0 = m.copy(); mm0.iloc[-1, mm0.columns.get_loc("Close")] = p.iloc[-1]
-        wp = window_live(mm0, wm, dzm, T)  # our signals adjust Kalshi's view; they can't replace it
+        box = {}; wp = window_live(mm0, wm, dzm, T, box)  # our signals adjust Kalshi's view; they can't replace it
+        if box.get("v"): a["wfeat"] = box["v"]
         if wp is not None: a.update(wm_p=wp, wm_ok=bool((wm or {}).get("ok")), wm_acc=(wm or {}).get("lock_acc", 0),
                                     wm_n=(wm or {}).get("lock_n", 0), wm_hc=(wm or {}).get("hc_acc", 0))
     tr_, vw_, rs_, fl_ = ctx_features(p, m.Volume.fillna(0), m.index, m.Open)
@@ -1672,8 +1718,9 @@ EARLY_MAX_COST = 0.65  # no call once Kalshi already prices the side above this:
 
 def early_call(st, mkt, a, lv, cal):
     """EARLY: 8-12 min left, Kalshi still near even; our model (validated early) + projection + forecast agree."""
-    wm = (cal or {}).get("wmod") or {}
-    if not wm.get("early_ok") or "wm_p" not in a or "start" not in a or not 8 <= a["T"] <= 12.5: return False
+    wm = (cal or {}).get("wmod") or {}; el = (st.get("early_live") or {}).get(mkt)
+    ok = (el["acc"] >= 0.60 and el["acc"] - el["mid"] >= 0.05) if el and el["n"] >= 30 else wm.get("early_ok")
+    if not ok or "wm_p" not in a or "start" not in a or not 8 <= a["T"] <= 12.5: return False
     if busy(st, mkt) or not live_ready(st, mkt): return False
     up = a["wm_p"] >= 0.5; conf = blend_prob(st, mkt, "early", max(a["wm_p"], 1 - a["wm_p"]))
     c = k15(mkt)
@@ -2158,7 +2205,7 @@ def night_tick(st, params, cool, nh, yc, only=None):
                         or k15_call(mkt, m.iloc[:-1], kp, st, lv, cal_, night=True))
         regime_update(st, mkt, y); boards[mkt] = (m, kp, lv)  # volatility from one clean source
         try:
-            a = analyze(mkt, m, kp, lv, k15(mkt), (cal_ or {}).get("fcast"), (cal_ or {}).get("wmod"), (cal_ or {}).get("proj")); st.setdefault("ana", {})[mkt] = a
+            a = analyze(mkt, m, kp, lv, k15(mkt), (cal_ or {}).get("fcast"), wm_for(st, mkt, cal_), (cal_ or {}).get("proj")); st.setdefault("ana", {})[mkt] = a
             if a: apply_pcal(st, mkt, a); apply_proj_bias(st, mkt, a); track_projection(st, mkt, a); record_pred(st, mkt, a, k15(mkt))
             if a: changed |= (early_call(st, mkt, a, lv, cal_) or boom_call(st, mkt, a, lv, cal_) or spike_alert(st, mkt, a, lv, cal_, cool)
                               or premove_alert(st, mkt, a, lv, cal_, cool) or lock_call(st, mkt, a, lv, cal_))
@@ -2282,7 +2329,7 @@ def live():
     pulse_min, tick = int(os.getenv("PULSE_MIN") or 10), int(os.getenv("TICK_SEC") or 10)
     cool, data, nh, yc = {}, {}, {}, {}
     S = dict(params=load_params(), last_min=None, last_hour=None, last_pulse=None, nt=0, errs=0, saved=time.time(), recheck=0)
-    st0 = load_state(); learn_update(st0); pred_learn(st0)
+    st0 = load_state(); learn_update(st0); pred_learn(st0); retrain_window(st0, S["params"])
     if not MAIN_ON: st0["pos"] = {}
     for key in ("lpos", "open", "regime", "thin", "lswin"):  # forget markets no longer tracked (e.g. crypto/FX)
         if isinstance(st0.get(key), dict): st0[key] = {k: v for k, v in st0[key].items() if k in ALL}
@@ -2329,7 +2376,7 @@ def live():
             regime_update(st, mkt, data[etf])
             try:
                 _m = data[etf]; _m = _m[_m.index + pd.Timedelta(minutes=1) <= pd.Timestamp.now(tz="UTC")]
-                _lv = kconv(mkt, float(px[etf])); _a = analyze(mkt, _m, float(px[etf]) * _lv.r, _lv, k15(mkt), ((params.get("_cal") or {}).get(mkt) or {}).get("fcast"), ((params.get("_cal") or {}).get(mkt) or {}).get("wmod"),
+                _lv = kconv(mkt, float(px[etf])); _a = analyze(mkt, _m, float(px[etf]) * _lv.r, _lv, k15(mkt), ((params.get("_cal") or {}).get(mkt) or {}).get("fcast"), wm_for(st, mkt, (params.get("_cal") or {}).get(mkt)),
                                 ((params.get("_cal") or {}).get(mkt) or {}).get("proj"))
                 st.setdefault("ana", {})[mkt] = _a
                 if _a: apply_pcal(st, mkt, _a); apply_proj_bias(st, mkt, _a); track_projection(st, mkt, _a); record_pred(st, mkt, _a, k15(mkt))
@@ -2388,7 +2435,8 @@ def live():
             else: changed = day_tick(st, now)
             try:
                 settle_preds(st)
-                if now.minute % 15 == 3 and st.get("pl_slot") != now.strftime("%H:%M"): st["pl_slot"] = now.strftime("%H:%M"); pred_learn(st)
+                if now.minute % 15 == 3 and st.get("pl_slot") != now.strftime("%H:%M"):
+                    st["pl_slot"] = now.strftime("%H:%M"); pred_learn(st); retrain_window(st, S["params"]); learn_update(st)
             except Exception as e: print("preds", e)
             try: scorecard(st)
             except Exception as e: print("scorecard", e)
