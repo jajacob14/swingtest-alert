@@ -48,30 +48,6 @@
    "at": "6:53 PM",
    "at_px": "$1,440.99",
    "held": true
-  },
-  "PALLADIUM": {
-   "side": 1,
-   "entry": 971.595499119676,
-   "stop": 0,
-   "tgt": 0,
-   "best": 971.595499119676,
-   "n": 0,
-   "t0": 1793663764.0894837,
-   "kind": "lock",
-   "k": {
-    "ticker": "KXPALLADIUM15M-26NOV021900-00",
-    "side": "YES",
-    "cost": 0.93,
-    "k": 969.15,
-    "close": "2026-11-03 00:00:00+00:00"
-   },
-   "tp": 0.995,
-   "bail": 0.6,
-   "parent": null,
-   "id": 30,
-   "at": "6:56 PM",
-   "at_px": "$971.60",
-   "held": true
   }
  },
  "skipped": {
@@ -185,7 +161,7 @@
   "SILVER": false,
   "COPPER": true,
   "PLATINUM": true,
-  "PALLADIUM": true
+  "PALLADIUM": false
  },
  "nightpulse": "19:00",
  "ana": {
