@@ -2562,6 +2562,10 @@ def live():
         try:
             st = load_state()
             st["profile"] = {m: market_profile((S["params"].get("_cal") or {}).get(m)) for m in ALL}
+            if now.minute % 5 == 0 and S.get("fz_min") != now.minute:
+                S["fz_min"] = now.minute
+                try: st["frozen"] = sorted(frozen_cells())
+                except Exception: pass
             if st.get("mode") != shown and not (st.get("mode") == "idle" and shown == "night"):  # announce once
                 notify(f"Mode: {'overnight (day data down)' if shown == 'night*' else {'day': 'day', 'night': 'overnight', 'closed': 'closed'}[shown]}", MODE_TXT[shown], "default")
                 st["mode"] = shown; yc.clear()  # keep live price history across mode switches
@@ -2875,6 +2879,20 @@ def _fit_offset(X, y, off, w0=None, lam=0.02, iters=800):
     return w
 
 
+KMAX_ASK = 0.70  # real-Kalshi calls never buy above this (call it before Kalshi has priced it in)
+
+
+def frozen_cells():
+    """Cells never replaced by retraining: explicit freezes + markets whose live real-Kalshi calls are winning (3+ at 60%+)."""
+    p = load_params(); fz = set(p.get("_freeze", []))
+    try:
+        c = pd.read_json(CALL_LOG, lines=True); c = c[c.kind == "kreal"]
+        for m, g in c.groupby("mkt"):
+            if len(g) >= 3 and g.won.mean() >= 0.60: fz |= {f"{m}|fresh", f"{m}|lagged"}
+    except Exception: pass
+    return fz
+
+
 def kmodel_train(mkt, days=21):
     """Train per regime on older 70% of windows; judge on newest 30%: log-loss vs Kalshi + a real trading test
     (buy at Kalshi's ASK + fee when model beats it by 4+ pts, hold to settle)."""
@@ -2890,6 +2908,17 @@ def kmodel_train(mkt, days=21):
         mu, sd = tr[list(KFEATS)].mean(), tr[list(KFEATS)].std() + 1e-9
         Z = lambda d: ((d[list(KFEATS)] - mu) / sd).clip(-6, 6).to_numpy()
         w = _fit_offset(Z(tr), tr.up.to_numpy(float), lg(tr.mid.to_numpy()))
+        champ = ((load_params().get("_kmod") or {}).get(mkt) or {}).get(reg) or {}
+        keep = False
+        if champ.get("w") and len(champ["w"]) == len(w):  # champion vs challenger on the SAME newest windows
+            Zc = ((te[list(KFEATS)] - np.array(champ["mu"])) / np.array(champ["sd"])).clip(-6, 6).to_numpy()
+            pc = 1 / (1 + np.exp(-(lg(te.mid.to_numpy()) + Zc @ np.array(champ["w"]))))
+            pn = 1 / (1 + np.exp(-(lg(te.mid.to_numpy()) + Z(te) @ w))); yy = te.up.to_numpy(float)
+            llf = lambda q: float(-np.mean(yy * np.log(np.clip(q, 1e-6, 1)) + (1 - yy) * np.log(np.clip(1 - q, 1e-6, 1))))
+            keep = f"{mkt}|{reg}" in frozen_cells() or llf(pn) > llf(pc) - 0.003  # replace only if clearly better
+            if keep:
+                w = np.array(champ["w"]); mu, sd = pd.Series(champ["mu"], index=list(KFEATS)), pd.Series(champ["sd"], index=list(KFEATS))
+                print(f"KMODEL {mkt} {reg}: keeping current model (challenger not clearly better{' / frozen' if f'{mkt}|{reg}' in frozen_cells() else ''})", flush=True)
         pt = 1 / (1 + np.exp(-(lg(te.mid.to_numpy()) + Z(te) @ w))); y = te.up.to_numpy(float)
         ll = lambda q: float(-np.mean(y * np.log(np.clip(q, 1e-6, 1)) + (1 - y) * np.log(np.clip(1 - q, 1e-6, 1))))
         res = dict(w=[round(float(x), 5) for x in w], mu=[round(float(x), 6) for x in mu], sd=[round(float(x), 6) for x in sd],
@@ -2900,7 +2929,7 @@ def kmodel_train(mkt, days=21):
             for tk, g in tb.groupby("ticker"):  # first qualifying minute per window
                 for _, r in g.sort_values("t").iterrows():
                     for up_, ps, ask in ((1, r.p, r.ask), (0, 1 - r.p, 1 - r.bid)):
-                        if 0.05 < ask < 0.95 and ps - ask - kfee(ask) >= 0.04:
+                        if 0.05 < ask <= KMAX_ASK and ps - ask - kfee(ask) >= 0.04:
                             won = r.up == up_; pnl += won - ask - kfee(ask); cost += ask; n += 1; wins_ += won; break
                     else: continue
                     break
@@ -2957,7 +2986,8 @@ def kcall(st, mkt, bars, lv, px, params):
     T = (c["close"] - pd.Timestamp.now(tz="UTC")).total_seconds() / 60; band = "early" if T >= 8 else "late"
     x, mid = kfeat_live(mkt, bars, c)
     if x is None: return False
-    alpha = ((st.get("kalpha") or {}).get(mkt) or {}).get("alpha", 1.0)
+    fz = st.get("frozen") or []
+    alpha = 1.0 if (f"{mkt}|{reg}" in fz) else ((st.get("kalpha") or {}).get(mkt) or {}).get("alpha", 1.0)
     p = kp_live(M, x, mid, alpha); up = p >= 0.5; ps = p if up else 1 - p; ask = c["ya"] if up else c["na"]
     kl = (st.get("klive") or {}).get(mkt); live_ok = bool(kl and kl["n"] >= 30 and kl["win"] - kl["kalshi"] >= 0.04)
     KP = st.setdefault("kp", {}); KP[mkt] = dict(p=round(p, 3), mid=round(mid, 3), reg=reg, T=round(T, 1), ask=ask, edge=round(ps - ask - kfee(ask), 3))
@@ -2967,7 +2997,8 @@ def kcall(st, mkt, bars, lv, px, params):
               ("call already open" if busy(st, mkt) else None) or ("warming up" if not live_ready(st, mkt) else None) or \
               ("already called this window" if st.setdefault("lswin", {}).get(mkt) == c["ticker"] else None) or \
               ("report/jump window" if event_window(mkt, now, T) else None) or \
-              (None if 0.05 < ask < 0.95 and ps - ask - kfee(ask) >= 0.04 else f"edge too small ({(ps - ask - kfee(ask)) * 100:+.0f} pts after fees)")
+              (f"Kalshi already {ask:.0%}: too late" if ask > KMAX_ASK else None) or \
+              (None if 0.05 < ask and ps - ask - kfee(ask) >= 0.04 else f"edge too small ({(ps - ask - kfee(ask)) * 100:+.0f} pts after fees)")
     KP[mkt]["why_not"] = why_not
     if why_not: return False
     why = (f"tested on {M['windows']} real Kalshi windows ({'fresh' if reg == 'fresh' else 'delayed'} data): trades like this won "
