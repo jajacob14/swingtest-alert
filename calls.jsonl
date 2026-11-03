@@ -2,3 +2,4 @@
 {"t": "2026-11-02T19:15-05:00", "mkt": "SILVER", "kind": "lock", "side": "YES", "cost": 0.984, "prob": 0.9422, "at": "7:11 PM", "won": false}
 {"t": "2026-11-02T19:15-05:00", "mkt": "COPPER", "kind": "lock", "side": "YES", "cost": 0.94, "prob": null, "at": "7:06 PM", "won": false}
 {"t": "2026-11-02T19:15-05:00", "mkt": "GOLD", "kind": "lock", "side": "YES", "cost": 0.923, "prob": 0.9432, "at": "7:11 PM", "won": true}
+{"t": "2026-11-02T19:15-05:00", "mkt": "NATGAS", "kind": "lock", "side": "NO", "cost": 0.81, "prob": 0.9521, "at": "7:12 PM", "won": true}
