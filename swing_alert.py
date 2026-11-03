@@ -816,6 +816,7 @@ def log_call(mkt, pos, won):
     k = pos.get("k") or {}
     rec = dict(t=dt.datetime.now(ET).isoformat(timespec="minutes"), mkt=mkt, kind=pos.get("kind"), side=k.get("side"),
                cost=k.get("cost"), prob=pos.get("prob"), at=pos.get("at"), won=bool(won),  # won = prediction right AT SETTLEMENT
+               close=pd.Timestamp(k["close"]).tz_convert(ET).isoformat(timespec="minutes") if k.get("close") else None,
                took_profit=bool(pos.get("took_profit")), was_behind=bool(pos.get("behind")))
     try:
         with open(CALL_LOG, "a") as f: f.write(json.dumps(rec) + "\n")
@@ -823,31 +824,36 @@ def log_call(mkt, pos, won):
 
 
 def scorecard(st):
-    """Every :00 and :30: right vs wrong calls in the last 30 min, plus today's running total."""
+    """Half-hour scorecard, sent only once every call whose window ended in that half-hour has a settled result."""
     now = dt.datetime.now(ET)
-    if now.minute % 30 != 0: return
-    slot = now.strftime("%Y-%m-%d %H:%M")
-    if st.get("scoreslot") == slot: return
-    st["scoreslot"] = slot
+    if now.minute % 30 == 0 and st.get("scoreslot") != now.strftime("%Y-%m-%d %H:%M"):
+        st["scoreslot"] = now.strftime("%Y-%m-%d %H:%M")
+        st["score_due"] = now.replace(second=0, microsecond=0).isoformat()   # report this half-hour once results are in
+    due = st.get("score_due")
+    if not due: return
+    due = pd.Timestamp(due)
+    pending = [m for m, p in (st.get("lpos") or {}).items() if pd.Timestamp(p["k"]["close"]).tz_convert(ET) <= due]
+    waited = (pd.Timestamp(now) - due).total_seconds() / 60
+    if pending and waited < 15: return  # results not in yet: wait
+    st["score_due"] = None
     try: log = pd.read_json(CALL_LOG, lines=True)
-    except Exception: log = pd.DataFrame(columns=["t", "mkt", "won"])
+    except Exception: log = pd.DataFrame(columns=["close", "mkt", "won", "kind"])
     if len(log):
-        log["t"] = pd.to_datetime(log.t, utc=True).dt.tz_convert(ET)
+        log["c"] = pd.to_datetime(log["close"].fillna(log["t"]), utc=True).dt.tz_convert(ET)
         if "kind" in log: log = log[log.kind.fillna("") != "flip"]  # re-entries never count
-    today = log[log.t.dt.date == now.date()] if len(log) else log
-    last = today[today.t >= now - dt.timedelta(minutes=30)] if len(today) else today
-    opn = len(st.get("lpos", {}))
-    if not len(today) and not opn: return  # nothing to report yet today
-    r30, w30 = int(last.won.sum()) if len(last) else 0, int((~last.won.astype(bool)).sum()) if len(last) else 0
-    rt, wt = int(today.won.sum()) if len(today) else 0, int((~today.won.astype(bool)).sum()) if len(today) else 0
-    lines = [f"Last 30 min: {r30} right, {w30} wrong" + (f" ({r30 / (r30 + w30):.0%})" if r30 + w30 else ""),
+    lo = due - pd.Timedelta(minutes=30)
+    half = log[(log.c > lo) & (log.c <= due)] if len(log) else log
+    today = log[(log.c.dt.date == due.date()) & (log.c <= due)] if len(log) else log
+    if not len(today) and not pending: return  # nothing to report
+    cnt = lambda d: (int(d.won.astype(bool).sum()), int((~d.won.astype(bool)).sum())) if len(d) else (0, 0)
+    r30, w30 = cnt(half); rt, wt = cnt(today)
+    lines = [f"Windows {lo:%-I:%M}–{due:%-I:%M}: {r30} right, {w30} wrong" + (f" ({r30 / (r30 + w30):.0%})" if r30 + w30 else ""),
              f"Today: {rt} right, {wt} wrong" + (f" ({rt / (rt + wt):.0%})" if rt + wt else "")]
-    if len(last):
-        by = ", ".join(f"{NAME.get(k, k)} {int(g.won.sum())}-{int((~g.won.astype(bool)).sum())}" for k, g in last.groupby("mkt"))
-        lines.append(f"By market (30 min): {by}")
-    lines.append(f"Calls still open (not scored until they settle): {opn}")
-    lines.append("Scored only on whether each original call's prediction was right when its 15-min window settled.")
-    notify(f"Scorecard {now:%-I:%M %p}: {r30} right, {w30} wrong (last 30 min)", "\n".join(lines), "default")
+    if len(half):
+        lines.append("By market: " + ", ".join(f"{NAME.get(k, k)} {cnt(g)[0]}-{cnt(g)[1]}" for k, g in half.groupby("mkt")))
+    if pending: lines.append(f"Still settling (not counted): {', '.join(NAME[m] for m in pending)}")
+    lines.append("All results above are settled by Kalshi. Scored on whether each call's prediction was right at the close.")
+    notify(f"Scorecard {lo:%-I:%M}–{due:%-I:%M}: {r30} right, {w30} wrong", "\n".join(lines), "default")
 
 
 def agrees(st, mkt, up):
