@@ -990,6 +990,15 @@ def scorecard(st):
     if L: lines.append("Learning: live-retrained models active for " + ", ".join(NAME.get(m, m) for m, v in L.items() if v["loss_live"] <= v["loss_backtest"]) if any(v["loss_live"] <= v["loss_backtest"] for v in L.values()) else "Learning: collecting live data (backtest models still better)")
     if E: lines.append("Live EARLY record: " + ", ".join(f"{NAME.get(m, m)} {v['acc']:.0%} vs Kalshi {v['mid']:.0%} ({v['n']})" for m, v in E.items()))
     notify(f"W/L {lo:%-I:%M}–{due:%-I:%M}: {r30} right, {w30} wrong · today {rt}-{wt}", "\n".join(lines), "default")
+    # separate alert: markets whose model got 4/4 (or 3/4) of this window's snapshots right
+    try:
+        g2 = pw.dropna(subset=["wm"]); sc = {m: (int(((x.wm >= 0.5) == x.up).sum()), len(x)) for m, x in g2.groupby("mkt")}
+        four = [m for m, (k, n) in sc.items() if n >= 4 and k == n]; three = [m for m, (k, n) in sc.items() if n >= 4 and k == n - 1]
+        if four or three:
+            body = "\n".join((["4/4: " + ", ".join(f"{COLOR[m][0]} {NAME[m]}" for m in four)] if four else []) +
+                              (["3/4: " + ", ".join(f"{COLOR[m][0]} {NAME[m]}" for m in three)] if three else []))
+            notify(f"Model on target {lo:%-I:%M}–{due:%-I:%M}", body, "default")
+    except Exception as e: print("hot", e)
 
 
 PRED_LOG = "preds.jsonl"
