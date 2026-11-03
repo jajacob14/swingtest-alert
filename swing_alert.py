@@ -956,33 +956,38 @@ def scorecard(st):
 
 
 def learn_update(st):
-    """Live record per (market, call type) → adjusted bar and probability blend. Runs after each settled result."""
+    """Live record per (market, call type). Earlier-model results count at half weight (they still show which
+    markets/types lose); the probability re-fit uses only the current model's results."""
     try: log = pd.read_json(CALL_LOG, lines=True)
     except Exception: return
     if not len(log): return
-    log = log[log.kind.fillna("") != "flip"]
-    log = log[log.get("model_v", pd.Series(1, index=log.index)).fillna(1) == MODEL_V]  # learn from the current model only
+    log = log[log.kind.fillna("") != "flip"].copy()
+    log["v"] = log.get("model_v", pd.Series(1, index=log.index)).fillna(1)
+    log["wt"] = np.where(log.v == MODEL_V, 1.0, 0.5); log["won"] = log.won.astype(bool)
     out = {}
-    if not len(log): st["learn"] = {}; st.pop("platt", None); return
     for (m, k), g in log.groupby(["mkt", "kind"]):
-        n, w = len(g), int(g.won.astype(bool).sum()); exp_ = float(g.prob.fillna(MIN_PROB).mean())
-        out[f"{m}|{k}"] = dict(n=n, w=w, rate=round(w / n, 3), expected=round(exp_, 3))
+        n = float(g.wt.sum()); w = float((g.wt * g.won).sum()); exp_ = float((g.wt * g.prob.fillna(MIN_PROB)).sum() / n)
+        out[f"{m}|{k}"] = dict(n=round(n, 1), w=round(w, 1), rate=round(w / n, 3), expected=round(exp_, 3),
+                              raw=f"{int(g.won.sum())}-{int((~g.won).sum())}")
     st["learn"] = out
-    if len(log) >= 20 and log.prob.notna().sum() >= 20:  # re-fit: P(win) = σ(a + b·logit(stated))
-        g = log[log.prob.notna()]; x = np.log(np.clip(g.prob, 0.01, 0.99) / (1 - np.clip(g.prob, 0.01, 0.99))).to_numpy()
+    cur = log[log.v == MODEL_V]
+    if len(cur) >= 20 and cur.prob.notna().sum() >= 20:  # re-fit: P(win) = σ(a + b·logit(stated)), current model only
+        g = cur[cur.prob.notna()]; x = np.log(np.clip(g.prob, 0.01, 0.99) / (1 - np.clip(g.prob, 0.01, 0.99))).to_numpy()
         y = g.won.astype(float).to_numpy(); a_, b_ = 0.0, 1.0
         for _ in range(800):
             p = 1 / (1 + np.exp(-(a_ + b_ * x))); ga = np.mean(p - y) + 0.02 * a_; gb = np.mean((p - y) * x) + 0.02 * (b_ - 1)
             a_ -= 0.3 * ga; b_ -= 0.3 * gb
         st["platt"] = dict(a=round(float(a_), 4), b=round(float(b_), 4), n=int(len(g)))
+    else:
+        st.pop("platt", None)
 
 
 def need_prob(st, mkt, kind):
     """Win chance a call must have: base 62%, raised for combos losing live, lowered (min 60%) for ones beating forecast."""
     L = (st.get("learn") or {}).get(f"{mkt}|{kind}")
-    if not L or L["n"] < 6: return MIN_PROB
+    if not L or L["n"] < 3: return MIN_PROB
     gap = L["rate"] - L["expected"]
-    if L["n"] >= 10 and L["rate"] < 0.45: return 1.01           # keeps losing → switched off
+    if L["n"] >= 5 and L["rate"] < 0.45: return 1.01            # keeps losing → switched off
     return float(min(0.95, max(0.60, MIN_PROB - 0.5 * gap)))    # behind forecast → stricter; ahead → a bit looser
 
 
@@ -1405,7 +1410,7 @@ def open_call(st, mkt, kind, side, c, lv, px, odds, why, tested, parent=None, pr
              f"about {pk(tpx)})" if tpx else "") + ". If it doesn't get there, hold to the end."
              if kind != "lock" else "Hold to the end (near lock).")
     L = (st.get("learn") or {}).get(f"{mkt}|{kind}")
-    rec = f" Live record for this call type here: {L['w']}-{L['n'] - L['w']}." if L else ""
+    rec = f" Live record for this call type here: {L.get('raw', '')}." if L else ""
     notify(title,
            f"Buy {'UP' if up else 'DOWN'}: wins if {NAME[mkt].title()} ends {'at or above' if up else 'below'} "
            f"{money(mkt, k['k'])} at {pd.Timestamp(k['close']).tz_convert(ET):%-I:%M} ({left:.0f} min left). Now {lv(px)}.\n"
