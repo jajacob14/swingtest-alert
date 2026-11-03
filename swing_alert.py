@@ -484,6 +484,12 @@ def window_stats(df):
         res[f"{name}_fair"] = round(float(fair[msk].mean()), 3) if msk.any() else 0
         early = msk & (te.tleft.to_numpy() * 12 >= 5)  # 5+ minutes before the end
         res[f"{name}_early_n"] = int(early.sum()); res[f"{name}_early_acc"] = round(float(right[early].mean()), 3) if early.any() else 0
+    early = (te.tleft.to_numpy() * 12 >= 8) & (conf >= 0.6)  # 8-12 min left, model leaning 60%+
+    fz = np.array([_phi(x) for x in te.dz.to_numpy()]); fair_side = np.where(pt >= 0.5, fz, 1 - fz)
+    res["early_n"] = int(early.sum())
+    res["early_acc"] = round(float(right[early].mean()), 3) if early.any() else 0
+    res["early_fair"] = round(float(fair_side[early].mean()), 3) if early.any() else 0  # what price alone implied for that side
+    res["early_ok"] = bool(res["early_n"] >= 150 and res["early_acc"] >= 0.60 and res["early_acc"] - res["early_fair"] >= 0.03)
     res["ok"] = bool(res["lock_n"] >= 100 and res["lock_acc"] >= 0.90)
     return res
 
@@ -1424,7 +1430,7 @@ def why_lines(mkt, cx, bdir, px, lv, cell, kind):
 
 
 # ---------------- unified 15-min calls: BUY → (TAKE PROFIT | WRONG → FLIP | HOLD) → RESULT ----------------
-KIND = {"boom": "BOOMING", "pre": "Sharp move ahead", "lock": "Near lock", "spike": "🔥 Spike", "drift": "📊 Session drift", "fast": "⚡ Fast move", "ls": "🎯 Longshot", "fav": "💪 Edge pick", "ihm": "📈 Close pattern", "flip": "🔄 Flip"}
+KIND = {"early": "EARLY", "boom": "BOOMING", "pre": "Sharp move ahead", "lock": "Near lock", "spike": "🔥 Spike", "drift": "📊 Session drift", "fast": "⚡ Fast move", "ls": "🎯 Longshot", "fav": "💪 Edge pick", "ihm": "📈 Close pattern", "flip": "🔄 Flip"}
 
 
 def sess(close):
@@ -1480,7 +1486,7 @@ def open_call(st, mkt, kind, side, c, lv, px, odds, why, tested, parent=None, pr
     tg = tier(prob) if prob else ""
     if tg == "NEAR LOCK" and kind != "lock": tg = "HIGH CONFIDENCE"  # NEAR LOCK only from our window model
     close_t = pd.Timestamp(k["close"]).tz_convert(ET).strftime("%-I:%M")
-    title = (f"{NAME[mkt]}: " + (f"BOOMING {'UP' if up else 'DOWN'} · " if kind == "boom" else "") + f"BUY {'UP' if up else 'DOWN'} · " + (f"{prob:.0%} to hit by {close_t}" if prob else f"by {close_t}")
+    title = (f"{NAME[mkt]}: " + (f"BOOMING {'UP' if up else 'DOWN'} · " if kind == "boom" else "EARLY · " if kind == "early" else "") + f"BUY {'UP' if up else 'DOWN'} · " + (f"{prob:.0%} to hit by {close_t}" if prob else f"by {close_t}")
              + (f" · {tg}" if tg else "") + (f" · BIG PAYOUT {1 / cost:.0f}x" if big else ""))
     sig = _SIG.get(mkt); tl = max(left * 0.6, 1)
     tpx = level_for(k["k"], tp, up, tl, sig)
@@ -1642,8 +1648,9 @@ def action_line(mkt, a):
             if lead >= 0.9 and a.get("wm_ok"):
                 parts.append(f"NEAR LOCK (our analysis {lead:.0%}, tested {a['wm_acc']:.0%}): BUY {'UP' if lead_up else 'DOWN'}, "
                              f"ends {'above' if lead_up else 'below'} {money(mkt, a['start'])} in {T:.0f} min. Kalshi prices {mk:.0%}")
-            elif lead >= 0.75:
-                parts.append(f"HIGH CONFIDENCE (our analysis {lead:.0%}): {'UP' if lead_up else 'DOWN'}, {T:.0f} min left. Kalshi prices {mk:.0%}")
+            elif lead >= 0.62 and mk <= EARLY_MAX_COST and lead - mk >= 0.05:
+                parts.append(f"AHEAD OF KALSHI: our analysis {lead:.0%} {'UP' if lead_up else 'DOWN'} vs Kalshi {mk:.0%}, {T:.0f} min left")
+            elif lead >= 0.75: parts.append(f"Kalshi already prices {'UP' if lead_up else 'DOWN'} at {mk:.0%}: no edge left, wait")
             elif T < 4: parts.append(f"window ends in {T:.0f} min, wait for the next one")
             else: parts.append("wait")
     return ". ".join(x[0].upper() + x[1:] for x in parts if x) + "."
@@ -1660,6 +1667,28 @@ def fc_conflict(st, mkt, up):
     return bool(a.get("fc_ok") and "fc_p" in a and max(a["fc_p"], 1 - a["fc_p"]) >= 0.6 and (a["fc_p"] >= 0.5) != up)
 
 
+EARLY_MAX_COST = 0.65  # no call once Kalshi already prices the side above this: it must be called before the market moves
+
+
+def early_call(st, mkt, a, lv, cal):
+    """EARLY: 8-12 min left, Kalshi still near even; our model (validated early) + projection + forecast agree."""
+    wm = (cal or {}).get("wmod") or {}
+    if not wm.get("early_ok") or "wm_p" not in a or "start" not in a or not 8 <= a["T"] <= 12.5: return False
+    if busy(st, mkt) or not live_ready(st, mkt): return False
+    up = a["wm_p"] >= 0.5; conf = blend_prob(st, mkt, "early", max(a["wm_p"], 1 - a["wm_p"]))
+    c = k15(mkt)
+    if not c or st.setdefault("lswin", {}).get(mkt) == c["ticker"] or event_window(mkt, dt.datetime.now(ET), a["T"]): return False
+    cost = c["ya"] if up else c["na"]
+    if not 0.30 <= cost <= 0.55 or conf < max(0.60, need_prob(st, mkt, "early")) or conf - cost - kfee(cost) < 0.05: return False
+    if "m10" in a and (a["m10"] > 0) != up: return False          # projection must point the same way
+    if fc_conflict(st, mkt, up): return False
+    why = (f"called early: our analysis {conf:.0%} vs Kalshi {cost:.0%} with {a['T']:.0f} min left; early calls like this were right "
+           f"{wm['early_acc']:.0%} on unseen days vs {wm['early_fair']:.0%} from price alone; projected {a.get('m10', 0) * 100:+.2f}% in 10 min; "
+           + ctx_short(dict(trend=1 if a.get("tr_pct", 0) > 0 else -1, flow=a.get("flow", 0)), up))
+    open_call(st, mkt, "early", "YES" if up else "NO", c, lv, a["px"], odds_line(conf, cost), why, True, prob=conf)
+    return True
+
+
 def lock_call(st, mkt, a, lv, cal):
     """NEAR LOCK from our own analysis: window model ≥90% AND proven ≥90% on unseen data, ideally 5-10 min out,
     and Kalshi hasn't fully priced it (so it's worth buying)."""
@@ -1671,7 +1700,7 @@ def lock_call(st, mkt, a, lv, cal):
     if not c or st.setdefault("lockwin", {}).get(mkt) == c["ticker"]: return False
     if event_window(mkt, dt.datetime.now(ET), a["T"]) or regime_extra(st, mkt): return False  # jumps break locks
     cost = c["ya"] if up else c["na"]
-    if not 0.70 <= cost < 0.93 or conf - cost - kfee(cost) < 0.03: return False  # Kalshi must lean our way; need some edge
+    if not 0.55 <= cost <= 0.72 or conf - cost - kfee(cost) < 0.05: return False  # call it before Kalshi is sure
     if fc_conflict(st, mkt, up) or not agrees(st, mkt, up): return False  # forecast + last 5 min must agree
     if conf - cost > 0.25: return False  # huge disagreement with Kalshi = our data is probably off: skip
     st["lockwin"][mkt] = c["ticker"]
@@ -1734,7 +1763,7 @@ def boom_call(st, mkt, a, lv, cal):
     up = d > 0; c = k15(mkt)
     if not c or event_window(mkt, dt.datetime.now(ET), a["T"]) or fc_conflict(st, mkt, up): return False
     cost = c["ya"] if up else c["na"]; wp = a.get("wm_p"); p = blend_prob(st, mkt, "boom", (wp if up else 1 - wp) if wp is not None else 0.5)
-    if not 0 < cost < 0.75 or p < need_prob(st, mkt, "boom"): return False
+    if not 0 < cost <= EARLY_MAX_COST or p < need_prob(st, mkt, "boom"): return False
     dz0 = mkt_dz(c)[0]; add_px = level_for(c["k"], _phi(dz0 + 0.5 * d) if up else 1 - _phi(dz0 + 0.5 * d), up, max(a["T"] - 2, 1), a["s1"])
     why = (f"booming: projected {a['m10'] * 100:+.2f}% in 10 min, spike score {a['score']:.0f}/100 and building, momentum and trend aligned. "
            f"Backtest: {bt['test_win']:.0%} of these trades made money, {bt['test_roi']:+.0%} return on unseen days")
@@ -1779,7 +1808,7 @@ def premove_alert(st, mkt, a, lv, cal, cool):
     detail = (f"Projected: ~{money(mkt, a['px5'])} in 5 min, ~{money(mkt, a['px10'])} in 10 min. "
               f"Chance of a sharp {'spike' if up else 'drop'}: {pbig:.0%} (normally {(a['base_up'] if up else a['base_dn']):.0%}).")
     if (c and pw is not None and pw >= need_prob(st, mkt, "pre") and 4 <= a["T"] <= 12 and not busy(st, mkt)
-            and not fc_conflict(st, mkt, up) and 0 < (c["ya"] if up else c["na"]) < 0.85):
+            and not fc_conflict(st, mkt, up) and 0 < (c["ya"] if up else c["na"]) <= EARLY_MAX_COST):
         cost = c["ya"] if up else c["na"]
         open_call(st, mkt, "pre", "YES" if up else "NO", c, lv, a["px"], odds_line(pw, cost),
                   f"sharp {'spike' if up else 'drop'} {r:.1f}x more likely than normal in the next 10 min; " + detail, True, prob=pw)
@@ -1799,7 +1828,7 @@ def spike_alert(st, mkt, a, lv, cal, cool):
            f"{money(mkt, a['hi30'] if up else a['lo30'])}" if (up and a['px'] > a['hi30']) or (not up and a['px'] < a['lo30']) else "")
     p = min(0.95, (a["p_up"] if up else 1 - a["p_up"]) + max(0.0, sp.get("test_roi", 0)) * cost)
     p = blend_prob(st, mkt, "spike", p)
-    if c and sp.get("ok") and 4 <= a["T"] <= 12 and 0 < cost < 0.85 and p >= need_prob(st, mkt, "spike") and p - cost <= 0.25 and not fc_conflict(st, mkt, up):
+    if c and sp.get("ok") and 4 <= a["T"] <= 12 and 0 < cost <= EARLY_MAX_COST and p >= need_prob(st, mkt, "spike") and p - cost <= 0.25 and not fc_conflict(st, mkt, up):
         open_call(st, mkt, "spike", side, c, lv, a["px"], odds_line(p, cost), f"spike starting, {move}", True, prob=p)
         return True
     notify(f"{NAME[mkt]} SPIKE {'UP' if up else 'DOWN'} starting now",
@@ -1864,7 +1893,7 @@ def k15_call(mkt, m, px, st, lv, cal, night=False):
     if kind == "ls" and mkt not in MARKETS and mkt not in METALS: return False  # untested longshots only on commodities
     xe = regime_extra(st, mkt) + (0.02 if st.get("thin", {}).get(mkt) else 0)
     if kind == "ls" and (xe or not (0 < cost <= LS_MAX_COST and p - cost - kfee(cost) >= LS_MIN_EDGE)): return False
-    if kind == "fav" and not (0 < cost < 0.92 and p - cost - kfee(cost) >= FAV_MIN_EDGE + xe): return False
+    if kind == "fav" and not (0 < cost <= EARLY_MAX_COST and p - cost - kfee(cost) >= FAV_MIN_EDGE + xe): return False
     p = blend_prob(st, mkt, kind, p)
     if kind == "fav" and (p < need_prob(st, mkt, kind) or not agrees(st, mkt, up)): return False
     if p - cost > 0.25: return False  # suspect data: don't bet on a huge disagreement with Kalshi
@@ -1888,7 +1917,7 @@ def ihm_call(mkt, m, px, st, lv, cal):
     sig = b.iloc[-1] / a.iloc[-1] - 1; c = k15(mkt)
     if not c or abs(sig) < 0.001: return False
     up = (sig > 0) == (ih.get("dir", "follow") == "follow"); side = "YES" if up else "NO"; cost = c["ya"] if up else c["na"]
-    if not (0 < cost < 0.9 and ih["hit"] - cost - kfee(cost) >= 0.02) or blend_prob(st, mkt, "ihm", ih["hit"]) < need_prob(st, mkt, "ihm"): return False
+    if not (0 < cost <= EARLY_MAX_COST and ih["hit"] - cost - kfee(cost) >= 0.02) or blend_prob(st, mkt, "ihm", ih["hit"]) < need_prob(st, mkt, "ihm"): return False
     st["ihm_day"][mkt] = str(now.date()); cx = live_ctx(m); cx["px"] = px
     why = f"end-of-day pattern, {ih['hit']:.0%} win rate, " + ctx_short(cx, up)
     open_call(st, mkt, "ihm", side, c, lv, px, odds_line(ih["hit"], cost), why, True, prob=ih["hit"])
@@ -1909,7 +1938,7 @@ def drift_call(mkt, m, px, st, lv, cal):
     if not sig or abs(log(px * lv.r / c["k"])) / (sig * sqrt(T)) > 0.3: return False
     up = d["dir"] == "UP"; side = "YES" if up else "NO"; cost = c["ya"] if up else c["na"]
     if fc_conflict(st, mkt, up) or blend_prob(st, mkt, "drift", d["p"]) < need_prob(st, mkt, "drift") or d["p"] - cost > 0.25: return False
-    if not (0 < cost < 0.8 and d["p"] - cost - kfee(cost) >= 0.02 + regime_extra(st, mkt)): return False
+    if not (0 < cost <= EARLY_MAX_COST and d["p"] - cost - kfee(cost) >= 0.02 + regime_extra(st, mkt)): return False
     cx = live_ctx(m); cx["px"] = px
     why = f"{SH_SESS[session(now)]} session tends {d['dir'].lower()}, {d['p']:.0%} win rate, " + ctx_short(cx, up)
     open_call(st, mkt, "drift", side, c, lv, px, odds_line(d["p"], cost), why, True, prob=d["p"])
@@ -2131,7 +2160,7 @@ def night_tick(st, params, cool, nh, yc, only=None):
         try:
             a = analyze(mkt, m, kp, lv, k15(mkt), (cal_ or {}).get("fcast"), (cal_ or {}).get("wmod"), (cal_ or {}).get("proj")); st.setdefault("ana", {})[mkt] = a
             if a: apply_pcal(st, mkt, a); apply_proj_bias(st, mkt, a); track_projection(st, mkt, a); record_pred(st, mkt, a, k15(mkt))
-            if a: changed |= (boom_call(st, mkt, a, lv, cal_) or spike_alert(st, mkt, a, lv, cal_, cool)
+            if a: changed |= (early_call(st, mkt, a, lv, cal_) or boom_call(st, mkt, a, lv, cal_) or spike_alert(st, mkt, a, lv, cal_, cool)
                               or premove_alert(st, mkt, a, lv, cal_, cool) or lock_call(st, mkt, a, lv, cal_))
         except Exception as e: print("analyze", mkt, e)
         st.setdefault("thin", {})[mkt] = bool(len(y) and pd.Timestamp.now(tz="UTC") - y.index[-1] > pd.Timedelta(minutes=25))
@@ -2305,7 +2334,7 @@ def live():
                 st.setdefault("ana", {})[mkt] = _a
                 if _a: apply_pcal(st, mkt, _a); apply_proj_bias(st, mkt, _a); track_projection(st, mkt, _a); record_pred(st, mkt, _a, k15(mkt))
                 _c = (params.get("_cal") or {}).get(mkt)
-                if _a: changed |= (boom_call(st, mkt, _a, _lv, _c) or spike_alert(st, mkt, _a, _lv, _c, cool)
+                if _a: changed |= (early_call(st, mkt, _a, _lv, _c) or boom_call(st, mkt, _a, _lv, _c) or spike_alert(st, mkt, _a, _lv, _c, cool)
                                    or premove_alert(st, mkt, _a, _lv, _c, cool) or lock_call(st, mkt, _a, _lv, _c))
             except Exception as e: print("analyze", mkt, e)
             m = data[etf]; m = m[m.index + pd.Timedelta(minutes=1) <= pd.Timestamp.now(tz="UTC")]
