@@ -923,7 +923,8 @@ def log_call(mkt, pos, won, st=None):
     rec = dict(t=dt.datetime.now(ET).isoformat(timespec="minutes"), mkt=mkt, kind=pos.get("kind"), side=k.get("side"),
                cost=k.get("cost"), prob=pos.get("prob"), at=pos.get("at"), won=bool(won),  # won = prediction right AT SETTLEMENT
                close=pd.Timestamp(k["close"]).tz_convert(ET).isoformat(timespec="minutes") if k.get("close") else None,
-               took_profit=bool(pos.get("took_profit")), was_behind=bool(pos.get("behind")), model_v=MODEL_V)
+               took_profit=bool(pos.get("took_profit")), was_behind=bool(pos.get("behind")), model_v=MODEL_V,
+               early=bool(pos.get("early")))
     try:
         with open(CALL_LOG, "a") as f: f.write(json.dumps(rec) + "\n")
     except Exception as e: print("log_call", e)
@@ -959,6 +960,9 @@ def scorecard(st):
     r30, w30 = cnt(half); rt, wt = cnt(today)
     lines = [f"This window ({lo:%-I:%M}–{due:%-I:%M}): {r30} right, {w30} wrong" + (f" ({r30 / (r30 + w30):.0%})" if r30 + w30 else " (no calls)"),
              f"Today: {rt} right, {wt} wrong" + (f" ({rt / (rt + wt):.0%})" if rt + wt else "")]
+    if len(today) and "early" in today:
+        er = today[today.early.fillna(False).astype(bool)]
+        if len(er): lines.append(f"Early calls today: {cnt(er)[0]} right, {cnt(er)[1]} wrong ({cnt(er)[0] / len(er):.0%})")
     if len(half):
         lines.append("By market: " + ", ".join(f"{NAME.get(k, k)} {cnt(g)[0]}-{cnt(g)[1]}" for k, g in half.groupby("mkt")))
     if pending: lines.append(f"Still settling (not counted): {', '.join(NAME[m] for m in pending)}")
@@ -1531,7 +1535,9 @@ def open_call(st, mkt, kind, side, c, lv, px, odds, why, tested, parent=None, pr
     tg = tier(prob) if prob else ""
     if tg == "NEAR LOCK" and kind != "lock": tg = "HIGH CONFIDENCE"  # NEAR LOCK only from our window model
     close_t = pd.Timestamp(k["close"]).tz_convert(ET).strftime("%-I:%M")
-    title = (f"{NAME[mkt]}: " + (f"BOOMING {'UP' if up else 'DOWN'} · " if kind == "boom" else "EARLY · " if kind == "early" else "") + f"BUY {'UP' if up else 'DOWN'} · " + (f"{prob:.0%} to hit by {close_t}" if prob else f"by {close_t}")
+    is_early = kind == "early" or (left >= 8 and cost <= 0.55)  # called before Kalshi moved
+    pos["early"] = is_early
+    title = (f"{NAME[mkt]}: " + ("EARLY · " if is_early else "") + (f"BOOMING {'UP' if up else 'DOWN'} · " if kind == "boom" else "") + f"BUY {'UP' if up else 'DOWN'} · " + (f"{prob:.0%} to hit by {close_t}" if prob else f"by {close_t}")
              + (f" · {tg}" if tg else "") + (f" · BIG PAYOUT {1 / cost:.0f}x" if big else ""))
     sig = _SIG.get(mkt); tl = max(left * 0.6, 1)
     tpx = level_for(k["k"], tp, up, tl, sig)
@@ -1561,7 +1567,7 @@ def sell_msg(mkt, pos, title, px, lv, extra=""):
 
 def follow_msg(mkt, pos, icon, action, extra=""):
     k = pos["k"]
-    notify(f"{NAME[mkt]}: {action} · {call_time(pos)}",
+    notify(f"{NAME[mkt]}: {action} · {call_time(pos)}" + (" (early call)" if pos.get("early") else ""),
            f"The {call_time(pos)} was BUY {'UP' if k['side'] == 'YES' else 'DOWN'}: needed {NAME[mkt].title()} "
            f"{'at or above' if k['side'] == 'YES' else 'below'} {money(mkt, k['k'])} at {pd.Timestamp(k['close']).tz_convert(ET):%-I:%M}." + extra,
            "urgent", mkt)
