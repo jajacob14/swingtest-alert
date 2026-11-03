@@ -2711,6 +2711,135 @@ def khist_probe():
             print("KH trades", r.status_code, r.text[:300])
 
 
+# ================= REAL-KALSHI model (trained & tested against Kalshi's actual prices) =================
+KDIR = "data"
+KFEATS_K = ("dmid1", "dmid3", "dmid5", "spread", "kvol")          # real-time everywhere (from Kalshi itself)
+KFEATS_F = ("m3", "m15", "m60", "trend", "flow", "vwap", "rsi", "brk", "volx", "score")  # futures context
+KFEATS = KFEATS_K + KFEATS_F + ("tleft",)
+LAG_NIGHT = 10  # live futures bars arrive ~10 min late at night / for metals → train with the same delay
+
+
+def regime(mkt, ts_et):
+    """'fresh' = oil & gas in US hours (real-time fund prices live); 'lagged' = everything else."""
+    m = ts_et.hour * 60 + ts_et.minute
+    return "fresh" if mkt in MARKETS and ts_et.weekday() < 5 and 570 <= m < 960 else "lagged"
+
+
+def kdata_update(mkt, days=21):
+    """Incremental cache of settled 15-min windows + 1-min Kalshi candles (data/k_<MKT>.csv.gz)."""
+    from concurrent.futures import ThreadPoolExecutor
+    path = f"{KDIR}/k_{mkt}.csv.gz"
+    try: old = pd.read_csv(path)
+    except Exception: old = pd.DataFrame()
+    have = set(old.ticker) if len(old) else set()
+    since = pd.Timestamp.now(tz="UTC") - pd.Timedelta(days=days); wins, cur = [], None
+    for _ in range(20):
+        q = {"series_ticker": K15[mkt], "status": "settled", "limit": 1000, **({"cursor": cur} if cur else {})}
+        j = requests.get(f"{KALSHI}/markets", params=q, timeout=30).json(); ms = j.get("markets", []); cur = j.get("cursor")
+        wins += [m for m in ms if pd.Timestamp(m["close_time"]) >= since and m["ticker"] not in have and m.get("result")]
+        if not cur or (ms and pd.Timestamp(ms[-1]["close_time"]) < since): break
+    def one(m):
+        t1 = int(pd.Timestamp(m["close_time"]).timestamp())
+        for i in range(3):
+            try:
+                r = requests.get(f"{KALSHI}/series/{K15[mkt]}/markets/{m['ticker']}/candlesticks",
+                                 params={"start_ts": t1 - 900, "end_ts": t1, "period_interval": 1}, timeout=20)
+                if r.status_code == 429: time.sleep(1 + i); continue
+                out = []
+                for cd in r.json().get("candlesticks", []):
+                    f = lambda d, k: float((cd.get(d) or {}).get(k) or "nan")
+                    out.append(dict(ticker=m["ticker"], close=m["close_time"], strike=m.get("floor_strike"), up=int(m["result"] == "yes"),
+                                    ts=cd["end_period_ts"], bid=f("yes_bid", "close_dollars"), ask=f("yes_ask", "close_dollars"),
+                                    last=f("price", "close_dollars"), vol=float(cd.get("volume_fp") or 0)))
+                return out
+            except Exception: time.sleep(1)
+        return []
+    with ThreadPoolExecutor(8) as ex: rows = [r for rs in ex.map(one, wins) for r in rs]
+    new = pd.DataFrame(rows)
+    allr = pd.concat([old, new]) if len(old) else new
+    if len(allr):
+        allr = allr[pd.to_datetime(allr.close, utc=True) >= since - pd.Timedelta(days=5)]
+        allr.to_csv(path, index=False, compression="gzip")
+    print(f"KDATA {mkt}: +{len(wins)} windows, total rows {len(allr)}", flush=True)
+    return allr
+
+
+def kframe(mkt, kd, fut):
+    """Training rows: one per window-minute (3-12 min left) with Kalshi features, futures features (lagged by regime), outcome."""
+    kd = kd.dropna(subset=["bid", "ask"]).copy()
+    kd["t"] = pd.to_datetime(kd.ts, unit="s", utc=True); kd["mid"] = (kd.bid + kd.ask) / 2
+    kd = kd.sort_values(["ticker", "t"])
+    g = kd.groupby("ticker")
+    for n in (1, 3, 5): kd[f"dmid{n}"] = kd.mid - g.mid.shift(n)
+    kd["spread"] = kd.ask - kd.bid; kd["kvol"] = np.log1p(g.vol.transform(lambda v: v.rolling(3, min_periods=1).sum()))
+    kd["tleft"] = (pd.to_datetime(kd.close, utc=True) - kd.t).dt.total_seconds() / 60
+    kd = kd[(kd.tleft >= 3) & (kd.tleft <= 12) & (kd.mid > 0.02) & (kd.mid < 0.98)]
+    f, _ = proj_frame(fut.resample("1min").last().dropna(how="all")); f = f[list(KFEATS_F)]
+    et = kd.t.dt.tz_convert(ET); kd["reg"] = [regime(mkt, t) for t in et]
+    lag = np.where(kd.reg == "fresh", 0, LAG_NIGHT)
+    fx = []
+    for lg in (0, LAG_NIGHT):
+        sub = kd[lag == lg]; key = (sub.t - pd.Timedelta(minutes=lg)).dt.floor("min")
+        fx.append(pd.DataFrame(f.reindex(key).to_numpy(), index=sub.index, columns=list(KFEATS_F)))
+    kd = kd.join(pd.concat(fx)).dropna(subset=list(KFEATS_F))
+    kd["tleft"] = kd.tleft / 12
+    return kd
+
+
+def _fit_offset(X, y, off, w0=None, lam=0.02, iters=800):
+    """Logistic with offset (Kalshi's log-odds): p = σ(logit(mid) + w·x). Learns only what Kalshi misses."""
+    w = np.zeros(X.shape[1]) if w0 is None else np.array(w0, float)
+    for _ in range(iters):
+        p = 1 / (1 + np.exp(-(off + X @ w))); w -= 0.3 * (X.T @ (p - y) / len(y) + lam * w)
+    return w
+
+
+def kmodel_train(mkt, days=21):
+    """Train per regime on older 70% of windows; judge on newest 30%: log-loss vs Kalshi + a real trading test
+    (buy at Kalshi's ASK + fee when model beats it by 4+ pts, hold to settle)."""
+    kd = kdata_update(mkt, days)
+    if not len(kd): return {}
+    fut = fetch_fut_1m(mkt, 29)
+    D = kframe(mkt, kd, fut); out = {}
+    lg = lambda p: np.log(np.clip(p, 0.01, 0.99) / (1 - np.clip(p, 0.01, 0.99)))
+    for reg, R in D.groupby("reg"):
+        wins = sorted(R.ticker.unique())
+        if len(wins) < 150: out[reg] = {"ok": False, "windows": len(wins)}; continue
+        cut = set(wins[int(len(wins) * 0.7):]); tr, te = R[~R.ticker.isin(cut)], R[R.ticker.isin(cut)]
+        mu, sd = tr[list(KFEATS)].mean(), tr[list(KFEATS)].std() + 1e-9
+        Z = lambda d: ((d[list(KFEATS)] - mu) / sd).clip(-6, 6).to_numpy()
+        w = _fit_offset(Z(tr), tr.up.to_numpy(float), lg(tr.mid.to_numpy()))
+        pt = 1 / (1 + np.exp(-(lg(te.mid.to_numpy()) + Z(te) @ w))); y = te.up.to_numpy(float)
+        ll = lambda q: float(-np.mean(y * np.log(np.clip(q, 1e-6, 1)) + (1 - y) * np.log(np.clip(1 - q, 1e-6, 1))))
+        res = dict(w=[round(float(x), 5) for x in w], mu=[round(float(x), 6) for x in mu], sd=[round(float(x), 6) for x in sd],
+                   windows=len(wins), ll_model=round(ll(pt), 4), ll_kalshi=round(ll(te.mid.to_numpy()), 4))
+        te = te.assign(p=pt)
+        for band, lo_, hi_ in (("early", 8 / 12, 1.01), ("late", 0, 8 / 12)):
+            tb = te[(te.tleft >= lo_) & (te.tleft < hi_)]; pnl = cost = n = wins_ = 0
+            for tk, g in tb.groupby("ticker"):  # first qualifying minute per window
+                for _, r in g.sort_values("t").iterrows():
+                    for up_, ps, ask in ((1, r.p, r.ask), (0, 1 - r.p, 1 - r.bid)):
+                        if 0.05 < ask < 0.95 and ps - ask - kfee(ask) >= 0.04:
+                            won = r.up == up_; pnl += won - ask - kfee(ask); cost += ask; n += 1; wins_ += won; break
+                    else: continue
+                    break
+            res[f"{band}_n"] = n; res[f"{band}_roi"] = round(pnl / cost, 3) if cost else 0; res[f"{band}_win"] = round(wins_ / n, 3) if n else 0
+            res[f"{band}_ok"] = bool(n >= 60 and cost and pnl / cost > 0.03)
+        res["ok"] = bool(res["ll_model"] < res["ll_kalshi"])
+        out[reg] = res
+        print(f"KMODEL {mkt} {reg}: windows {len(wins)} | logloss model {res['ll_model']} vs Kalshi {res['ll_kalshi']} | "
+              f"early {res['early_n']} trades roi {res['early_roi']} win {res['early_win']} | late {res['late_n']} roi {res['late_roi']} win {res['late_win']}", flush=True)
+    return out
+
+
+def kmodel_all():
+    p = load_params(); km = {}
+    for m in ALL:
+        try: km[m] = kmodel_train(m)
+        except Exception as e: print("kmodel", m, e)
+    p["_kmod"] = km; json.dump(p, open(PARAMS_FILE, "w"), indent=1)
+
+
 def selftest():
     rng = np.random.default_rng(1); n = 3000
     vol = np.where((np.arange(n) // 150) % 2, 0.003, 0.012)
@@ -2727,5 +2856,5 @@ if __name__ == "__main__":
     cmds = dict(scan=scan, brief=brief, optimize=optimize, doctor=doctor, selftest=selftest,
                 testnotify=lambda: [notify(f"{m} test alert", f"Color check for {m} ({MARKETS[m][1]}). Data: "
                                        + ("Alpaca real-time" if ALPACA else "Yahoo delayed"), "high", m) for m in MARKETS],
-                live=live, khist=khist_probe, boomdebug=boomdebug, tally=tally, perf=perf, kraw=kraw, nighttest=nighttest, livetest=lambda: (os.environ.update(LIVE_MAX_MIN='2', GIT_PERSIST='', STATE_FILE='/tmp/st.json'), live()), audit=audit, calibrate=calibrate_only, discover2=discover2, kalshi=kalshi_discover, kcheck=kcheck, loop=lambda: [(scan(), time.sleep(int(os.getenv("LOOP_SEC", 120)))) for _ in iter(int, 1)])
+                live=live, kmodel=kmodel_all, khist=khist_probe, boomdebug=boomdebug, tally=tally, perf=perf, kraw=kraw, nighttest=nighttest, livetest=lambda: (os.environ.update(LIVE_MAX_MIN='2', GIT_PERSIST='', STATE_FILE='/tmp/st.json'), live()), audit=audit, calibrate=calibrate_only, discover2=discover2, kalshi=kalshi_discover, kcheck=kcheck, loop=lambda: [(scan(), time.sleep(int(os.getenv("LOOP_SEC", 120)))) for _ in iter(int, 1)])
     cmds.get((sys.argv[1:] or ["scan"])[0], lambda: print(__doc__))()
