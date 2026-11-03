@@ -540,6 +540,7 @@ def boom_stats(df, pm):
     f, sig = proj_frame(df); X = f[list(PFEATS)]
     z = np.c_[np.ones(len(X)), ((X - np.array(pm["mu"])) / np.array(pm["sd"])).to_numpy()]
     r10 = pd.Series(z @ np.array(pm["b10"]), index=df.index)
+    thr = float(max(0.05, np.nanquantile(r10.abs(), 0.85)))  # per-market: strongest 15% of projections
     start = c.shift(1).groupby(w).transform("first"); end = c.groupby(w).transform("last")
     T = pd.Series(14 - (df.index.tz_convert(ET).minute % 15), index=df.index)
     dz = np.log(c / start) / (sig * np.sqrt(np.maximum(T, 1)))
@@ -548,7 +549,7 @@ def boom_stats(df, pm):
     trades = []
     for wk, g in D.groupby("w"):
         if len(g) < 8: continue
-        cand = g[(g["T"].between(6, 12)) & (g.r10.abs() >= BOOM["proj"])]
+        cand = g[(g["T"].between(6, 12)) & (g.r10.abs() >= thr)]
         cand = cand[(np.sign(cand.r10) == np.sign(cand.sc)) & (cand.sc.abs() >= BOOM["score"]) &
                     (np.sign(cand.m3) == np.sign(cand.r10)) & (np.sign(cand.tr) == np.sign(cand.r10))]
         if not len(cand): continue
@@ -562,8 +563,8 @@ def boom_stats(df, pm):
                 exit_v = max(v - 0.02, 0); break
         payout = exit_v if exit_v is not None else float(e.won_up if d > 0 else not e.won_up)
         trades.append((wk, len(costs) * payout - sum(costs), sum(costs), float(e.won_up if d > 0 else not e.won_up)))
-    if len(trades) < 60: return {"ok": False, "n": len(trades)}
-    t = pd.DataFrame(trades, columns=["w", "pnl", "cost", "dir_right"]); cut = int(len(t) * 0.7); res = {"n": len(t)}
+    if len(trades) < 60: return {"ok": False, "n": len(trades), "thr": round(thr, 4)}
+    t = pd.DataFrame(trades, columns=["w", "pnl", "cost", "dir_right"]); cut = int(len(t) * 0.7); res = {"n": len(t), "thr": round(thr, 4)}
     for name, part in (("train", t.iloc[:cut]), ("test", t.iloc[cut:])):
         res[f"{name}_roi"] = round(float(part.pnl.sum() / part.cost.sum()), 3); res[f"{name}_win"] = round(float((part.pnl > 0).mean()), 3)
         res[f"{name}_dir"] = round(float(part.dir_right.mean()), 3)
@@ -1619,11 +1620,11 @@ def track_projection(st, mkt, a):
     st["pj_hist"][mkt] = keep[-15:]
 
 
-def boom_signal(a):
+def boom_signal(a, thr=None):
     """Same entry test as the backtest, on live numbers. Returns direction (+1/-1) or 0."""
     if "m10" not in a or not a.get("s1"): return 0
     r10 = a["m10"] / (a["s1"] * np.sqrt(10)); sc = a["score"] / 100 * (a["dir"] or 0); d = 1 if r10 > 0 else -1
-    ok = (abs(r10) >= BOOM["proj"] and np.sign(sc) == d and abs(sc) >= BOOM["score"] and np.sign(a.get("z3", 0)) == d
+    ok = (abs(r10) >= (thr or BOOM["proj"]) and np.sign(sc) == d and abs(sc) >= BOOM["score"] and np.sign(a.get("z3", 0)) == d
           and np.sign(a.get("tr_pct", 0)) == d)
     return d if ok else 0
 
@@ -1631,7 +1632,7 @@ def boom_signal(a):
 def boom_call(st, mkt, a, lv, cal):
     """BOOMING: buy part now, DOUBLE DOWN on confirmation, CASH OUT when the spike fades. Only where it backtested well."""
     bt = (cal or {}).get("boom") or {}
-    d = boom_signal(a)
+    d = boom_signal(a, bt.get("thr"))
     if not d or not bt.get("ok") or "start" not in a or not 6 <= a["T"] <= 12 or busy(st, mkt) or not live_ready(st, mkt): return False
     up = d > 0; c = k15(mkt)
     if not c or event_window(mkt, dt.datetime.now(ET), a["T"]) or fc_conflict(st, mkt, up): return False
