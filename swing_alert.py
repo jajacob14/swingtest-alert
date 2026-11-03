@@ -1516,7 +1516,7 @@ def why_lines(mkt, cx, bdir, px, lv, cell, kind):
 
 
 # ---------------- unified 15-min calls: BUY → (TAKE PROFIT | WRONG → FLIP | HOLD) → RESULT ----------------
-KIND = {"early": "EARLY", "boom": "BOOMING", "pre": "Sharp move ahead", "lock": "Near lock", "spike": "🔥 Spike", "drift": "📊 Session drift", "fast": "⚡ Fast move", "ls": "🎯 Longshot", "fav": "💪 Edge pick", "ihm": "📈 Close pattern", "flip": "🔄 Flip"}
+KIND = {"kreal": "Real-Kalshi tested", "early": "EARLY", "boom": "BOOMING", "pre": "Sharp move ahead", "lock": "Near lock", "spike": "🔥 Spike", "drift": "📊 Session drift", "fast": "⚡ Fast move", "ls": "🎯 Longshot", "fav": "💪 Edge pick", "ihm": "📈 Close pattern", "flip": "🔄 Flip"}
 
 
 def sess(close):
@@ -1559,7 +1559,7 @@ def open_call(st, mkt, kind, side, c, lv, px, odds, why, tested, parent=None, pr
     """Create a numbered call on the current 15-min contract and send the BUY message."""
     cost = c["ya"] if side == "YES" else c["na"]
     left0 = (c["close"] - pd.Timestamp.now(tz="UTC")).total_seconds() / 60
-    if not proven(st, mkt, left0):  # no live proof of beating Kalshi here → no call
+    if (kind != "kreal" and not proven(st, mkt, left0)) or (kind == "kreal" and disproven(st, mkt, left0)):
         st.setdefault("blocked", {})[mkt] = dt.datetime.now(ET).strftime("%-I:%M %p"); return None
     k = dict(ticker=c["ticker"], side=side, cost=cost, k=c["k"], close=str(c["close"]))
     tp = (min(0.95, max(2.5 * cost, cost + 0.25)) if kind == "ls" else
@@ -2266,6 +2266,7 @@ def night_tick(st, params, cool, nh, yc, only=None):
         try:
             a = analyze(mkt, m, kp, lv, k15(mkt), (cal_ or {}).get("fcast"), wm_for(st, mkt, cal_), (cal_ or {}).get("proj")); st.setdefault("ana", {})[mkt] = a
             if a: apply_pcal(st, mkt, a); apply_proj_bias(st, mkt, a); track_projection(st, mkt, a); record_pred(st, mkt, a, k15(mkt))
+            if a: changed |= kcall(st, mkt, y, lv, kp, params)
             if a: changed |= (early_call(st, mkt, a, lv, cal_) or boom_call(st, mkt, a, lv, cal_) or spike_alert(st, mkt, a, lv, cal_, cool)
                               or premove_alert(st, mkt, a, lv, cal_, cool) or lock_call(st, mkt, a, lv, cal_))
         except Exception as e: print("analyze", mkt, e)
@@ -2440,6 +2441,7 @@ def live():
                 st.setdefault("ana", {})[mkt] = _a
                 if _a: apply_pcal(st, mkt, _a); apply_proj_bias(st, mkt, _a); track_projection(st, mkt, _a); record_pred(st, mkt, _a, k15(mkt))
                 _c = (params.get("_cal") or {}).get(mkt)
+                if _a: changed |= kcall(st, mkt, _m, _lv, float(px[etf]), params)
                 if _a: changed |= (early_call(st, mkt, _a, _lv, _c) or boom_call(st, mkt, _a, _lv, _c) or spike_alert(st, mkt, _a, _lv, _c, cool)
                                    or premove_alert(st, mkt, _a, _lv, _c, cool) or lock_call(st, mkt, _a, _lv, _c))
             except Exception as e: print("analyze", mkt, e)
@@ -2519,7 +2521,9 @@ def live():
                 S[key] = 1
                 try:
                     if job == "brief": brief()
-                    elif os.getenv("GH_TOKEN"): os.system("gh workflow run commodity-scan --ref main -f cmd=calibrate")
+                    elif os.getenv("GH_TOKEN"):
+                        os.system("gh workflow run commodity-scan --ref main -f cmd=calibrate")
+                        os.system("gh workflow run commodity-scan --ref main -f cmd=kmodel")
                 except Exception as e: print("in-loop job", job, e)
         if now.minute < 3 and now.hour != S["last_hour"]:  # hourly: pull fresh calibration / params
             S["last_hour"] = now.hour
@@ -2830,6 +2834,62 @@ def kmodel_train(mkt, days=21):
         print(f"KMODEL {mkt} {reg}: windows {len(wins)} | logloss model {res['ll_model']} vs Kalshi {res['ll_kalshi']} | "
               f"early {res['early_n']} trades roi {res['early_roi']} win {res['early_win']} | late {res['late_n']} roi {res['late_roi']} win {res['late_win']}", flush=True)
     return out
+
+
+_KC_CANDLE = {}
+
+
+def kfeat_live(mkt, bars, c):
+    """Live input vector in the SAME form as training: Kalshi minute candles for this window + futures context."""
+    now = pd.Timestamp.now(tz="UTC"); key = (c["ticker"], now.floor("min"))
+    if key not in _KC_CANDLE:
+        t1 = int(now.timestamp()); t0 = int((pd.Timestamp(c["close"]) - pd.Timedelta(minutes=15)).timestamp())
+        try:
+            cs = requests.get(f"{KALSHI}/series/{K15[mkt]}/markets/{c['ticker']}/candlesticks",
+                              params={"start_ts": t0, "end_ts": t1, "period_interval": 1}, timeout=10).json().get("candlesticks", [])
+        except Exception: cs = []
+        _KC_CANDLE.clear(); _KC_CANDLE[key] = cs
+    cs = _KC_CANDLE[key]
+    mids = [(float((x.get("yes_bid") or {}).get("close_dollars") or "nan") + float((x.get("yes_ask") or {}).get("close_dollars") or "nan")) / 2 for x in cs]
+    mids = [m for m in mids if m == m]; mid = (c["ya"] + c["yb"]) / 2
+    hist = mids + [mid]
+    d = lambda n: hist[-1] - hist[-1 - n] if len(hist) > n else 0.0
+    vol = sum(float(x.get("volume_fp") or 0) for x in cs[-3:])
+    f, _ = proj_frame(bars); fx = f.iloc[-1][list(KFEATS_F)]
+    if fx.isna().any(): return None, mid
+    T = (pd.Timestamp(c["close"]) - now).total_seconds() / 60
+    return np.r_[d(1), d(3), d(5), c["ya"] - c["yb"], np.log1p(vol), fx.to_numpy(float), T / 12], mid
+
+
+def kp_live(M, x, mid):
+    z = ((x - np.array(M["mu"])) / np.array(M["sd"])).clip(-6, 6)
+    lgm = float(np.log(min(max(mid, 0.01), 0.99) / (1 - min(max(mid, 0.01), 0.99))))
+    return float(1 / (1 + np.exp(-(lgm + z @ np.array(M["w"])))))
+
+
+def disproven(st, mkt, T):
+    e = ((st.get("edge_live") or {}).get(mkt) or {}).get("early" if T >= 9 else "late")
+    return bool(e and e["n"] >= 20 and e["win"] - e["kalshi"] < -0.03)
+
+
+def kcall(st, mkt, bars, lv, px, params):
+    """Main call: real-Kalshi-tested model, regime-aware (fresh vs lagged data). Same entry rule as its backtest."""
+    km = ((params.get("_kmod") or {}).get(mkt) or {}); now = dt.datetime.now(ET); reg = regime(mkt, now); M = km.get(reg) or {}
+    if not M.get("w") or busy(st, mkt) or not live_ready(st, mkt): return False
+    c = k15(mkt)
+    if not c: return False
+    T = (c["close"] - pd.Timestamp.now(tz="UTC")).total_seconds() / 60; band = "early" if T >= 8 else "late"
+    if not 3 <= T <= 12 or not M.get(f"{band}_ok") or disproven(st, mkt, T): return False
+    if st.setdefault("lswin", {}).get(mkt) == c["ticker"] or event_window(mkt, now, T): return False
+    x, mid = kfeat_live(mkt, bars, c)
+    if x is None: return False
+    p = kp_live(M, x, mid); up = p >= 0.5; ps = p if up else 1 - p; ask = c["ya"] if up else c["na"]
+    st.setdefault("kp", {})[mkt] = dict(p=round(p, 3), mid=round(mid, 3), reg=reg, T=round(T, 1))
+    if not (0.05 < ask < 0.95 and ps - ask - kfee(ask) >= 0.04): return False
+    why = (f"tested on {M['windows']} real Kalshi windows ({'fresh' if reg == 'fresh' else 'delayed'} data): trades like this won "
+           f"{M[f'{band}_win']:.0%} with {M[f'{band}_roi']:+.0%} return after fees; Kalshi moved {x[1] * 100:+.0f} pts in 3 min; "
+           + ctx_short(dict(trend=1 if x[8] > 0 else -1, flow=x[9]), up))
+    return open_call(st, mkt, "kreal", "YES" if up else "NO", c, lv, px, odds_line(ps, ask), why, True, prob=ps) is not None
 
 
 def kmodel_all():
