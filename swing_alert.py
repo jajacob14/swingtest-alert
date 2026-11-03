@@ -940,8 +940,9 @@ def scorecard(st):
     if not due: return
     due = pd.Timestamp(due)
     pending = [m for m, p in (st.get("lpos") or {}).items() if pd.Timestamp(p["k"]["close"]).tz_convert(ET) <= due]
-    waited = (pd.Timestamp(now) - due).total_seconds() / 60
-    if pending and waited < 15: return  # results not in yet: wait
+    pending += [r["mkt"] for r in (st.get("preds") or {}).values()
+                if pd.Timestamp(r["close"]).tz_convert(ET) <= due and r.get("cp")]  # every market's window must be graded
+    if pending: return  # wait until ALL markets have reported back (ungradable windows drop out after 30 min)
     st["score_due"] = None
     try: log = pd.read_json(CALL_LOG, lines=True)
     except Exception: log = pd.DataFrame(columns=["close", "mkt", "won", "kind"])
@@ -965,7 +966,6 @@ def scorecard(st):
         if len(er): lines.append(f"Early calls today: {cnt(er)[0]} right, {cnt(er)[1]} wrong ({cnt(er)[0] / len(er):.0%})")
     if len(half):
         lines.append("By market: " + ", ".join(f"{NAME.get(k, k)} {cnt(g)[0]}-{cnt(g)[1]}" for k, g in half.groupby("mkt")))
-    if pending: lines.append(f"Still settling (not counted): {', '.join(NAME[m] for m in pending)}")
     try:
         pdl = pd.read_json(PRED_LOG, lines=True); pdl["c"] = pd.to_datetime(pdl["close"], utc=True).dt.tz_convert(ET)
         ps = pred_summary(pdl[(pdl.c > lo) & (pdl.c <= due)].dropna(subset=["wm", "mid"]))
