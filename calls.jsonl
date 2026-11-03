@@ -43,3 +43,4 @@
 {"t": "2026-11-03T01:00-05:00", "mkt": "PLATINUM", "kind": "fav", "side": "NO", "cost": 0.59, "prob": 0.7579090909090909, "at": "12:50 AM", "won": true, "close": "2026-11-03T01:00-05:00", "took_profit": true, "was_behind": false, "model_v": 2}
 {"t": "2026-11-03T01:15-05:00", "mkt": "WTI", "kind": "fav", "side": "YES", "cost": 0.74, "prob": 0.7971666666666666, "at": "1:10 AM", "won": true, "close": "2026-11-03T01:15-05:00", "took_profit": false, "was_behind": false, "model_v": 2}
 {"t": "2026-11-03T01:32-05:00", "mkt": "WTI", "kind": "fav", "side": "YES", "cost": 0.7, "prob": 0.816, "at": "1:20 AM", "won": false, "close": "2026-11-03T01:30-05:00", "took_profit": false, "was_behind": false, "model_v": 2}
+{"t": "2026-11-03T06:30-05:00", "mkt": "GOLD", "kind": "early", "side": "NO", "cost": 0.53, "prob": 0.6327158105587212, "at": "6:17 AM", "won": true, "close": "2026-11-03T06:30-05:00", "took_profit": true, "was_behind": false, "model_v": 2, "early": true}
