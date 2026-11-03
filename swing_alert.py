@@ -1243,7 +1243,8 @@ def open_call(st, mkt, kind, side, c, lv, px, odds, why, tested, parent=None, pr
     """Create a numbered call on the current 15-min contract and send the BUY message."""
     cost = c["ya"] if side == "YES" else c["na"]
     k = dict(ticker=c["ticker"], side=side, cost=cost, k=c["k"], close=str(c["close"]))
-    tp = min(0.95, max(2.5 * cost, cost + 0.25)) if kind == "ls" else max(0.92, cost + 0.05)
+    tp = (min(0.95, max(2.5 * cost, cost + 0.25)) if kind == "ls" else
+          0.97 if kind == "lock" else min(0.92, cost + max(0.12, (1 - cost) * 0.55)))  # scalp: sell into the move
     bail = max(0.03, cost * 0.5)
     if kind == "lock": tp, bail = 0.995, 0.60  # hold to the end; bail only if it really reverses
     pos = dict(side=1 if side == "YES" else -1, entry=px, stop=0, tgt=0, best=px, n=0, t0=time.time(), kind=kind, k=k,
@@ -1251,21 +1252,21 @@ def open_call(st, mkt, kind, side, c, lv, px, odds, why, tested, parent=None, pr
     st.setdefault("lpos", {})[mkt] = pos; st.setdefault("lswin", {})[mkt] = c["ticker"]
     n = new_trade(st, mkt, pos, lv, px)
     left = (c["close"] - pd.Timestamp.now(tz="UTC")).total_seconds() / 60
-    up = side == "YES"; big = 1 / cost >= BIG_X
-    when = {"lock": f"by {pd.Timestamp(k['close']).tz_convert(ET):%-I:%M}", "spike": "now", "fast": "in 5-10 min", "fav": "in 5-10 min", "flip": "in 5-10 min",
-            "ls": f"within {left:.0f} min", "drift": f"by {pd.Timestamp(k['close']).tz_convert(ET):%-I:%M}",
-            "ihm": "into the close"}.get(kind, "soon")
+    up = side == "YES"; big = 1 / cost >= BIG_X; prob = prob or None
     tg = tier(prob) if prob else ""
     if tg == "NEAR LOCK" and kind != "lock": tg = "HIGH CONFIDENCE"  # NEAR LOCK only from our window model
-    title = (f"{NAME[mkt]}: BUY {'UP (YES)' if up else 'DOWN (NO)'} · " + (f"{tg} {prob:.0%} · " if tg else "")
-             + f"{'rise' if up else 'drop'} expected {when}" + (f" · BIG PAYOUT {1 / cost:.0f}x" if big else ""))
+    close_t = pd.Timestamp(k["close"]).tz_convert(ET).strftime("%-I:%M")
+    title = (f"{NAME[mkt]}: BUY {'UP' if up else 'DOWN'} · " + (f"{prob:.0%} to hit by {close_t}" if prob else f"by {close_t}")
+             + (f" · {tg}" if tg else "") + (f" · BIG PAYOUT {1 / cost:.0f}x" if big else ""))
     sig = _SIG.get(mkt); tl = max(left * 0.6, 1)
     tpx = level_for(k["k"], tp, up, tl, sig)
     pk = lambda x: money(mkt, x)
-    exits = ("Plan: hold to the end (that's what was tested)." + (f" Lock in early if it {'rises to' if up else 'drops to'} about "
-             f"{pk(tpx)}." if tpx and kind != "lock" else ""))
+    gain_tp = (tp - cost - kfee(cost)) / cost
+    exits = (f"Sell high: when the bet is up about +{gain_tp:.0%}" + (f" (likely once {NAME[mkt].title()} {'reaches' if up else 'drops to'} "
+             f"about {pk(tpx)})" if tpx else "") + ". If it doesn't get there, hold to the end."
+             if kind != "lock" else "Hold to the end (near lock).")
     notify(title,
-           f"Buy {'UP (YES)' if up else 'DOWN (NO)'}: wins if {NAME[mkt].title()} ends {'at or above' if up else 'below'} "
+           f"Buy {'UP' if up else 'DOWN'}: wins if {NAME[mkt].title()} ends {'at or above' if up else 'below'} "
            f"{money(mkt, k['k'])} at {pd.Timestamp(k['close']).tz_convert(ET):%-I:%M} ({left:.0f} min left). Now {lv(px)}.\n"
            f"{exits} {odds[0].upper() + odds[1:]}.\n"
            f"Why: {why}." + ("" if tested else " Untested: small size.")
@@ -1283,7 +1284,7 @@ def sell_msg(mkt, pos, title, px, lv, extra=""):
 def follow_msg(mkt, pos, icon, action, extra=""):
     k = pos["k"]
     notify(f"{NAME[mkt]}: {action} · {call_time(pos)}",
-           f"The {call_time(pos)} was BUY {'UP (YES)' if k['side'] == 'YES' else 'DOWN (NO)'}: needed {NAME[mkt].title()} "
+           f"The {call_time(pos)} was BUY {'UP' if k['side'] == 'YES' else 'DOWN'}: needed {NAME[mkt].title()} "
            f"{'at or above' if k['side'] == 'YES' else 'below'} {money(mkt, k['k'])} at {pd.Timestamp(k['close']).tz_convert(ET):%-I:%M}." + extra,
            "urgent", mkt)
 
@@ -1375,18 +1376,18 @@ def action_line(mkt, a):
             want_up = target >= a["start"]; cost = a["ya"] if want_up else a["na"]
             if want_up != fc_up:  # forecast move won't cross the start → the current leader stays favored
                 parts.append(f"{'bounce' if fc_up else 'dip'} likely but probably not past the start {money(mkt, a['start'])}, "
-                             f"{'DOWN (NO)' if not want_up else 'UP (YES)'} still favored")
+                             f"{'DOWN' if not want_up else 'UP'} still favored")
                 return ". ".join(x[0].upper() + x[1:] for x in parts) + "."
-            parts.append(f"Lean BUY {'UP (YES)' if want_up else 'DOWN (NO)'}, ends {'above' if want_up else 'below'} {money(mkt, a['start'])}" if cost < 0.8
-                         else f"{'UP (YES)' if want_up else 'DOWN (NO)'} is already priced in, skip")
+            parts.append(f"BUY {'UP' if want_up else 'DOWN'}, ends {'above' if want_up else 'below'} {money(mkt, a['start'])}" if cost < 0.8
+                         else f"{'UP' if want_up else 'DOWN'} is already priced in, skip")
         else:
             wp = a.get("wm_p"); lead_up = (wp if wp is not None else a["p_up"]) >= 0.5
             lead = max(wp, 1 - wp) if wp is not None else 0; mk = a["ya"] if lead_up else a["na"]
             if lead >= 0.9 and a.get("wm_ok"):
-                parts.append(f"NEAR LOCK (our analysis {lead:.0%}, tested {a['wm_acc']:.0%}): BUY {'UP (YES)' if lead_up else 'DOWN (NO)'}, "
+                parts.append(f"NEAR LOCK (our analysis {lead:.0%}, tested {a['wm_acc']:.0%}): BUY {'UP' if lead_up else 'DOWN'}, "
                              f"ends {'above' if lead_up else 'below'} {money(mkt, a['start'])} in {T:.0f} min. Kalshi prices {mk:.0%}")
             elif lead >= 0.75:
-                parts.append(f"HIGH CONFIDENCE (our analysis {lead:.0%}): {'UP (YES)' if lead_up else 'DOWN (NO)'}, {T:.0f} min left. Kalshi prices {mk:.0%}")
+                parts.append(f"HIGH CONFIDENCE (our analysis {lead:.0%}): {'UP' if lead_up else 'DOWN'}, {T:.0f} min left. Kalshi prices {mk:.0%}")
             elif T < 4: parts.append(f"window ends in {T:.0f} min, wait for the next one")
             else: parts.append("wait")
     return ". ".join(x[0].upper() + x[1:] for x in parts if x) + "."
@@ -1439,7 +1440,7 @@ def spike_alert(st, mkt, a, lv, cal, cool):
            f"{money(mkt, a['px'])}, {move}. {a['spark']}\n"
            f"Typical range for the next {a['T']:.0f} min: about {money(mkt, a['rng'])}.\n"
            + (f"Do not chase: on {NAME[mkt]}, buying after a spike starts has lost money in testing ({sp.get('test_roi', 0):+.0%})."
-              if sp.get("n") else f"Untested: BUY {'UP (YES)' if up else 'DOWN (NO)'} rides it ({a['T']:.0f} min left)."), "high", mkt)
+              if sp.get("n") else f"Untested: BUY {'UP' if up else 'DOWN'} rides it ({a['T']:.0f} min left)."), "high", mkt)
     return False
 
 
@@ -1567,7 +1568,7 @@ def manage_ls(mkt, px, st, lv):
     if pos.get("held"): return False
     bid = c["yb"] if k["side"] == "YES" else c["nb"]; gain = bid * 100 - cost
     if bid >= pos.get("tp", 0.9):
-        follow_msg(mkt, pos, "", f"TAKE PROFIT NOW (bet up {gain / cost:+.0%})",
+        follow_msg(mkt, pos, "", f"SELL HIGH NOW (bet up {gain / cost:+.0%})",
                    " Scored at the close on whether the prediction was right.")
         pos["took_profit"] = True; pos["held"] = True; return True
     if bid <= 0.25 and left >= 3 and not pos.get("behind"):  # info only: binary bets are best held to the end
