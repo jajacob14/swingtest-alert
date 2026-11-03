@@ -1690,6 +1690,11 @@ def board_line(mkt, a, st):
     l1 = (f"{COLOR[mkt][0]} {NAME[mkt]} {money(mkt, a['px'])}  {a['ch5'] * 100:+.2f}% in 5 min  {a['spark']}  {a['label']}"
           + (f" ({a['score']:.0f}/100)" if a["score"] >= 45 else "") + (f"  [{call_time(op)} open]" if op else ""))
     out = l1 + "\n    " + action_line(mkt, a)
+    kp = (st.get("kp") or {}).get(mkt)
+    if kp:
+        up = kp["p"] >= 0.5
+        out += (f"\n    Prediction: {'UP' if up else 'DOWN'} {max(kp['p'], 1 - kp['p']):.0%} vs Kalshi {(kp['mid'] if up else 1 - kp['mid']):.0%}"
+                f" ({'fresh' if kp['reg'] == 'fresh' else 'delayed'} data) · " + ("CALL SENT" if not kp.get("why_not") else f"no call: {kp['why_not']}"))
     if a["score"] >= 45 or ("start" in a and max(a["p_up"], 1 - a["p_up"]) >= 0.75) or (a.get("fc_ok") and max(a.get("fc_p", .5), 1 - a.get("fc_p", .5)) >= 0.6):
         out += "\n    " + analysis_block(mkt, a).split("\n")[1]  # trend line for the markets that matter right now
     return out
@@ -2262,7 +2267,7 @@ def night_tick(st, params, cool, nh, yc, only=None):
         if now.time() < dt.time(15, 50) or now.time() > dt.time(16, 10):
             changed |= (ihm_call(mkt, m, kp, st, lv, cal_) or drift_call(mkt, m.iloc[:-1], kp, st, lv, cal_)
                         or k15_call(mkt, m.iloc[:-1], kp, st, lv, cal_, night=True))
-        regime_update(st, mkt, y); boards[mkt] = (m, kp, lv)  # volatility from one clean source
+        regime_update(st, mkt, y); boards[mkt] = (m, kp, lv); LIVEVIEW[mkt] = (m, kp, lv)  # volatility from one clean source
         try:
             a = analyze(mkt, m, kp, lv, k15(mkt), (cal_ or {}).get("fcast"), wm_for(st, mkt, cal_), (cal_ or {}).get("proj")); st.setdefault("ana", {})[mkt] = a
             if a: apply_pcal(st, mkt, a); apply_proj_bias(st, mkt, a); track_projection(st, mkt, a); record_pred(st, mkt, a, k15(mkt))
@@ -2288,6 +2293,39 @@ def announce_open(st, mkts, openm):
         lines = [f"{COLOR[k][0]} {NAME[k]}: open, watching for calls" for k in opened] + \
                 [f"{COLOR[k][0]} {NAME[k]}: closed, paused until it reopens" for k in closed]
         notify("Market hours update", "\n".join(lines), "default")
+
+
+LIVEVIEW = {}  # mkt -> (bars, price, lv) from whichever engine is running it
+
+
+def unified_boards(st):
+    """One skip list (minute 1/7 of each window) and one board (every 10 min) for ALL commodities."""
+    now = dt.datetime.now(ET)
+    if now.minute % 15 in (1, 7):
+        slot = now.strftime("%Y-%m-%d %H:%M")
+        if st.get("skipslot") != slot:
+            st["skipslot"] = slot; w_end = now.replace(second=0, microsecond=0) + dt.timedelta(minutes=15 - now.minute % 15)
+            label = f"{(w_end - dt.timedelta(minutes=15)):%-I:%M}–{w_end:%-I:%M}"; done = set(st.get("skipped", {}).get(label, []))
+            skips, play = [], []
+            for mkt in ALL:
+                if mkt not in LIVEVIEW: continue
+                if busy(st, mkt): play.append(mkt); continue
+                m, px, lv = LIVEVIEW[mkt]
+                try: why, _ = skip_reasons(mkt, m, px, lv)
+                except Exception: why = []
+                if why and mkt not in done: skips.append((mkt, why))
+                elif not why: play.append(mkt)
+            if skips:
+                st.setdefault("skipped", {})[label] = sorted(done | {k for k, _ in skips})
+                body = "\n".join(f"{COLOR[k][0]} {NAME[k]}: skip ({', '.join(short_reason(w) for w in why)})" for k, why in skips)
+                if play: body += "\nIn play: " + ", ".join(NAME[k] for k in play)
+                notify(f"Skip list for {label}", body, "default")
+    if now.minute % 10 == 0 and st.get("boardslot") != now.strftime("%H:%M"):
+        st["boardslot"] = now.strftime("%H:%M")
+        lines = [board_line(m, st["ana"][m], st) for m in ALL if m in LIVEVIEW and (st.get("ana") or {}).get(m)]
+        shut = [k for k, v in st.get("open", {}).items() if v is False and k not in LIVEVIEW]
+        if shut: lines.append("Closed now: " + ", ".join(NAME[k] for k in shut))
+        if lines: notify(f"All commodities {now:%-I:%M %p} ({SH_SESS[session(now)]} session)", "\n".join(lines), "low")
 
 
 def night_boards(st, boards, night=True):
@@ -2386,7 +2424,7 @@ def live():
     import traceback
     if not ALPACA: sys.exit("live mode needs ALPACA_KEY / ALPACA_SECRET")
     t0, maxmin = time.time(), float(os.getenv("LIVE_MAX_MIN") or 1e9)
-    pulse_min, tick = int(os.getenv("PULSE_MIN") or 10), int(os.getenv("TICK_SEC") or 10)
+    tick = int(os.getenv("TICK_SEC") or 10)
     cool, data, nh, yc = {}, {}, {}, {}
     S = dict(params=load_params(), last_min=None, last_hour=None, last_pulse=None, nt=0, errs=0, saved=time.time(), recheck=0)
     st0 = load_state(); learn_update(st0); pred_learn(st0); retrain_window(st0, S["params"])
@@ -2430,10 +2468,11 @@ def live():
         for mkt, (_, etf) in MARKETS.items():
           try:
             if etf not in data or not px.get(etf): continue
-            if not k15(mkt): continue  # Kalshi closed this market's 15-min contracts
+            if not k15(mkt): LIVEVIEW.pop(mkt, None); continue  # Kalshi closed this market's 15-min contracts
             _recent = data[etf].index[data[etf].index > pd.Timestamp.now(tz="UTC") - pd.Timedelta(minutes=60)]
             st.setdefault("live_min", {})[mkt] = len(_recent)
             regime_update(st, mkt, data[etf])
+            LIVEVIEW[mkt] = (data[etf], float(px[etf]), kconv(mkt, float(px[etf])))
             try:
                 _m = data[etf]; _m = _m[_m.index + pd.Timedelta(minutes=1) <= pd.Timestamp.now(tz="UTC")]
                 _lv = kconv(mkt, float(px[etf])); _a = analyze(mkt, _m, float(px[etf]) * _lv.r, _lv, k15(mkt), ((params.get("_cal") or {}).get(mkt) or {}).get("fcast"), wm_for(st, mkt, (params.get("_cal") or {}).get(mkt)),
@@ -2457,14 +2496,9 @@ def live():
             changed |= bool(fast_checks(mkt, pd.concat([m, row]), st, cool))
           except Exception as e:
             print("day", mkt, "error:", e)
-        skip_board(data, st, params)
         try:
-            ch2, mb = night_tick(st, params, cool, nh, yc, only=[k for k in ALL if k not in MARKETS]); changed |= ch2; night_boards(st, mb, night=False)
+            ch2, mb = night_tick(st, params, cool, nh, yc, only=[k for k in ALL if k not in MARKETS]); changed |= ch2
         except Exception as e: print("metals error:", e)
-        slot = minute.replace(minute=minute.minute - minute.minute % pulse_min) if pulse_min else None
-        if pulse_min and slot != S['last_pulse'] and data:
-            if S['last_pulse'] is not None or now.minute % pulse_min == 0: pulse(data, load_state())
-            S['last_pulse'] = slot
         return changed
 
     while (time.time() - t0) / 60 < maxmin:
@@ -2492,7 +2526,7 @@ def live():
                 notify(f"Mode: {'overnight (day data down)' if shown == 'night*' else {'day': 'day', 'night': 'overnight', 'closed': 'closed'}[shown]}", MODE_TXT[shown], "default")
                 st["mode"] = shown; yc.clear()  # keep live price history across mode switches
             if mode == "night":
-                changed, boards = night_tick(st, S["params"], cool, nh, yc); night_boards(st, boards)
+                changed, boards = night_tick(st, S["params"], cool, nh, yc)
                 if not boards:  # every market closed (e.g. weekend): idle, still report results
                     changed |= settle_only(st)
                     if st.get("mode") != "idle":
@@ -2508,6 +2542,8 @@ def live():
             except Exception as e: print("preds", e)
             try: scorecard(st)
             except Exception as e: print("scorecard", e)
+            try: unified_boards(st)
+            except Exception as e: print("boards", e)
             prune_state(st); json.dump(st, open(STATE_FILE, "w"), indent=1, default=float)
             if changed or time.time() - S["saved"] > 600: persist("bot: live"); S["saved"] = time.time()
             S["errs"] = 0
@@ -2875,17 +2911,22 @@ def disproven(st, mkt, T):
 def kcall(st, mkt, bars, lv, px, params):
     """Main call: real-Kalshi-tested model, regime-aware (fresh vs lagged data). Same entry rule as its backtest."""
     km = ((params.get("_kmod") or {}).get(mkt) or {}); now = dt.datetime.now(ET); reg = regime(mkt, now); M = km.get(reg) or {}
-    if not M.get("w") or busy(st, mkt) or not live_ready(st, mkt): return False
     c = k15(mkt)
-    if not c: return False
+    if not M.get("w") or not c: return False
     T = (c["close"] - pd.Timestamp.now(tz="UTC")).total_seconds() / 60; band = "early" if T >= 8 else "late"
-    if not 3 <= T <= 12 or not M.get(f"{band}_ok") or disproven(st, mkt, T): return False
-    if st.setdefault("lswin", {}).get(mkt) == c["ticker"] or event_window(mkt, now, T): return False
     x, mid = kfeat_live(mkt, bars, c)
     if x is None: return False
     p = kp_live(M, x, mid); up = p >= 0.5; ps = p if up else 1 - p; ask = c["ya"] if up else c["na"]
-    st.setdefault("kp", {})[mkt] = dict(p=round(p, 3), mid=round(mid, 3), reg=reg, T=round(T, 1))
-    if not (0.05 < ask < 0.95 and ps - ask - kfee(ask) >= 0.04): return False
+    KP = st.setdefault("kp", {}); KP[mkt] = dict(p=round(p, 3), mid=round(mid, 3), reg=reg, T=round(T, 1), ask=ask, edge=round(ps - ask - kfee(ask), 3))
+    why_not = (None if 3 <= T <= 12 else "outside the 3-12 min call window") or \
+              (None if M.get(f"{band}_ok") else f"{band} calls not proven on real Kalshi data for {NAME[mkt]}") or \
+              ("live results disproving it" if disproven(st, mkt, T) else None) or \
+              ("call already open" if busy(st, mkt) else None) or ("warming up" if not live_ready(st, mkt) else None) or \
+              ("already called this window" if st.setdefault("lswin", {}).get(mkt) == c["ticker"] else None) or \
+              ("report/jump window" if event_window(mkt, now, T) else None) or \
+              (None if 0.05 < ask < 0.95 and ps - ask - kfee(ask) >= 0.04 else f"edge too small ({(ps - ask - kfee(ask)) * 100:+.0f} pts after fees)")
+    KP[mkt]["why_not"] = why_not
+    if why_not: return False
     why = (f"tested on {M['windows']} real Kalshi windows ({'fresh' if reg == 'fresh' else 'delayed'} data): trades like this won "
            f"{M[f'{band}_win']:.0%} with {M[f'{band}_roi']:+.0%} return after fees; Kalshi moved {x[1] * 100:+.0f} pts in 3 min; "
            + ctx_short(dict(trend=1 if x[8] > 0 else -1, flow=x[9]), up))
