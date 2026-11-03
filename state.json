@@ -25,32 +25,6 @@
  },
  "skipslot": "2026-11-02 20:37",
  "lpos": {
-  "SILVER": {
-   "side": -1,
-   "entry": 50.304,
-   "stop": 0,
-   "tgt": 0,
-   "best": 50.304,
-   "n": 0,
-   "t0": 1793669700.4655774,
-   "kind": "lock",
-   "k": {
-    "ticker": "KXSILVER15M-26NOV022045-45",
-    "side": "NO",
-    "cost": 0.8,
-    "k": 50.426,
-    "close": "2026-11-03 01:45:00+00:00"
-   },
-   "tp": 0.995,
-   "bail": 0.6,
-   "parent": null,
-   "prob": 0.9159996078888026,
-   "id": 61,
-   "at": "8:35 PM",
-   "at_px": "$50.304",
-   "took_profit": true,
-   "held": true
-  },
   "PALLADIUM": {
    "side": -1,
    "entry": 969.6844444444445,
@@ -234,11 +208,11 @@
   "PLATINUM": false
  },
  "open": {
-  "BRENT": true,
+  "BRENT": false,
   "WTI": true,
   "NATGAS": false,
   "GOLD": false,
-  "SILVER": true,
+  "SILVER": false,
   "COPPER": true,
   "PLATINUM": false,
   "PALLADIUM": true
