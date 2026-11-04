@@ -1,0 +1,340 @@
+{
+ "trained": 1793800279,
+ "flow_coverage": 0.995,
+ "whale_events": 0,
+ "weeks": {
+  "windows": 10590,
+  "test": {
+   "windows": 3178,
+   "rows": 29252,
+   "ll_model": 0.5044,
+   "ll_kalshi": 0.5039,
+   "acc_model": 0.746,
+   "acc_kalshi": 0.745,
+   "trades": 276,
+   "win": 0.609,
+   "roi": 0.019
+  },
+  "test_by": {
+   "BRENT": {
+    "windows": 424,
+    "rows": 3979,
+    "ll_model": 0.5095,
+    "ll_kalshi": 0.5082,
+    "acc_model": 0.744,
+    "acc_kalshi": 0.747,
+    "trades": 54,
+    "win": 0.667,
+    "roi": 0.08
+   },
+   "COPPER": {
+    "windows": 381,
+    "rows": 3438,
+    "ll_model": 0.466,
+    "ll_kalshi": 0.4698,
+    "acc_model": 0.775,
+    "acc_kalshi": 0.772,
+    "trades": 9,
+    "win": 0.778,
+    "roi": 0.201
+   },
+   "GOLD": {
+    "windows": 380,
+    "rows": 3469,
+    "ll_model": 0.4879,
+    "ll_kalshi": 0.4837,
+    "acc_model": 0.754,
+    "acc_kalshi": 0.76,
+    "trades": 41,
+    "win": 0.463,
+    "roi": -0.206
+   },
+   "NATGAS": {
+    "windows": 424,
+    "rows": 4027,
+    "ll_model": 0.5115,
+    "ll_kalshi": 0.5095,
+    "acc_model": 0.734,
+    "acc_kalshi": 0.723,
+    "trades": 14,
+    "win": 0.357,
+    "roi": -0.395
+   },
+   "PALLADIUM": {
+    "windows": 383,
+    "rows": 3468,
+    "ll_model": 0.5079,
+    "ll_kalshi": 0.5076,
+    "acc_model": 0.753,
+    "acc_kalshi": 0.75,
+    "trades": 74,
+    "win": 0.635,
+    "roi": 0.101
+   },
+   "PLATINUM": {
+    "windows": 382,
+    "rows": 3403,
+    "ll_model": 0.5294,
+    "ll_kalshi": 0.5288,
+    "acc_model": 0.728,
+    "acc_kalshi": 0.723,
+    "trades": 13,
+    "win": 0.846,
+    "roi": 0.358
+   },
+   "SILVER": {
+    "windows": 381,
+    "rows": 3488,
+    "ll_model": 0.5145,
+    "ll_kalshi": 0.5154,
+    "acc_model": 0.737,
+    "acc_kalshi": 0.738,
+    "trades": 23,
+    "win": 0.652,
+    "roi": 0.059
+   },
+   "WTI": {
+    "windows": 423,
+    "rows": 3980,
+    "ll_model": 0.5067,
+    "ll_kalshi": 0.5062,
+    "acc_model": 0.749,
+    "acc_kalshi": 0.75,
+    "trades": 48,
+    "win": 0.583,
+    "roi": -0.017
+   }
+  }
+ },
+ "months": {
+  "windows": 13340,
+  "test": {
+   "windows": 13340,
+   "rows": 128292,
+   "ll_model": 0.5038,
+   "ll_kalshi": 0.5038,
+   "acc_model": 0.748,
+   "acc_kalshi": 0.748,
+   "trades": 436,
+   "win": 0.576,
+   "roi": -0.034
+  },
+  "test_by": {
+   "COPPER": {
+    "windows": 1825,
+    "rows": 17615,
+    "ll_model": 0.5014,
+    "ll_kalshi": 0.5011,
+    "acc_model": 0.751,
+    "acc_kalshi": 0.753,
+    "trades": 95,
+    "win": 0.632,
+    "roi": 0.102
+   },
+   "GOLD": {
+    "windows": 2667,
+    "rows": 25534,
+    "ll_model": 0.5118,
+    "ll_kalshi": 0.5116,
+    "acc_model": 0.74,
+    "acc_kalshi": 0.74,
+    "trades": 48,
+    "win": 0.583,
+    "roi": -0.079
+   },
+   "NATGAS": {
+    "windows": 1897,
+    "rows": 18536,
+    "ll_model": 0.4919,
+    "ll_kalshi": 0.4923,
+    "acc_model": 0.753,
+    "acc_kalshi": 0.754,
+    "trades": 16,
+    "win": 0.688,
+    "roi": 0.127
+   },
+   "PALLADIUM": {
+    "windows": 604,
+    "rows": 5849,
+    "ll_model": 0.5118,
+    "ll_kalshi": 0.5102,
+    "acc_model": 0.744,
+    "acc_kalshi": 0.747,
+    "trades": 114,
+    "win": 0.553,
+    "roi": -0.045
+   },
+   "PLATINUM": {
+    "windows": 959,
+    "rows": 9150,
+    "ll_model": 0.5025,
+    "ll_kalshi": 0.5024,
+    "acc_model": 0.753,
+    "acc_kalshi": 0.753,
+    "trades": 37,
+    "win": 0.541,
+    "roi": -0.059
+   },
+   "SILVER": {
+    "windows": 2658,
+    "rows": 25461,
+    "ll_model": 0.5139,
+    "ll_kalshi": 0.5142,
+    "acc_model": 0.738,
+    "acc_kalshi": 0.739,
+    "trades": 57,
+    "win": 0.561,
+    "roi": -0.078
+   },
+   "WTI": {
+    "windows": 2730,
+    "rows": 26147,
+    "ll_model": 0.4951,
+    "ll_kalshi": 0.4951,
+    "acc_model": 0.757,
+    "acc_kalshi": 0.758,
+    "trades": 69,
+    "win": 0.536,
+    "roi": -0.147
+   }
+  },
+  "by_month": {
+   "2026-08": {
+    "windows": 3122,
+    "rows": 30184,
+    "ll_model": 0.4985,
+    "ll_kalshi": 0.4983,
+    "acc_model": 0.751,
+    "acc_kalshi": 0.752,
+    "trades": 65,
+    "win": 0.569,
+    "roi": -0.082
+   },
+   "2026-09": {
+    "windows": 6734,
+    "rows": 65003,
+    "ll_model": 0.5086,
+    "ll_kalshi": 0.5083,
+    "acc_model": 0.744,
+    "acc_kalshi": 0.745,
+    "trades": 198,
+    "win": 0.566,
+    "roi": -0.054
+   },
+   "2026-10": {
+    "windows": 3484,
+    "rows": 33105,
+    "ll_model": 0.4994,
+    "ll_kalshi": 0.5,
+    "acc_model": 0.751,
+    "acc_kalshi": 0.753,
+    "trades": 173,
+    "win": 0.59,
+    "roi": 0.009
+   }
+  }
+ },
+ "proven": {
+  "WTI": false,
+  "BRENT": false,
+  "NATGAS": false,
+  "GOLD": false,
+  "SILVER": false,
+  "COPPER": false,
+  "PLATINUM": false,
+  "PALLADIUM": false
+ },
+ "model": {
+  "w": [
+   0.00197,
+   0.01717,
+   0.04908,
+   0.02324,
+   0.01432,
+   0.00923,
+   -0.01113,
+   0.02343,
+   0.03076,
+   -0.02159,
+   -0.05556,
+   0.03401,
+   0.02666,
+   0.01074,
+   0.00877,
+   0.00943,
+   0.00038,
+   0.00759,
+   -0.00689,
+   -0.00971,
+   -0.02556
+  ],
+  "mu": [
+   -0.000954,
+   -0.002348,
+   -0.003051,
+   0.02068,
+   8.196243,
+   8.939843,
+   0.639729,
+   0.236994,
+   0.03365,
+   0.145094,
+   0.404081,
+   0.237767,
+   0.358152,
+   0.176895,
+   0.040282,
+   0.144108,
+   0.166697,
+   0.16645,
+   0.131718,
+   0.093421,
+   0.080428
+  ],
+  "sd": [
+   0.109829,
+   0.176005,
+   0.196413,
+   0.025701,
+   1.541471,
+   1.617776,
+   0.235173,
+   0.142316,
+   0.484796,
+   2.280334,
+   0.490713,
+   0.425716,
+   0.479457,
+   0.38158,
+   0.19662,
+   0.3512,
+   0.372705,
+   0.372484,
+   0.338184,
+   0.291022,
+   0.271955
+  ]
+ },
+ "feats": [
+  [
+   "s_ASIA",
+   -0.05556
+  ],
+  [
+   "dmid5",
+   0.04908
+  ],
+  [
+   "s_EU",
+   0.03401
+  ],
+  [
+   "ofi3",
+   0.03076
+  ],
+  [
+   "s_US",
+   0.02666
+  ]
+ ]
+}
