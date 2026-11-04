@@ -37,7 +37,7 @@ jobs:
         uses: actions/cache/save@v4
         with: {path: kwhale/data, key: "kwhale-data-${{ github.run_id }}-${{ github.run_attempt }}"}
       - name: chain the next live run
-        if: ${{ success() && contains(fromJSON('["live","build"]'), inputs.cmd || 'live') }}
+        if: ${{ (inputs.cmd == 'build' && always()) || (success() && (inputs.cmd || 'live') == 'live') }}   # a build that fails or times out still starts live
         run: gh workflow run kalshi-whale --ref "$GITHUB_REF_NAME" -f cmd=live
         env:
           GH_TOKEN: ${{ github.token }}
