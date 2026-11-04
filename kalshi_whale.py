@@ -639,7 +639,7 @@ def live():
             if len(seen_s) > 250000: seen_s = set(seen)
             eng.tick(time.time())
             if time.time() - t_settle > 1800: settle(meta, eng); t_settle = time.time()
-            if time.time() - trained > 6 * 3600:
+            if time.time() - trained > (6 * 3600 if eng.model.get("dr") else 3600):  # no model yet: try hourly
                 eng.flush(); eng.model = train(); trained = time.time()
             if time.time() - last_digest > 6 * 3600 and eng.stats["trades"]: digest(eng); last_digest = time.time()
             if time.time() - saved > 1800:
