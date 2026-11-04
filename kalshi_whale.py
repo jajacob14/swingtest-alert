@@ -613,7 +613,7 @@ def live():
     print(f"live: {len(warm)} commodity trades warmed · proven: {[c for c, v in R.get('proven', {}).items() if v] or 'none'}", flush=True)
     if not st.get("started"): notify("Kalshi commodity scanner online", "Reports only (no trading).\n" + (summary(R) if R.get("model") else "Model not built yet."), 3)
     win, done_min, boarded, saved, trained, settled_t, digest_t = {}, {}, set(), time.time(), time.time(), 0, st.get("digest_t", 0)
-    is_open = dict(st.get("is_open", {})); switches(force=True)
+    is_open = dict(st.get("is_open", {})); shut_t = {}; switches(force=True)
     while time.time() - t0 < maxmin * 60:
         loop0 = time.time()
         try:
@@ -626,6 +626,9 @@ def live():
                 if c not in win or ts_of(win[c]["close_time"]) <= now:
                     w = open_window(c); win[c] = w if w else {"close_time": datetime.fromtimestamp(now + 60, timezone.utc).isoformat()}
                     op = "ticker" in win[c]
+                    if op: shut_t.pop(c, None)
+                    else: shut_t.setdefault(c, now)
+                    if not op and now - shut_t[c] < 1200: continue     # gaps between windows aren't closures: need 20 min with no window
                     if c in is_open and is_open[c] != op and on("open_close", c):  # market shut off / reopened
                         notify(f"{'🔔' if op else '🔕'} {c} 15-min market {'reopened' if op else 'closed'}",
                                f"{c} {'is trading again: predictions and calls resume.' if op else 'has no open 15-min window (daily break / weekend / halt). Predictions and calls paused until it reopens.'}", 2)
