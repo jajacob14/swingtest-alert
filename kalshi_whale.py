@@ -175,7 +175,9 @@ def ticker_trades(tk, t0, t1):
         cur = None
         for _ in range(20):
             j = get(path, ticker=tk, limit=1000, min_ts=int(t0), max_ts=int(t1) + 1, cursor=cur); tr = j.get("trades") or []
-            for x in tr:
+            mine = [x for x in tr if x.get("ticker", tk) == tk]
+            if tr and not mine: break                     # endpoint ignored the ticker filter: don't page the whole exchange
+            for x in mine:
                 try: out.append(parse(x))
                 except Exception: pass
             cur = j.get("cursor")
@@ -230,7 +232,7 @@ def settled_windows(mkt, since):
             j = get(path, series_ticker=K15[mkt], status="settled" if path == "/markets" else None, limit=1000, cursor=cur, min_close_ts=int(since))
             ms = j.get("markets") or []
             for m in ms:
-                if m.get("result") in ("yes", "no") and m.get("close_time") and ts_of(m["close_time"]) >= since: got.setdefault(m["ticker"], m)
+                if m.get("ticker", "").startswith(K15[mkt] + "-") and m.get("result") in ("yes", "no") and m.get("close_time") and ts_of(m["close_time"]) >= since: got.setdefault(m["ticker"], m)
             cur = j.get("cursor")
             if not cur or not ms or ts_of(ms[-1].get("close_time") or "2000-01-01T00:00:00Z") < since: break
         if got and min(ts_of(m["close_time"]) for m in got.values()) < since + 2 * 86400: break
@@ -254,9 +256,10 @@ def load_k(mkt):
     return d.drop_duplicates(["ticker", "ts"], keep="first") if len(d) else d
 
 
-def kfetch(mkt, days, sample=1, recent_days=WEEKS_D):
+def kfetch(mkt, days, sample=1, recent_days=WEEKS_D, deadline=None):
     """Pull settled windows of the last `days` (every `sample`-th one older than `recent_days`) with trades, and
-    add order flow to the commodity bot's windows we only have quotes for."""
+    add order flow to the commodity bot's windows we only have quotes for. Newest first, saved every chunk,
+    stops at `deadline` (the next build continues where this one stopped)."""
     mine = read_gz(kpath(mkt), KCOLS); have = set(mine.ticker); now = time.time()
     ms = [m for m in settled_windows(mkt, now - days * 86400) if m["ticker"] not in have]
     ms = [m for i, m in enumerate(ms) if ts_of(m["close_time"]) >= now - recent_days * 86400 or i % sample == 0]
@@ -265,13 +268,18 @@ def kfetch(mkt, days, sample=1, recent_days=WEEKS_D):
     enrich = old.drop_duplicates("ticker")[["ticker", "close", "strike", "up"]]
     enrich = [dict(ticker=r.ticker, close_time=r.close, floor_strike=r.strike, result="yes" if r.up == 1 else "no")
               for r in enrich.itertuples() if r.ticker not in known]
-    with ThreadPoolExecutor(4) as ex: rows = [r for rs in ex.map(lambda m: window_rows(mkt, m), ms + enrich) for r in rs]
-    allr = pd.concat([mine, pd.DataFrame(rows, columns=KCOLS)], ignore_index=True) if rows else mine
-    if len(allr):
-        allr = allr.drop_duplicates(["ticker", "ts"])
-        allr = allr[allr.close.map(ts_of) >= now - (MONTHS_D + 10) * 86400]
-        os.makedirs(DATA, exist_ok=True); allr.to_csv(kpath(mkt), index=False, compression="gzip")
-    print(f"KFETCH {mkt}: +{len(ms)} new windows, +{len(enrich)} bot windows given order flow · total {load_k(mkt).ticker.nunique()}", flush=True)
+    todo = sorted(ms + enrich, key=lambda m: m["close_time"], reverse=True); done = 0
+    for i in range(0, len(todo), 150):
+        if deadline and time.time() > deadline: break
+        ch = todo[i:i + 150]
+        with ThreadPoolExecutor(4) as ex: rows = [r for rs in ex.map(lambda m: window_rows(mkt, m), ch) for r in rs]
+        done += len(ch)
+        if rows:
+            allr = pd.concat([read_gz(kpath(mkt), KCOLS), pd.DataFrame(rows, columns=KCOLS)], ignore_index=True).drop_duplicates(["ticker", "ts"])
+            allr = allr[allr.close.map(ts_of) >= now - (MONTHS_D + 10) * 86400]
+            os.makedirs(DATA, exist_ok=True); allr.to_csv(kpath(mkt), index=False, compression="gzip")
+    print(f"KFETCH {mkt}: {done}/{len(todo)} windows pulled ({len(ms)} new, {len(enrich)} bot windows given order flow) · "
+          f"total {load_k(mkt).ticker.nunique()}" + (" · stopped at time budget" if done < len(todo) else ""), flush=True)
 
 
 def harvest():
@@ -715,8 +723,9 @@ def persist(msg="kwhale: model"):
 # ---------------- commands ----------------
 def build():
     """Combine everything: scanner's own commodity history + bot cache + fresh weeks/months pulls with order flow."""
-    harvest()
-    for c in COMMS: kfetch(c, MONTHS_D, SAMPLE)
+    harvest(); end = time.time() + 60 * float(os.getenv("BUILD_FETCH_MIN", "120"))
+    for i, c in enumerate(COMMS):                          # fair share of the remaining time per commodity
+        kfetch(c, MONTHS_D, SAMPLE, deadline=time.time() + (end - time.time()) / (len(COMMS) - i))
     R = train(push=False)
     if R.get("model"): notify("🧠 Commodity model built", summary(R) + "\nFull table: kwhale/report.md", 3)
     persist("kwhale: commodity model build")
@@ -765,7 +774,7 @@ def selftest():
 
 if __name__ == "__main__":
     a = sys.argv[1:] or ["live"]
-    cmds = dict(live=live, build=build, train=train, selftest=selftest, doctor=doctor,
+    cmds = dict(live=live, build=build, train=lambda: (train(), persist("kwhale: retrain")), selftest=selftest, doctor=doctor,
                 report=lambda: print(open(f"{DIR}/report.md").read() if os.path.exists(f"{DIR}/report.md") else "no report yet"),
                 testnotify=lambda: notify("Kalshi scanner test", "KW_NTFY_TOPIC works. Separate from your commodity swing alerts.", 4))
     cmds.get(a[0], lambda: print(__doc__))()
