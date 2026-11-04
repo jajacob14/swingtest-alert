@@ -761,6 +761,12 @@ def optimize():
     res["_fast"] = {m: ({**f, "status": "active"} if f else {**FAST_DEFAULT, "status": "unproven"}) for m, _, f in out}
     for m, p in res.items(): print(m, json.dumps(p))
     res["_updated"] = dt.datetime.now(ET).isoformat(timespec="minutes")
+    import subprocess as sp
+    try:  # keep what other jobs own (real-Kalshi model _kmod, _freeze, ...): read the newest copy, not the one from hours ago
+        sp.run("git fetch -q origin main", shell=True, timeout=60)
+        cur = json.loads(sp.run("git show origin/main:params.json", shell=True, capture_output=True, text=True, timeout=30).stdout)
+    except Exception: cur = load_params()
+    res = {**{k: v for k, v in cur.items() if k.startswith("_") and k not in res}, **res}
     json.dump(res, open(PARAMS_FILE, "w"), indent=1)
 
 
