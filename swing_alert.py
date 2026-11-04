@@ -975,25 +975,33 @@ def scorecard(st):
         call = "no call"
         if len(h):
             r = h.iloc[-1]; call = f"call BUY {'UP' if r.side == 'YES' else 'DOWN'}{' (early)' if r.get('early') else ''}: {'RIGHT' if r.won else 'WRONG'}"
-        g2 = g.dropna(subset=["wm", "mid"])
+        g2 = g.dropna(subset=["wm", "mid"]).sort_values("left", ascending=False)
         mod = (f"model {int(((g2.wm >= 0.5) == g2.up).sum())}/{len(g2)}, Kalshi {int(((g2.mid >= 0.5) == g2.up).sum())}/{len(g2)}"
-               + (" (partial window)" if len(g2) < 4 else "")) if len(g2) else ""
-        lines.append(f"{COLOR[m][0]} {NAME[m]}: ended {ended} · {call}" + (f" · {mod}" if mod else ""))
+               + (" (partial)" if len(g2) < 4 else "")) if len(g2) else ""
+        fc = ""
+        if len(g2):  # what the model said first (earliest snapshot) and whether it matched the result
+            f_up = bool(g2.wm.iloc[0] >= 0.5); f_ok = f_up == bool(g2.up.iloc[0])
+            fc = (f"{'but' if call == 'no call' and not f_ok else ''} forecast {'UP' if f_up else 'DOWN'} at {int(g2.left.iloc[0])}m left"
+                  f" ({'right' if f_ok else 'wrong'})").strip()
+        lines.append(f"{COLOR[m][0]} {NAME[m]}: ended {ended} · {call}" + (f" · {fc}" if fc else "") + (f" · {mod}" if mod else ""))
     try:
         pdl = pd.read_json(PRED_LOG, lines=True); pdl["c"] = pd.to_datetime(pdl["close"], utc=True).dt.tz_convert(ET)
         ps = pred_summary(pdl[(pdl.c > lo) & (pdl.c <= due)].dropna(subset=["wm", "mid"]))
         if ps:
-            lines.append(f"15-min predictions (all windows, {ps['n']} snapshots): model right {ps['model']:.0%} vs Kalshi {ps['kalshi']:.0%}")
-            lines.append("  by minutes left: " + ", ".join(f"{b}m {v[0]:.0%} vs {v[1]:.0%}" for b, v in sorted(ps["by"].items(), reverse=True)))
+            lines.append("")
+            lines.append(f"Predictions this window: model {ps['model']:.0%} vs {ps['kalshi']:.0%}K ({ps['n']} checks)")
+            lines.append("By min left: " + " · ".join(f"{b}m {v[0]:.0%} vs {v[1]:.0%}K" for b, v in sorted(ps["by"].items(), reverse=True)))
     except Exception: pass
-    lines.append("All results above are settled by Kalshi. Scored on whether each call's prediction was right at the close.")
     ED = st.get("edge_live") or {}
     if ED:
         pr = [NAME.get(m, m) for m in ALL if any(proven(st, m, t) for t in (12, 5))]
-        lines.append("Calls allowed (model proven to beat Kalshi live): " + (", ".join(pr) if pr else "none yet, still collecting proof"))
+        lines.append("Calls on for: " + (", ".join(pr) if pr else "none yet (still proving it beats Kalshi)"))
     L = st.get("wm_live") or {}; E = st.get("early_live") or {}
-    if L: lines.append("Learning: live-retrained models active for " + ", ".join(NAME.get(m, m) for m, v in L.items() if v["loss_live"] <= v["loss_backtest"]) if any(v["loss_live"] <= v["loss_backtest"] for v in L.values()) else "Learning: collecting live data (backtest models still better)")
-    if E: lines.append("Live EARLY record: " + ", ".join(f"{NAME.get(m, m)} {v['acc']:.0%} vs Kalshi {v['mid']:.0%} ({v['n']})" for m, v in E.items()))
+    if L: lines.append("Learning: " + (("updated live for " + ", ".join(NAME.get(m, m) for m, v in L.items() if v["loss_live"] <= v["loss_backtest"]))
+                                        if any(v["loss_live"] <= v["loss_backtest"] for v in L.values()) else "still collecting"))
+    if E: lines.append("EARLY record: " + " · ".join(f"{NAME.get(m, m)} {v['acc']:.0%} vs {v['mid']:.0%}K ({v['n']} cases)" for m, v in sorted(E.items(), key=lambda kv: -kv[1]['n'])))
+    lines.append("%K = Kalshi's odds. (n cases) = early setups graded live: 9+ min left, model 60%+, Kalshi near even. "
+                 "EARLY 83% vs 53%K means the model was right 83% of the time while Kalshi priced it at 53%.")
     notify(f"W/L {lo:%-I:%M}–{due:%-I:%M}: {r30} right, {w30} wrong · today {rt}-{wt}", "\n".join(lines), "default")
     # separate alert: markets whose model got 4/4 (or 3/4) of this window's snapshots right
     try:
@@ -1714,10 +1722,10 @@ def board_line(mkt, a, st):
     kp = (st.get("kp") or {}).get(mkt)
     if kp:
         up = kp["p"] >= 0.5
-        out += (f"\n    Prediction: {'UP' if up else 'DOWN'} {max(kp['p'], 1 - kp['p']):.0%} vs Kalshi {(kp['mid'] if up else 1 - kp['mid']):.0%}"
+        out += (f"\n    Prediction: {'UP' if up else 'DOWN'} {max(kp['p'], 1 - kp['p']):.0%} vs {(kp['mid'] if up else 1 - kp['mid']):.0%}K"
                 f" ({'fresh' if kp['reg'] == 'fresh' else 'delayed'} data) · " + ("CALL SENT" if not kp.get("why_not") else f"no call: {kp['why_not']}"))
         ka = (st.get("kalpha") or {}).get(mkt)
-        if ka: out += f"\n    Live record: model right {ka['model']:.0%} vs Kalshi {ka['kalshi']:.0%} ({ka['n']} snapshots), trust x{ka['alpha']:.2f}"
+        if ka: out += f"\n    Live record: model right {ka['model']:.0%} vs {ka['kalshi']:.0%}K ({ka['n']} checks), trust x{ka['alpha']:.2f}"
     if a["score"] >= 45 or ("start" in a and max(a["p_up"], 1 - a["p_up"]) >= 0.75) or (a.get("fc_ok") and max(a.get("fc_p", .5), 1 - a.get("fc_p", .5)) >= 0.6):
         out += "\n    " + analysis_block(mkt, a).split("\n")[1]  # trend line for the markets that matter right now
     return out
@@ -1768,10 +1776,10 @@ def action_line(mkt, a):
             lead = max(wp, 1 - wp) if wp is not None else 0; mk = a["ya"] if lead_up else a["na"]
             if lead >= 0.9 and a.get("wm_ok"):
                 parts.append(f"NEAR LOCK (our analysis {lead:.0%}, tested {a['wm_acc']:.0%}): BUY {'UP' if lead_up else 'DOWN'}, "
-                             f"ends {'above' if lead_up else 'below'} {money(mkt, a['start'])} in {T:.0f} min. Kalshi prices {mk:.0%}")
+                             f"ends {'above' if lead_up else 'below'} {money(mkt, a['start'])} in {T:.0f} min. Kalshi {mk:.0%}K")
             elif lead >= 0.62 and mk <= EARLY_MAX_COST and lead - mk >= 0.05:
-                parts.append(f"AHEAD OF KALSHI: our analysis {lead:.0%} {'UP' if lead_up else 'DOWN'} vs Kalshi {mk:.0%}, {T:.0f} min left")
-            elif lead >= 0.75: parts.append(f"Kalshi already prices {'UP' if lead_up else 'DOWN'} at {mk:.0%}: no edge left, wait")
+                parts.append(f"AHEAD OF KALSHI: our analysis {lead:.0%} {'UP' if lead_up else 'DOWN'} vs {mk:.0%}K, {T:.0f} min left")
+            elif lead >= 0.75: parts.append(f"Kalshi already prices {'UP' if lead_up else 'DOWN'} at {mk:.0%}K: no edge left, wait")
             elif T < 4: parts.append(f"window ends in {T:.0f} min, wait for the next one")
             else: parts.append("wait")
     return ". ".join(x[0].upper() + x[1:] for x in parts if x) + "."
@@ -1813,7 +1821,7 @@ def early_call(st, mkt, a, lv, cal):
     if not 0.30 <= cost <= 0.55 or conf < max(0.60, need_prob(st, mkt, "early")) or conf - cost - kfee(cost) < 0.05: return False
     if "m10" in a and (a["m10"] > 0) != up: return False          # projection must point the same way
     if fc_conflict(st, mkt, up): return False
-    why = (f"called early: our analysis {conf:.0%} vs Kalshi {cost:.0%} with {a['T']:.0f} min left; early calls like this were right "
+    why = (f"called early: our analysis {conf:.0%} vs {cost:.0%}K with {a['T']:.0f} min left; early calls like this were right "
            f"{wm['early_acc']:.0%} on unseen days vs {wm['early_fair']:.0%} from price alone; projected {a.get('m10', 0) * 100:+.2f}% in 10 min; "
            + ctx_short(dict(trend=1 if a.get("tr_pct", 0) > 0 else -1, flow=a.get("flow", 0)), up))
     open_call(st, mkt, "early", "YES" if up else "NO", c, lv, a["px"], odds_line(conf, cost), why, True, prob=conf)
@@ -1836,7 +1844,7 @@ def lock_call(st, mkt, a, lv, cal):
     if conf - cost > 0.25: return False  # huge disagreement with Kalshi = our data is probably off: skip
     st["lockwin"][mkt] = c["ticker"]
     why = (f"our analysis says {conf:.0%} ({'UP' if up else 'DOWN'}); its 90%+ calls were right {a['wm_acc']:.0%} of "
-           f"{a['wm_n']:,} times on unseen days; Kalshi only prices {cost:.0%}; " + ctx_short(dict(trend=1 if a.get('tr_pct', 0) > 0 else -1, flow=a.get('flow', 0)), up))
+           f"{a['wm_n']:,} times on unseen days; Kalshi only {cost:.0%}K; " + ctx_short(dict(trend=1 if a.get('tr_pct', 0) > 0 else -1, flow=a.get('flow', 0)), up))
     open_call(st, mkt, "lock", "YES" if up else "NO", c, lv, a["px"], odds_line(conf, cost), why, True, prob=conf)
     return True
 
@@ -2315,7 +2323,7 @@ def announce_open(st, mkts, openm):
     if opened or closed:
         lines = [f"{COLOR[k][0]} {NAME[k]}: open, watching for calls" for k in opened] + \
                 [f"{COLOR[k][0]} {NAME[k]}: closed, paused until it reopens" for k in closed]
-        notify("Market hours update", "\n".join(lines), "default")
+        print("market hours:", "; ".join(lines))  # log only, no notification
 
 
 LIVEVIEW = {}  # mkt -> (bars, price, lv) from whichever engine is running it
@@ -2328,7 +2336,7 @@ def overview(mkt, st):
     parts = [f"{COLOR[mkt][0]} {NAME[mkt]} {money(mkt, a['px'])}"]
     if kp:
         up = kp["p"] >= 0.5
-        parts.append(f"leans {'UP' if up else 'DOWN'} {max(kp['p'], 1 - kp['p']):.0%} vs Kalshi {(kp['mid'] if up else 1 - kp['mid']):.0%}")
+        parts.append(f"leans {'UP' if up else 'DOWN'} {max(kp['p'], 1 - kp['p']):.0%} vs {(kp['mid'] if up else 1 - kp['mid']):.0%}K")
     if "px10" in a and "start" in a:
         pend = a["px10"]; parts.append(f"projected ~{money(mkt, pend)} ({'above' if pend >= a['start'] else 'below'} start {money(mkt, a['start'])})")
     tr = a.get("tr_pct"); fl = a.get("flow", 0)
@@ -2422,9 +2430,9 @@ def regime_update(st, mkt, m):
     new = "HIGH" if cur == "NORMAL" and ratio > 2.0 else "NORMAL" if cur == "HIGH" and ratio < 1.4 else cur
     if new != cur:
         reg[mkt] = new
-        notify(f"{NAME[mkt]}: {'high volatility' if new == 'HIGH' else 'volatility back to normal'}",
+        print(f"{NAME[mkt]}: {'high volatility' if new == 'HIGH' else 'volatility back to normal'}",
                (f"Moves are {ratio:.1f}× normal speed. Calls now need +2¢ more edge; long shots paused." if new == "HIGH"
-                else f"Volatility settled ({ratio:.1f}× normal). Normal call rules resume."), "default", mkt)
+                else f"Volatility settled ({ratio:.1f}× normal). Normal call rules resume."))
 
 
 def regime_extra(st, mkt): return 0.02 if st.get("regime", {}).get(mkt) == "HIGH" else 0.0
@@ -2567,14 +2575,14 @@ def live():
                 try: st["frozen"] = sorted(frozen_cells())
                 except Exception: pass
             if st.get("mode") != shown and not (st.get("mode") == "idle" and shown == "night"):  # announce once
-                notify(f"Mode: {'overnight (day data down)' if shown == 'night*' else {'day': 'day', 'night': 'overnight', 'closed': 'closed'}[shown]}", MODE_TXT[shown], "default")
+                print(f"Mode: {'overnight (day data down)' if shown == 'night*' else {'day': 'day', 'night': 'overnight', 'closed': 'closed'}[shown]}", MODE_TXT[shown])
                 st["mode"] = shown; yc.clear()  # keep live price history across mode switches
             if mode == "night":
                 changed, boards = night_tick(st, S["params"], cool, nh, yc)
                 if not boards:  # every market closed (e.g. weekend): idle, still report results
                     changed |= settle_only(st)
                     if st.get("mode") != "idle":
-                        notify("Mode: idle", "No Kalshi commodity 15-min markets are open right now. Waiting for the reopen; "
+                        print("Mode: idle", "No Kalshi commodity 15-min markets are open right now. Waiting for the reopen; "
                                "open calls still get their results.", "default"); st["mode"] = "idle"
                     mode = "closed"
                 elif st.get("mode") == "idle": st["mode"] = None
@@ -2758,8 +2766,8 @@ def tally(since_hour=None):
     try:
         pdl = pd.read_json(PRED_LOG, lines=True); pdl["c"] = pd.to_datetime(pdl["close"], utc=True).dt.tz_convert(ET)
         ps = pred_summary(pdl[pdl.c >= start].dropna(subset=["wm", "mid"]))
-        if ps: lines.append(f"15-min predictions, every window ({ps['n']} snapshots): model right {ps['model']:.0%} vs Kalshi {ps['kalshi']:.0%}. "
-                            "By minutes left: " + ", ".join(f"{b}m {v[0]:.0%}/{v[1]:.0%}" for b, v in sorted(ps["by"].items(), reverse=True)))
+        if ps: lines.append(f"15-min predictions, every window ({ps['n']} snapshots): model {ps['model']:.0%} vs {ps['kalshi']:.0%}K. "
+                            "By min left: " + " · ".join(f"{b}m {v[0]:.0%} vs {v[1]:.0%}K" for b, v in sorted(ps["by"].items(), reverse=True)))
     except Exception: pass
     notify(f"Evening tally: {r} right, {w} wrong", "\n".join(lines), "high")
 
@@ -2997,7 +3005,7 @@ def kcall(st, mkt, bars, lv, px, params):
               ("call already open" if busy(st, mkt) else None) or ("warming up" if not live_ready(st, mkt) else None) or \
               ("already called this window" if st.setdefault("lswin", {}).get(mkt) == c["ticker"] else None) or \
               ("report/jump window" if event_window(mkt, now, T) else None) or \
-              (f"Kalshi already {ask:.0%}: too late" if ask > KMAX_ASK else None) or \
+              (f"Kalshi already {ask:.0%}K: too late" if ask > KMAX_ASK else None) or \
               (None if 0.05 < ask and ps - ask - kfee(ask) >= 0.04 else f"edge too small ({(ps - ask - kfee(ask)) * 100:+.0f} pts after fees)")
     KP[mkt]["why_not"] = why_not
     if why_not: return False
