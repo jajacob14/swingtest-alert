@@ -669,6 +669,22 @@ def backfill(days=None):
     settle(meta, st, cap=3000); meta.save(); save_json(f"{DATA}/state.json", st); train(quiet=True); persist("kwhale: backfill")
 
 
+def doctor():
+    """Checks ntfy delivery without printing the topic (Actions logs on a public repo are public)."""
+    t = os.getenv("KW_NTFY_TOPIC") or ""; srv = os.getenv("KW_NTFY_SERVER", "https://ntfy.sh").rstrip("/")
+    print(f"KW_NTFY_TOPIC set: {bool(t)} · length {len(t)} · has '/', ':' or spaces: {any(c in t for c in '/: ')} · "
+          f"uppercase letters: {any(c.isupper() for c in t)} (topics are case-sensitive) · server {srv}")
+    if not t: return
+    tag = f"doctor-{int(time.time())}"
+    r = requests.post(srv + "/", json={"topic": t, "title": "Kalshi scanner doctor", "message": f"Delivery check {tag}", "priority": 4}, timeout=15)
+    print("publish:", r.status_code, r.text[:200].replace(t, "<topic>"))
+    time.sleep(3)
+    q = requests.get(f"{srv}/{t}/json", params={"poll": 1, "since": "2h"}, timeout=15)
+    msgs = [json.loads(x) for x in q.text.splitlines() if x.strip()]
+    print(f"messages on this topic in last 2h: {len(msgs)} · this check found: {any(tag in (m.get('message') or '') for m in msgs)}")
+    print("If found=True but your phone shows nothing, the app is subscribed to a different topic name/server than the secret.")
+
+
 def report():
     M = load_json(f"{DIR}/model.json", {}); print(json.dumps({k: v for k, v in M.items() if k not in ("dr", "mv")}, indent=1, default=float))
 
@@ -702,7 +718,7 @@ def selftest():
 
 if __name__ == "__main__":
     a = sys.argv[1:] or ["live"]
-    cmds = dict(live=live, backfill=lambda: backfill(a[1] if len(a) > 1 else None), train=train, report=report, selftest=selftest,
+    cmds = dict(live=live, backfill=lambda: backfill(a[1] if len(a) > 1 else None), train=train, report=report, selftest=selftest, doctor=doctor,
                 settle=lambda: (lambda m, s: (settle(m, s, 3000), save_json(f"{DATA}/state.json", s)))(Meta(), load_json(f"{DATA}/state.json", {})),
                 testnotify=lambda: notify("Kalshi scanner test", "If you see this, KW_NTFY_TOPIC works. Separate from your commodity alerts.", 4))
     cmds.get(a[0], lambda: print(__doc__))()
