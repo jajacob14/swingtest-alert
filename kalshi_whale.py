@@ -735,14 +735,19 @@ def build():
 
 
 def doctor():
-    t = os.getenv("KW_NTFY_TOPIC") or ""; srv = os.getenv("KW_NTFY_SERVER", "https://ntfy.sh").rstrip("/")
-    print(f"KW_NTFY_TOPIC set: {bool(t)} · length {len(t)} · uppercase: {any(c.isupper() for c in t)} (case-sensitive)")
-    if not t: return
-    tag = f"doctor-{int(time.time())}"
-    r = requests.post(srv + "/", json={"topic": t, "title": "Kalshi scanner doctor", "message": f"Delivery check {tag}", "priority": 4}, timeout=15)
-    print("publish:", r.status_code); time.sleep(3)
-    msgs = [json.loads(x) for x in requests.get(f"{srv}/{t}/json", params={"poll": 1, "since": "2h"}, timeout=15).text.splitlines() if x.strip()]
-    print(f"messages on topic (2h): {len(msgs)} · this check found: {any(tag in (m.get('message') or '') for m in msgs)}")
+    """Delivery check for both bots' topics. Prints a fingerprint (not the name: logs are public) to compare with the app."""
+    import hashlib
+    srv = os.getenv("KW_NTFY_SERVER", "https://ntfy.sh").rstrip("/")
+    for name in ("KW_NTFY_TOPIC", "NTFY_TOPIC"):
+        t = os.getenv(name) or ""
+        print(f"{name} set: {bool(t)} · length {len(t)} · uppercase: {any(c.isupper() for c in t)} · spaces: {t != t.strip()} · "
+              f"fingerprint {hashlib.sha256(t.encode()).hexdigest()[:10]}")
+        if not t: continue
+        tag = f"doctor-{int(time.time())}"
+        r = requests.post(srv + "/", json={"topic": t, "title": f"Delivery check ({name})", "message": f"If you see this, the app works. {tag}", "priority": 4}, timeout=15)
+        print("  publish:", r.status_code); time.sleep(3)
+        msgs = [json.loads(x) for x in requests.get(f"{srv}/{t}/json", params={"poll": 1, "since": "12h"}, timeout=15).text.splitlines() if x.strip()]
+        print(f"  messages on topic (12h): {len(msgs)} · this check found: {any(tag in (m.get('message') or '') for m in msgs)}")
 
 
 def selftest():

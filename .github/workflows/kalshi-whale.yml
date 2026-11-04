@@ -29,6 +29,7 @@ jobs:
           PYTHONUNBUFFERED: "1"
           GIT_PERSIST: "1"
           KW_NTFY_TOPIC: ${{ secrets.KW_NTFY_TOPIC }}
+          NTFY_TOPIC: ${{ inputs.cmd == 'doctor' && secrets.NTFY_TOPIC || '' }}
           KW_MIN_WHALE: ${{ vars.KW_MIN_WHALE }}
           KW_ALERT_WHALE: ${{ vars.KW_ALERT_WHALE }}
           KW_EDGE: ${{ vars.KW_EDGE }}
