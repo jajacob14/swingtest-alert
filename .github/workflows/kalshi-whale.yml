@@ -9,7 +9,7 @@ on:
       maxmin: {description: "live run length in minutes", default: "345"}
 permissions: {contents: write, actions: write}
 concurrency:
-  group: kwhale-${{ (inputs.cmd || 'live') == 'live' }}
+  group: kwhale-${{ inputs.cmd || 'live' }}
   cancel-in-progress: false
 jobs:
   run:
