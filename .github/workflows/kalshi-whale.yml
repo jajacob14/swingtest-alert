@@ -4,8 +4,7 @@ on:
     - cron: "23 */6 * * *"   # fallback starter; normally each ~6h run chains the next one itself (24/7)
   workflow_dispatch:
     inputs:
-      cmd: {description: "live | backfill | train | report | settle | testnotify | doctor", default: live}
-      arg: {description: "backfill days (default 3)", default: ""}
+      cmd: {description: "build | live | train | report | testnotify | doctor", default: live}
       maxmin: {description: "live run length in minutes", default: "345"}
 permissions: {contents: write, actions: write}
 concurrency:
@@ -20,28 +19,25 @@ jobs:
       - uses: actions/setup-python@v5
         with: {python-version: "3.12", cache: pip}
       - run: pip install -q -r requirements.txt && git config user.name bot && git config user.email bot@users.noreply.github.com
-      - name: restore scanner data (graded snapshots, whale history, state)
+      - name: restore scanner data (Kalshi windows, whale history, state)
         uses: actions/cache/restore@v4
         with: {path: kwhale/data, key: "kwhale-data-${{ github.run_id }}", restore-keys: "kwhale-data-"}
-      - run: python kalshi_whale.py "$CMD" $ARG
+      - run: python kalshi_whale.py "$CMD"
         env:
           CMD: ${{ inputs.cmd || 'live' }}
-          ARG: ${{ inputs.arg }}
           LIVE_MAX_MIN: ${{ inputs.maxmin || '345' }}
           PYTHONUNBUFFERED: "1"
           GIT_PERSIST: "1"
           KW_NTFY_TOPIC: ${{ secrets.KW_NTFY_TOPIC }}
           KW_MIN_WHALE: ${{ vars.KW_MIN_WHALE }}
           KW_ALERT_WHALE: ${{ vars.KW_ALERT_WHALE }}
-          KW_CONF: ${{ vars.KW_CONF }}
-          KW_TOPN: ${{ vars.KW_TOPN }}
-          KW_SKIP: ${{ vars.KW_SKIP }}
+          KW_EDGE: ${{ vars.KW_EDGE }}
       - name: save scanner data
         if: always()
         uses: actions/cache/save@v4
         with: {path: kwhale/data, key: "kwhale-data-${{ github.run_id }}-${{ github.run_attempt }}"}
       - name: chain the next live run
-        if: ${{ success() && (inputs.cmd || 'live') == 'live' }}
+        if: ${{ success() && contains(fromJSON('["live","build"]'), inputs.cmd || 'live') }}
         run: gh workflow run kalshi-whale --ref "$GITHUB_REF_NAME" -f cmd=live
         env:
           GH_TOKEN: ${{ github.token }}
