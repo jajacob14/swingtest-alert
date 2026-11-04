@@ -1,0 +1,22 @@
+{
+ "pause_all": false,
+ "markets": {
+  "WTI": true,
+  "BRENT": true,
+  "NATGAS": true,
+  "GOLD": true,
+  "SILVER": true,
+  "COPPER": true,
+  "PLATINUM": true,
+  "PALLADIUM": true
+ },
+ "alerts": {
+  "board": true,
+  "edge_calls": true,
+  "results": true,
+  "whales": true,
+  "spikes": true,
+  "digest": true,
+  "open_close": true
+ }
+}

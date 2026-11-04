@@ -12,6 +12,7 @@ months, (3) every window's trades (order flow + big-money flow), (4) whale histo
 Model: p = σ(logit(Kalshi mid) + w·x), so it learns only what Kalshi's own price misses. Trained on 3 weeks, tested on the
 newest 30%, then re-checked on past months it never saw. PROVEN = beats Kalshi on both. Retrains every 6h; live misses x1.5.
 
+Switches: kwhale/switches.json (markets on/off, alert types on/off, pause_all), re-read every 5 min while live.
 Commands: build | live | train | report | doctor | testnotify | selftest
 """
 import glob, json, math, os, subprocess, sys, threading, time
@@ -68,6 +69,34 @@ def load_json(p, d):
     except Exception: return d
 def save_json(p, o):
     os.makedirs(os.path.dirname(p) or ".", exist_ok=True); tmp = p + ".tmp"; json.dump(o, open(tmp, "w"), indent=1, default=float); os.replace(tmp, p)
+SW_DEFAULT = {"pause_all": False, "markets": {c: True for c in COMMS},
+              "alerts": {"board": True, "edge_calls": True, "results": True, "whales": True, "spikes": True, "digest": True, "open_close": True}}
+_SW = {"sw": None, "t": 0}
+
+
+def switches(force=False):
+    """kwhale/switches.json: turn markets / alert types on or off, or pause everything. Edit it on GitHub; the live bot
+    re-reads it from the remote branch every 5 min (no restart). Data collection and learning never stop."""
+    if _SW["sw"] is not None and not force and time.time() - _SW["t"] < 300: return _SW["sw"]
+    txt = None
+    if os.getenv("GIT_PERSIST"):
+        br = os.getenv("GITHUB_REF_NAME", "main")
+        r = subprocess.run(f"git fetch -q origin {br} && git show origin/{br}:{DIR}/switches.json", shell=True, capture_output=True, text=True)
+        txt = r.stdout if r.returncode == 0 else None
+    try: sw = json.loads(txt) if txt else load_json(f"{DIR}/switches.json", {})
+    except ValueError: sw = _SW["sw"] or {}; print("switches.json is not valid JSON: keeping previous switches", flush=True)
+    out = json.loads(json.dumps(SW_DEFAULT))
+    out["pause_all"] = bool(sw.get("pause_all", False))
+    for k in ("markets", "alerts"): out[k].update({a: bool(b) for a, b in (sw.get(k) or {}).items() if a in out[k]})
+    if _SW["sw"] and out != _SW["sw"]: print("switches changed:", out, flush=True)
+    _SW.update(sw=out, t=time.time()); return out
+
+
+def on(kind, comm=None):
+    sw = switches()
+    return not sw["pause_all"] and sw["alerts"].get(kind, True) and (comm is None or sw["markets"].get(comm, True))
+
+
 def comm_of(tk):
     s = str(tk).split("-")[0].upper()
     if not s.startswith("KX"): return None
@@ -489,7 +518,7 @@ class Live:
         self.recent.setdefault(tk, []).append([t0, sd, usd, px])
         self.pend_w.append(dict(t=t0, tk=tk, comm=comm, sd=sd, usd=round(usd, 2), px=px, m1=k.mid(t1)))
         print(f"WHALE {money(usd):>8} {'YES' if sd > 0 else 'NO '} @{cents(px):>4} x{nprints:<3} {meta.get('title', tk)[:70]}", flush=True)
-        if not alert or usd < ALERT_WHALE or not self.allow("whale", tk, 600, 6): return
+        if not alert or usd < ALERT_WHALE or not on("whales", comm) or not self.allow("whale", tk, 600, 6): return
         side = "YES" if sd > 0 else "NO"
         L = [meta.get("title", tk), f"{side} @ {cents(px)} · {nprints} prints merged" + (f" · {'BULLISH' if bull > 0 else 'BEARISH'} {comm}" if bull else "")]
         pre = ((k.mid_at(t0 - 1) or m_before) - (k.mid_at(t0 - 600) or m_before)) * sd * 100
@@ -502,7 +531,7 @@ class Live:
 
     def spike(self, tk, k, ts, a, m):
         meta = self.meta.get(tk) or {}; comm = meta.get("comm") or comm_of(tk)
-        if not self.allow("spike", tk, 900, 4): return
+        if not on("spikes", comm) or not self.allow("spike", tk, 900, 4): return
         bull = (1 if m > a else -1) * meta.get("dir", 0)
         notify(f"⚡ {comm} spike {'UP ' if bull > 0 else 'DOWN ' if bull < 0 else ''}{abs(m - a) * 100:.0f}¢",
                f"{meta.get('title', tk)}\nYES {cents(a)} → {cents(m)} in 2m · {money(sum(x[2] for x in k.tr if x[0] >= ts - 120))} traded\nWhale flow: {self.flow_txt(comm)}",
@@ -544,16 +573,21 @@ def live_pred(R, c, w):
     return p, float(r.mid.iloc[0]), dict(bid=float(r.bid.iloc[0]), ask=float(r.ask.iloc[0]), tl=float(r.tl.iloc[0]), t1=ts_of(w["close_time"]))
 
 
-def board(L_, R, preds, b):
+def board(L_, R, preds, b, closed=()):
+    if not on("board"): return
     pv = R.get("proven", {}); L = []
     for c, (p, mid, q, flow) in preds.items():
+        if not on("board", c): continue
         up = p >= 0.5; ps = p if up else 1 - p; ask = q["ask"] if up else 1 - q["bid"]; e = ps - ask - fee(min(max(ask, 0.01), 0.99))
         L.append(f"{'🟢' if up else '🔴'} {c} {'UP' if up else 'DOWN'} {ps:.0%} vs Kalshi {(mid if up else 1 - mid):.0%} · ask {cents(ask)} · "
                  f"edge {e * 100:+.0f}pts{' ✅' if pv.get(c) else ' (unproven)'}")
         L.append(f"   whales {flow}")
     rec = [x for x in L_.calls if x.get("won") is not None and x["t"] > time.time() - 86400]
     if rec: L.append(f"\nEdge calls 24h: {sum(x['won'] for x in rec)}/{len(rec)} won, {sum(x['pnl'] for x in rec) / max(sum(x['cost'] for x in rec), 1e-9):+.0%} ROI")
-    notify(f"📈 Commodities 15-min · closes {et(b)} ET", "\n".join(L), 2)
+    off = [c for c in COMMS if not switches()["markets"].get(c, True)]
+    if closed: L.append("Closed now: " + ", ".join(closed))
+    if off: L.append("Switched off: " + ", ".join(off))
+    if L: notify(f"📈 Commodities 15-min · closes {et(b)} ET", "\n".join(L), 2)
 
 
 def live():
@@ -571,6 +605,7 @@ def live():
     print(f"live: {len(warm)} commodity trades warmed · proven: {[c for c, v in R.get('proven', {}).items() if v] or 'none'}", flush=True)
     if not st.get("started"): notify("Kalshi commodity scanner online", "Reports only (no trading).\n" + (summary(R) if R.get("model") else "Model not built yet."), 3)
     win, done_min, boarded, saved, trained, settled_t, digest_t = {}, {}, set(), time.time(), time.time(), 0, st.get("digest_t", 0)
+    is_open = dict(st.get("is_open", {})); switches(force=True)
     while time.time() - t0 < maxmin * 60:
         loop0 = time.time()
         try:
@@ -582,6 +617,11 @@ def live():
             for c in COMMS:  # 15-min windows: one prediction per completed minute
                 if c not in win or ts_of(win[c]["close_time"]) <= now:
                     w = open_window(c); win[c] = w if w else {"close_time": datetime.fromtimestamp(now + 60, timezone.utc).isoformat()}
+                    op = "ticker" in win[c]
+                    if c in is_open and is_open[c] != op and on("open_close", c):  # market shut off / reopened
+                        notify(f"{'🔔' if op else '🔕'} {c} 15-min market {'reopened' if op else 'closed'}",
+                               f"{c} {'is trading again: predictions and calls resume.' if op else 'has no open 15-min window (daily break / weekend / halt). Predictions and calls paused until it reopens.'}", 2)
+                    is_open[c] = op
                 w = win[c]
                 if "ticker" not in w or done_min.get(c) == minute or now % 60 < 4: continue
                 done_min[c] = minute; out = live_pred(R, c, w)
@@ -594,14 +634,14 @@ def live():
                 up = p >= 0.5; ps = p if up else 1 - p; ask = q["ask"] if up else 1 - q["bid"]; e = ps - ask - fee(min(max(ask, 0.01), 0.99))
                 lr = [x for x in L_.calls if x["c"] == c and x.get("won") is not None][-30:]
                 bad = len(lr) >= 20 and sum(x["pnl"] for x in lr) < -0.05 * sum(x["cost"] for x in lr)  # live results disproving it
-                if (R.get("proven", {}).get(c) and not bad and 3 <= tl <= 12 and e >= EDGE and 0.03 < ask <= KMAX
+                if (R.get("proven", {}).get(c) and not bad and on("edge_calls", c) and 3 <= tl <= 12 and e >= EDGE and 0.03 < ask <= KMAX
                         and not any(x["tk"] == tk for x in L_.calls)):
                     cost = ask + fee(ask); L_.calls.append(dict(t=now, c=c, tk=tk, up=bool(up), ask=ask, cost=cost, p=ps, won=None, pnl=0.0))
                     notify(f"🎯 {c} 15-min: {'YES (UP)' if up else 'NO (DOWN)'} ≤ {cents(ask)}",
                            f"Model {ps:.0%} vs Kalshi {(mid if up else 1 - mid):.0%} · edge {e * 100:+.0f} pts after fees · {tl:.0f} min left\n"
                            f"Closes {et(q['t1'])} ET · whales {flow}\nBacktest: {fmt_eval(R['weeks']['test_by'].get(c))}", 4, f"{WEB}/{K15[c].lower()}")
             b = int(now // 900 * 900) + 900
-            if preds and b not in boarded: boarded.add(b); board(L_, R, preds, b)
+            if preds and b not in boarded: boarded.add(b); board(L_, R, preds, b, [c for c in COMMS if is_open.get(c) is False])
             if now - settled_t > 60: settle(L_); settled_t = now
             if now - trained > 6 * 3600:
                 L_.flush()
@@ -609,11 +649,11 @@ def live():
                 R = train() or R; trained = now
             if now - digest_t > 6 * 3600: digest(L_, R); digest_t = now
             if now - saved > 1800:
-                L_.flush(); meta.save(); save_json(f"{DATA}/state.json", {**L_.state(), "started": True, "digest_t": digest_t}); persist(); saved = now
+                L_.flush(); meta.save(); save_json(f"{DATA}/state.json", {**L_.state(), "started": True, "digest_t": digest_t, "is_open": is_open}); persist(); saved = now
         except Exception as ex:
             import traceback; traceback.print_exc(); print("loop error (continuing):", ex, flush=True); time.sleep(5)
         time.sleep(max(1.0, POLL - (time.time() - loop0)))
-    L_.flush(); meta.save(); save_json(f"{DATA}/state.json", {**L_.state(), "started": True, "digest_t": digest_t}); persist("kwhale: end of run")
+    L_.flush(); meta.save(); save_json(f"{DATA}/state.json", {**L_.state(), "started": True, "digest_t": digest_t, "is_open": is_open}); persist("kwhale: end of run")
 
 
 def settle(L_):
@@ -630,7 +670,7 @@ def settle(L_):
             if x["tk"] == tk and x["won"] is None:
                 x["won"] = int(x["up"] == up); x["pnl"] = round(x["won"] - x["cost"], 4)
                 if not x["won"]: L_.missed.append(tk)
-                notify(f"{'✅' if x['won'] else '❌'} {x['c']} 15-min call {'won' if x['won'] else 'lost'}",
+                if on("results", x["c"]): notify(f"{'✅' if x['won'] else '❌'} {x['c']} 15-min call {'won' if x['won'] else 'lost'}",
                        f"Called {'UP' if x['up'] else 'DOWN'} at {cents(x['ask'])}: settled {'UP' if up else 'DOWN'} · {x['pnl'] / x['cost']:+.0%} per $", 3)
         L_.snaps.pop(tk)
     if log:
@@ -639,6 +679,7 @@ def settle(L_):
 
 
 def digest(L_, R):
+    if not on("digest"): L_.stats = dict(trades=0, whales=0, vol=0.0); return
     s = L_.stats; L = [f"{s['trades']:,} commodity trades · {s['whales']:,} whales · {money(s['vol'])} whale volume since last digest"]
     d = read_gz(f"{DATA}/live_preds.csv.gz")
     if len(d):

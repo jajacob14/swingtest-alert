@@ -76,6 +76,15 @@ more, and windows where a live edge call lost count 1.5×. Full results: `kwhale
 3. Optional variables: `KW_ALERT_WHALE` (2000), `KW_MIN_WHALE` (500), `KW_EDGE` (0.04).
    `cmd=doctor` checks push delivery.
 
+## Switches (no restart needed)
+Edit `kwhale/switches.json` on GitHub (pencil icon → commit). The live bot re-reads it every 5 min.
+- `"pause_all": true` mutes every push.
+- `"markets": {"NATGAS": false}` mutes one commodity.
+- `"alerts": {"spikes": false}` mutes one alert type: `board`, `edge_calls`, `results`, `whales`, `spikes`, `digest`, `open_close`.
+
+Data collection and learning keep running while things are switched off. When a commodity's 15-min market stops
+trading (daily break, weekend, halt), you get one 🔕 push and its predictions and calls pause. You get 🔔 when it reopens.
+
 ## What the research says
 - Kalshi takers lose on average and makers win (Bürgi, Deng & Whelan; Becker, 72M trades), so big market orders are not
   automatically smart money. Every whale stat here is checked against what happened next.
