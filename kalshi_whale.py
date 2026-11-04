@@ -198,6 +198,7 @@ class Engine:
     # ----- ingest -----
     def ingest(self, ts, tk, sd, yp, n, usd):
         self.now = max(self.now, ts); self.stats["trades"] += 1
+        if tk.startswith(SKIP): return  # parlay tickers are one-off and endless: don't even track them
         k = self.T[tk]; m_prev = k.mid(ts)
         if sd > 0: k.ask, k.ask_t = yp, ts
         else: k.bid, k.bid_t = yp, ts
@@ -233,7 +234,7 @@ class Engine:
         elif now - self.graded >= 30: self._grade(now)
 
     def _prune(self, now):
-        for tk in [t for t, k in self.T.items() if not k.tr and not k.cl and (not k.mids or k.mids[-1][0] < now - 7200)]:
+        for tk in [t for t, k in self.T.items() if not k.cl and (not k.mids or k.mids[-1][0] < now - 7200)]:
             self.T.pop(tk, None)
         hcut = int(now // 3600) - 24
         self.flow = {tk: {h: v for h, v in f.items() if int(h) > hcut} for tk, f in self.flow.items()}
