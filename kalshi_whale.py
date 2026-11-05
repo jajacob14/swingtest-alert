@@ -15,7 +15,7 @@ newest 30%, then re-checked on past months it never saw. PROVEN = beats Kalshi o
 Switches: kwhale/switches.json (markets on/off, alert types on/off, pause_all), re-read every 5 min while live.
 Commands: build | live | train | report | doctor | testnotify | selftest
 """
-import glob, json, math, os, subprocess, sys, threading, time
+import glob, json, math, os, re, subprocess, sys, threading, time
 from collections import defaultdict, deque
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timezone
@@ -104,6 +104,16 @@ def comm_of(tk):
     for c, ks in KEYS.items():
         if any(s.startswith(k) for k in ks): return c
     return None
+def is15(tk, comm=None):
+    comm = comm or comm_of(tk); return bool(comm) and str(tk).upper().startswith(K15[comm] + "-")
+
+
+def label15(meta, tk):
+    """'15-min · target $4,041.83' instead of the market's question text."""
+    m = re.search(r"Target Price:\s*([^\]]+)", meta.get("title") or "")
+    return "15-min window" + (f" · target {m.group(1).strip()}" if m else "")
+
+
 def session(t):
     h = datetime.fromtimestamp(t, ET).hour
     return "US" if 9 <= h < 18 else ("EU" if 3 <= h < 9 else "ASIA")
@@ -526,9 +536,9 @@ class Live:
         self.recent.setdefault(tk, []).append([t0, sd, usd, px])
         self.pend_w.append(dict(t=t0, tk=tk, comm=comm, sd=sd, usd=round(usd, 2), px=px, m1=k.mid(t1)))
         print(f"WHALE {money(usd):>8} {'YES' if sd > 0 else 'NO '} @{cents(px):>4} x{nprints:<3} {meta.get('title', tk)[:70]}", flush=True)
-        if not alert or usd < ALERT_WHALE or not on("whales", comm) or not self.allow("whale", tk, 600, 6): return
+        if not alert or usd < ALERT_WHALE or not is15(tk, comm) or not on("whales", comm) or not self.allow("whale", tk, 600, 6): return
         side = "YES" if sd > 0 else "NO"
-        L = [meta.get("title", tk), f"{side} @ {cents(px)} · {nprints} prints merged" + (f" · {'BULLISH' if bull > 0 else 'BEARISH'} {comm}" if bull else "")]
+        L = [label15(meta, tk), f"{side} @ {cents(px)} · {nprints} prints merged" + (f" · {'BULLISH' if bull > 0 else 'BEARISH'} {comm}" if bull else "")]
         pre = ((k.mid_at(t0 - 1) or m_before) - (k.mid_at(t0 - 600) or m_before)) * sd * 100
         if abs(pre) >= 3: L.append(f"{'Chasing' if pre > 0 else 'Fading'}: price moved {pre:+.0f}¢ {'their way' if pre > 0 else 'against them'} in the last 10m")
         w = self.wstats.get(comm)
@@ -539,10 +549,10 @@ class Live:
 
     def spike(self, tk, k, ts, a, m):
         meta = self.meta.get(tk) or {}; comm = meta.get("comm") or comm_of(tk)
-        if not on("spikes", comm) or not self.allow("spike", tk, 900, 4): return
+        if not is15(tk, comm) or not on("spikes", comm) or not self.allow("spike", tk, 900, 4): return
         bull = (1 if m > a else -1) * meta.get("dir", 0)
         notify(f"⚡ {comm} spike {'UP ' if bull > 0 else 'DOWN ' if bull < 0 else ''}{abs(m - a) * 100:.0f}¢",
-               f"{meta.get('title', tk)}\nYES {cents(a)} → {cents(m)} in 2m · {money(sum(x[2] for x in k.tr if x[0] >= ts - 120))} traded\nWhale flow: {self.flow_txt(comm)}",
+               f"{label15(meta, tk)}\nYES {cents(a)} → {cents(m)} in 2m · {money(sum(x[2] for x in k.tr if x[0] >= ts - 120))} traded\nWhale flow: {self.flow_txt(comm)}",
                4, meta.get("link"))
 
     def allow(self, kind, tk, cool, cap):

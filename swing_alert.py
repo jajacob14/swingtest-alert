@@ -1723,6 +1723,18 @@ SESS_NOTE = {"EVE": "evening session: moves tend to keep going (snap-backs only 
              "US": "US day session: snap-backs 7-15%"}
 
 
+def spike_line(mkt, a):
+    """Clear spike / no-spike read for the rest of this 15-min window (display of the existing sharp-move model)."""
+    if not a or "big_up" not in a: return "Spike before close: no read yet"
+    ru, rd = a["big_up"] / (a["base_up"] + 1e-9), a["big_dn"] / (a["base_dn"] + 1e-9); up = ru > rd; r = max(ru, rd)
+    p, base = (a["big_up"], a["base_up"]) if up else (a["big_dn"], a["base_dn"])
+    T = a.get("T"); when = f"before the close ({T:.0f} min left)" if T is not None and T <= 10 else "in the next 10 min"
+    tag = "" if a.get("big_ok") else " · spike model untested here"
+    if r >= 3 and p >= 0.2: return f"⚡ SPIKE {'UP' if up else 'DOWN'} LIKELY {when}: {p:.0%} (normally {base:.0%}){tag}"
+    if r >= 2: return f"⚠️ Spike {'UP' if up else 'DOWN'} possible {when}: {p:.0%} (normally {base:.0%}){tag}"
+    return f"➖ NO SPIKE expected {when}: {max(a['big_up'], a['big_dn']):.0%} chance, normal{tag}"
+
+
 def analysis_block(mkt, a):
     """All factors, graphically and numerically, in three lines."""
     if not a: return ""
@@ -1732,8 +1744,8 @@ def analysis_block(mkt, a):
           f"1h {a.get('m60', 0) * 100:+.2f}%, {fs}, RSI {a.get('rsi', 50):.0f}, {a.get('vw_pct', 0) * 100:+.2f}% vs VWAP")
     fc = (f"10-min forecast {'UP' if a['fc_p'] >= 0.5 else 'DOWN'} {max(a['fc_p'], 1 - a['fc_p']):.0%}"
           + ("" if a.get("fc_ok") else " (low confidence)")) if "fc_p" in a else "no 10-min forecast"
-    l3 = f"Spike score {a['score']:.0f}/100 ({a['label']}), {fc}, {SESS_NOTE.get(a.get('sess'), '')}"
-    return "\n".join((l1, l2, l3))
+    l3 = f"Spike score {a['score']:.0f}/100 ({a['label']}), {SESS_NOTE.get(a.get('sess'), '')}"
+    return "\n".join((l1, spike_line(mkt, a), l3))
 
 
 def signal(mkt, st):
@@ -1750,7 +1762,7 @@ def board_line(mkt, a, st):
     op = (st.get("lpos") or {}).get(mkt)
     l1 = (f"{signal(mkt, st)} · {COLOR[mkt][0]} {NAME[mkt]} {money(mkt, a['px'])}  {a['ch5'] * 100:+.2f}% in 5 min  {a['spark']}  {a['label']}"
           + (f" ({a['score']:.0f}/100)" if a["score"] >= 45 else "") + (f"  [{call_time(op)} open]" if op else ""))
-    out = l1 + "\n    " + action_line(mkt, a)
+    out = l1 + "\n    " + spike_line(mkt, a) + "\n    " + action_line(mkt, a, ext=False)
     kp = (st.get("kp") or {}).get(mkt)
     if kp:
         up = kp["p"] >= 0.5
@@ -1758,8 +1770,6 @@ def board_line(mkt, a, st):
                 f" ({'fresh' if kp['reg'] == 'fresh' else 'delayed'} data) · " + ("CALL SENT" if not kp.get("why_not") else f"no call: {kp['why_not']}"))
         ka = (st.get("kalpha") or {}).get(mkt)
         if ka: out += f"\n    Live record: model right {ka['model']:.0%} vs {ka['kalshi']:.0%}K ({ka['n']} checks), trust x{ka['alpha']:.2f}"
-    if a["score"] >= 45 or ("start" in a and max(a["p_up"], 1 - a["p_up"]) >= 0.75) or (a.get("fc_ok") and max(a.get("fc_p", .5), 1 - a.get("fc_p", .5)) >= 0.6):
-        out += "\n    " + analysis_block(mkt, a).split("\n")[1]  # trend line for the markets that matter right now
     return out
 
 
@@ -1781,11 +1791,11 @@ def proj_line(mkt, a):
     return out + ("" if a.get("p_ok") else " (low-confidence projection)")
 
 
-def action_line(mkt, a):
-    """Next-10-minute outlook + what to do with the current 15-min contract."""
+def action_line(mkt, a, ext=True):
+    """Next-10-minute outlook + what to do with the current 15-min contract. ext=False: only the Kalshi-contract guidance."""
     parts = []
-    if (pl := proj_line(mkt, a)): parts.append(pl)
-    if "fc_p" in a:
+    if ext and (pl := proj_line(mkt, a)): parts.append(pl)
+    if ext and "fc_p" in a:
         pu = a["fc_p"]; up = pu >= 0.5; conf = max(pu, 1 - pu)
         if conf >= 0.6:
             parts.append(f"Next 10 min: likely {'UP' if up else 'DOWN'} ({conf:.0%}) toward {money(mkt, a['px'] + (a['fc_move'] if up else -a['fc_move']))}"
@@ -2369,10 +2379,7 @@ def overview(mkt, st):
     if kp:
         up = kp["p"] >= 0.5
         parts.append(f"leans {'UP' if up else 'DOWN'} {max(kp['p'], 1 - kp['p']):.0%} vs {(kp['mid'] if up else 1 - kp['mid']):.0%}K")
-    if "px10" in a and "start" in a:
-        pend = a["px10"]; parts.append(f"projected ~{money(mkt, pend)} ({'above' if pend >= a['start'] else 'below'} start {money(mkt, a['start'])})")
-    tr = a.get("tr_pct"); fl = a.get("flow", 0)
-    if tr is not None: parts.append(f"4h trend {'up' if tr > 0 else 'down'}, {'buyers' if fl > 0.1 else 'sellers' if fl < -0.1 else 'balanced'}, {a.get('label', '')}")
+    parts.append(spike_line(mkt, a))
     parts.append("call possible" if kp and not kp.get("why_not") else f"no call yet{': ' + kp['why_not'] if kp and kp.get('why_not') else ''}")
     return " · ".join(parts)
 
@@ -2398,7 +2405,7 @@ def unified_boards(st):
             if skips or (first and play):  # window start: always (with overviews); minute 7: only new skips
                 st.setdefault("skipped", {})[label] = sorted(done | {k for k, _ in skips})
                 body = "\n".join(f"{COLOR[k][0]} {NAME[k]}: skip ({', '.join(short_reason(w) for w in why)})" for k, why in skips) or "No skips."
-                if play: body += "\n\nIn play, next 15 min:\n" + "\n".join(overview(k, st) for k in play)
+                if play: body += "\n\nIn play this window:\n" + "\n".join(overview(k, st) for k in play)
                 if fc := fc_line(): body += "\n\n" + fc
                 notify(f"Skip list for {label}" + ("" if first else " (update)"), body, "default")
     if now.minute % 10 == 0 and st.get("boardslot") != now.strftime("%H:%M"):
