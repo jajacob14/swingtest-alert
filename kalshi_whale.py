@@ -34,6 +34,7 @@ DIR = E("KW_DIR", "kwhale"); DATA = f"{DIR}/data"   # data/ lives in the Actions
 OLD_CACHE = "data"                                   # commodity bot's 3-week Kalshi cache (read only)
 COMMS = ("WTI", "BRENT", "NATGAS", "GOLD", "SILVER", "COPPER", "PLATINUM", "PALLADIUM")
 K15 = {c: f"KX{c}15M" for c in COMMS}
+SHOW = ("GOLD", "SILVER", "WTI", "BRENT", "COPPER", "NATGAS", "PALLADIUM", "PLATINUM")  # Kalshi's on-screen order (display only; COMMS stays the model's order)
 KEYS = {"WTI": ("WTI", "OIL"), "BRENT": ("BRENT",), "NATGAS": ("NATGAS", "NG"), "GOLD": ("GOLD",), "SILVER": ("SILVER",),
         "COPPER": ("COPPER",), "PLATINUM": ("PLATINUM",), "PALLADIUM": ("PALLADIUM",)}
 MIN_WHALE = E("KW_MIN_WHALE", 500.0)      # commodity markets are thin: $500+ merged order = whale
@@ -429,7 +430,7 @@ def write_report(R):
          f"older months it never saw. Edge bets buy at the ask + fee when the model beats it by {EDGE * 100:.0f}+ pts (≤70¢), held to settlement.",
          f"Order-flow coverage: {R['flow_coverage']:.0%} of rows · commodity whale events on file: {R['whale_events']}", "",
          "| Market | Weeks test | Months test | Proven |", "|---|---|---|---|"]
-    for c in COMMS:
+    for c in SHOW:
         L.append(f"| {c} | {fmt_eval(R['weeks']['test_by'].get(c))} | {fmt_eval(R['months']['test_by'].get(c))} | {'✅' if R['proven'][c] else '—'} |")
     L += ["", f"**All weeks:** {fmt_eval(R['weeks']['test'])}", "", f"**All months:** {fmt_eval(R['months']['test'])}", "", "| Month | Result |", "|---|---|"]
     L += [f"| {k} | {fmt_eval(v)} |" for k, v in sorted(R["months"]["by_month"].items())]
@@ -594,7 +595,8 @@ def live_pred(R, c, w):
 def board(L_, R, preds, b, closed=()):
     if not on("board"): return
     pv = R.get("proven", {}); L = []
-    for c, (p, mid, q, flow) in preds.items():
+    for c in [x for x in SHOW if x in preds]:
+        p, mid, q, flow = preds[c]
         if not on("board", c): continue
         up = p >= 0.5; ps = p if up else 1 - p; ask = q["ask"] if up else 1 - q["bid"]; e = ps - ask - fee(min(max(ask, 0.01), 0.99))
         L.append(f"{'🟢' if up else '🔴'} {c} {'UP' if up else 'DOWN'} {ps:.0%} vs Kalshi {(mid if up else 1 - mid):.0%} · ask {cents(ask)} · "
@@ -602,7 +604,7 @@ def board(L_, R, preds, b, closed=()):
         L.append(f"   whales {flow}")
     rec = [x for x in L_.calls if x.get("won") is not None and x["t"] > time.time() - 86400]
     if rec: L.append(f"\nEdge calls 24h: {sum(x['won'] for x in rec)}/{len(rec)} won, {sum(x['pnl'] for x in rec) / max(sum(x['cost'] for x in rec), 1e-9):+.0%} ROI")
-    off = [c for c in COMMS if not switches()["markets"].get(c, True)]
+    off = [c for c in SHOW if not switches()["markets"].get(c, True)]
     if closed: L.append("Closed now: " + ", ".join(closed))
     if off: L.append("Switched off: " + ", ".join(off))
     if L: notify(f"📈 Commodities 15-min · closes {et(b)} ET", "\n".join(L), 2)
@@ -662,7 +664,7 @@ def live():
                            f"Model {ps:.0%} vs Kalshi {(mid if up else 1 - mid):.0%} · edge {e * 100:+.0f} pts after fees · {tl:.0f} min left\n"
                            f"Closes {et(q['t1'])} ET · whales {flow}\nBacktest: {fmt_eval(R['weeks']['test_by'].get(c))}", 4, f"{WEB}/{K15[c].lower()}")
             b = int(now // 900 * 900) + 900
-            if preds and b not in boarded: boarded.add(b); board(L_, R, preds, b, [c for c in COMMS if is_open.get(c) is False])
+            if preds and b not in boarded: boarded.add(b); board(L_, R, preds, b, [c for c in SHOW if is_open.get(c) is False])
             if now - settled_t > 60: settle(L_); settled_t = now
             if now - trained > 6 * 3600:
                 L_.flush()
@@ -708,7 +710,7 @@ def digest(L_, R):
         if len(d): L.append(f"Live 15-min predictions (24h, {len(d)} checkpoints): model right {((d.p >= 0.5) == (d.up == 1)).mean():.0%} vs Kalshi {((d.mid >= 0.5) == (d.up == 1)).mean():.0%}")
     rec = [x for x in L_.calls if x.get("won") is not None]
     if rec: L.append(f"Edge calls (14d): {sum(x['won'] for x in rec)}/{len(rec)} won, ROI {sum(x['pnl'] for x in rec) / sum(x['cost'] for x in rec):+.0%}")
-    L += [f"{c}: whales {L_.flow_txt(c)}" for c in COMMS if L_.flow.get(c)]
+    L += [f"{c}: whales {L_.flow_txt(c)}" for c in SHOW if L_.flow.get(c)]
     if R.get("model"): L += ["", summary(R)]
     notify("📊 Kalshi commodities digest", "\n".join(L), 2); L_.stats = dict(trades=0, whales=0, vol=0.0)
 

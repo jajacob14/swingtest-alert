@@ -27,6 +27,8 @@ CRYPTO = {"BTC": ("BTC-USD", None), "ETH": ("ETH-USD", None), "SOL": ("SOL-USD",
 FX = {"EURUSD": ("EURUSD=X", None), "GBPUSD": ("GBPUSD=X", None), "USDJPY": ("JPY=X", None)}
 EXTRA_ON = os.getenv("EXTRA_MARKETS", "0") == "1"  # crypto + FX: OFF (commodities only); set EXTRA_MARKETS=1 to enable
 ALL = {**MARKETS, **METALS, **(CRYPTO if EXTRA_ON else {}), **(FX if EXTRA_ON else {})}
+KALSHI_ORDER = ("GOLD", "SILVER", "WTI", "BRENT", "COPPER", "NATGAS", "PALLADIUM", "PLATINUM")  # as on Kalshi's 15-min page
+SHOW = [m for m in KALSHI_ORDER if m in ALL] + [m for m in ALL if m not in KALSHI_ORDER]  # display order only
 COINBASE = {"BTC": "BTC-USD", "ETH": "ETH-USD", "SOL": "SOL-USD", "XRP": "XRP-USD", "DOGE": "DOGE-USD", "NEAR": "NEAR-USD", "ZEC": "ZEC-USD"}
 ET = ZoneInfo("America/New_York")
 STATE_FILE, PARAMS_FILE = os.getenv("STATE_FILE", "state.json"), "params.json"
@@ -978,7 +980,7 @@ def scorecard(st):
         pw = pd.read_json(PRED_LOG, lines=True); pw["c"] = pd.to_datetime(pw["close"], utc=True).dt.tz_convert(ET)
         pw = pw[(pw.c > lo) & (pw.c <= due)]
     except Exception: pw = pd.DataFrame(columns=["mkt", "up", "wm", "mid", "left"])
-    for m in [k for k in ALL if k in set(pw.get("mkt", [])) | set(half.get("mkt", []))]:
+    for m in [k for k in SHOW if k in set(pw.get("mkt", [])) | set(half.get("mkt", []))]:
         g = pw[pw.mkt == m]; h = half[half.mkt == m] if len(half) else half
         ended = ("UP" if bool(g.up.iloc[0]) else "DOWN") if len(g) else "?"
         call = "no call"
@@ -1003,12 +1005,12 @@ def scorecard(st):
     except Exception: pass
     ED = st.get("edge_live") or {}
     if ED:
-        pr = [NAME.get(m, m) for m in ALL if any(proven(st, m, t) for t in (12, 5))]
+        pr = [NAME.get(m, m) for m in SHOW if any(proven(st, m, t) for t in (12, 5))]
         lines.append("Calls on for: " + (", ".join(pr) if pr else "none yet (still proving it beats Kalshi)"))
     L = st.get("wm_live") or {}; E = st.get("early_live") or {}
-    if L: lines.append("Learning: " + (("updated live for " + ", ".join(NAME.get(m, m) for m, v in L.items() if v["loss_live"] <= v["loss_backtest"]))
+    if L: lines.append("Learning: " + (("updated live for " + ", ".join(NAME.get(m, m) for m in SHOW if m in L and L[m]["loss_live"] <= L[m]["loss_backtest"]))
                                         if any(v["loss_live"] <= v["loss_backtest"] for v in L.values()) else "still collecting"))
-    if E: lines.append("EARLY record: " + " · ".join(f"{NAME.get(m, m)} {v['acc']:.0%} vs {v['mid']:.0%}K ({v['n']} cases)" for m, v in sorted(E.items(), key=lambda kv: -kv[1]['n'])))
+    if E: lines.append("EARLY record: " + " · ".join(f"{NAME.get(m, m)} {v['acc']:.0%} vs {v['mid']:.0%}K ({v['n']} cases)" for m, v in sorted(E.items(), key=lambda kv: SHOW.index(kv[0]) if kv[0] in SHOW else 99)))
     lines.append("%K = Kalshi's odds. (n cases) = early setups graded live: 9+ min left, model 60%+, Kalshi near even. "
                  "EARLY 83% vs 53%K means the model was right 83% of the time while Kalshi priced it at 53%.")
     fw_, fl_, _, _ = fc_record(day=due.date())
@@ -1017,7 +1019,8 @@ def scorecard(st):
     # separate alert: markets whose model got 4/4 (or 3/4) of this window's snapshots right
     try:
         g2 = pw.dropna(subset=["wm"]); sc = {m: (int(((x.wm >= 0.5) == x.up).sum()), len(x)) for m, x in g2.groupby("mkt")}
-        four = [m for m, (k, n) in sc.items() if n >= 4 and k == n]; three = [m for m, (k, n) in sc.items() if n >= 4 and k == n - 1]
+        four = [m for m in SHOW if m in sc and sc[m][1] >= 4 and sc[m][0] == sc[m][1]]
+        three = [m for m in SHOW if m in sc and sc[m][1] >= 4 and sc[m][0] == sc[m][1] - 1]
         if four or three:
             body = "\n".join((["4/4: " + ", ".join(f"{COLOR[m][0]} {NAME[m]}" for m in four)] if four else []) +
                               (["3/4: " + ", ".join(f"{COLOR[m][0]} {NAME[m]}" for m in three)] if three else []))
@@ -1039,7 +1042,7 @@ def fc_record(day=None, lo=None, hi=None):
     if not len(p): return 0, 0, 0, {}
     f = p.sort_values("left", ascending=False).drop_duplicates(["close", "mkt"])
     ok = (f.wm >= 0.5) == f.up.astype(bool); kok = (f.mid >= 0.5) == f.up.astype(bool)
-    by = {m: (int(ok[f.mkt == m].sum()), int((~ok[f.mkt == m]).sum())) for m in ALL if (f.mkt == m).any()}
+    by = {m: (int(ok[f.mkt == m].sum()), int((~ok[f.mkt == m]).sum())) for m in SHOW if (f.mkt == m).any()}
     return int(ok.sum()), int((~ok).sum()), int(kok.sum()), by
 
 
@@ -2393,7 +2396,7 @@ def unified_boards(st):
             st["skipslot"] = slot; w_end = now.replace(second=0, microsecond=0) + dt.timedelta(minutes=15 - now.minute % 15)
             label = f"{(w_end - dt.timedelta(minutes=15)):%-I:%M}–{w_end:%-I:%M}"; done = set(st.get("skipped", {}).get(label, []))
             skips, play = [], []
-            for mkt in ALL:
+            for mkt in SHOW:
                 if mkt not in LIVEVIEW: continue
                 if busy(st, mkt): play.append(mkt); continue
                 m, px, lv = LIVEVIEW[mkt]
@@ -2410,8 +2413,8 @@ def unified_boards(st):
                 notify(f"Skip list for {label}" + ("" if first else " (update)"), body, "default")
     if now.minute % 10 == 0 and st.get("boardslot") != now.strftime("%H:%M"):
         st["boardslot"] = now.strftime("%H:%M")
-        lines = [board_line(m, st["ana"][m], st) for m in ALL if m in LIVEVIEW and (st.get("ana") or {}).get(m)]
-        shut = [k for k, v in st.get("open", {}).items() if v is False and k not in LIVEVIEW]
+        lines = [board_line(m, st["ana"][m], st) for m in SHOW if m in LIVEVIEW and (st.get("ana") or {}).get(m)]
+        shut = [k for k in SHOW if st.get("open", {}).get(k) is False and k not in LIVEVIEW]
         if shut: lines.append("Closed now: " + ", ".join(NAME[k] for k in shut))
         if lines and (fc := fc_line()): lines.append(fc)
         if lines: notify(f"All commodities {now:%-I:%M %p} ({SH_SESS[session(now)]} session)", "\n".join(lines), "low")
