@@ -17,6 +17,7 @@
   "whales": true,
   "spikes": true,
   "digest": true,
-  "open_close": true
+  "open_close": true,
+  "low_spikes": true
  }
 }

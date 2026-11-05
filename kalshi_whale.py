@@ -71,7 +71,7 @@ def load_json(p, d):
 def save_json(p, o):
     os.makedirs(os.path.dirname(p) or ".", exist_ok=True); tmp = p + ".tmp"; json.dump(o, open(tmp, "w"), indent=1, default=float); os.replace(tmp, p)
 SW_DEFAULT = {"pause_all": False, "markets": {c: True for c in COMMS},
-              "alerts": {"board": True, "edge_calls": True, "results": True, "whales": True, "spikes": True, "digest": True, "open_close": True}}
+              "alerts": {"board": True, "edge_calls": True, "results": True, "whales": True, "spikes": True, "digest": True, "open_close": True, "low_spikes": True}}
 _SW = {"sw": None, "t": 0}
 
 
@@ -319,8 +319,8 @@ def whale_stats():
 
 
 # ---------------- features + model (same code offline and live) ----------------
-def kframe(kd):
-    """1-min Kalshi quotes + flow -> one row per window-minute with 3-12 min left: features, Kalshi mid, outcome."""
+def kcols(kd):
+    """1-min Kalshi quotes + flow -> per-minute features (shared by the settlement model and the cheap-spike model)."""
     kd = kd.dropna(subset=["bid", "ask"]).copy()
     if not len(kd): return kd
     for c in ("yf", "nf", "bf", "vol"): kd[c] = pd.to_numeric(kd.get(c, 0), errors="coerce").fillna(0)
@@ -331,6 +331,13 @@ def kframe(kd):
     kd["kvol"] = np.log1p(r3("vol")); kd["vcum"] = np.log1p(g.vol.cumsum())
     y3, n3 = r3("yf"), r3("nf"); kd["ofi3"] = (y3 - n3) / (y3 + n3 + 1); kd["bigc"] = slog(g.bf.cumsum())
     kd["cl"] = kd.close.map(ts_of); kd["tl"] = (kd.cl - kd.ts) / 60
+    return kd
+
+
+def kframe(kd):
+    """1-min Kalshi quotes + flow -> one row per window-minute with 3-12 min left: features, Kalshi mid, outcome."""
+    kd = kcols(kd)
+    if not len(kd): return kd
     kd = kd[(kd.tl >= 3) & (kd.tl <= 12) & (kd.mid > 0.02) & (kd.mid < 0.98)].copy()
     kd["tleft"] = kd.tl / 12; kd["ext"] = (kd.mid - 0.5).abs()
     ss = kd.ts.map(session)
@@ -338,6 +345,94 @@ def kframe(kd):
     kd["mkt"] = kd.ticker.map(comm_of)
     for c in COMMS: kd[f"m_{c}"] = (kd.mkt == c).astype(float)
     return kd.replace([np.inf, -np.inf], np.nan).dropna(subset=list(KF) + ["mid"])
+
+
+LOW, LEV = 0.20, 0.03   # cheap side = ask ≤ 20¢; alert when expected profit ≥ 3¢/contract after fees
+LF = ("lask", "dmid1s", "dmid3s", "dmid5s", "spread", "kvol", "vcum", "tleft", "ofi3s", "bigcs") + \
+     tuple(f"s_{s}" for s in SESS) + tuple(f"m_{c}" for c in COMMS)
+
+
+def feev(a): a = np.clip(np.asarray(a, float), 0.01, 0.99); return np.ceil(7 * a * (1 - a) - 1e-9) / 100
+
+
+def lframe(kd):
+    """Cheap contracts (either side ≤ 20¢, 2-13 min left). Target = sell at 2x the entry (at least +10¢).
+    hit = that side's bid reached the target later in the window; pnl = buy at ask + fee, sell at target (fee) if hit,
+    otherwise hold to settlement."""
+    kd = kcols(kd)
+    if not len(kd): return kd
+    kd = kd.sort_values(["ticker", "ts"]); g = kd.groupby("ticker")
+    later_max = lambda v: v.iloc[::-1].cummax().iloc[::-1].shift(-1)
+    kd["fyb"] = g.bid.transform(later_max); kd["nb"] = 1 - kd.ask; kd["fnb"] = kd.groupby("ticker").nb.transform(later_max)
+    ss = kd.ts.map(session); mk = kd.ticker.map(comm_of); out = []
+    for sgn in (1, -1):
+        d = kd.assign(side=sgn, lask=kd.ask if sgn > 0 else 1 - kd.bid, fb=kd.fyb if sgn > 0 else kd.fnb,
+                      win=(pd.to_numeric(kd.up, errors="coerce") == (1 if sgn > 0 else 0)).astype(float))
+        d = d[(d.tl >= 2) & (d.tl <= 13) & (d.lask >= 0.02) & (d.lask <= LOW)].copy()
+        for n in (1, 3, 5): d[f"dmid{n}s"] = d[f"dmid{n}"] * sgn
+        d["ofi3s"], d["bigcs"] = d.ofi3 * sgn, d.bigc * sgn; out.append(d)
+    d = pd.concat(out); d["tgt"] = np.minimum(np.maximum(2 * d.lask, d.lask + 0.10), 0.99)
+    d["hit"] = (d.fb >= d.tgt - 1e-9).astype(float)
+    d["cost"] = d.lask + feev(d.lask); d["pnl"] = np.where(d.hit == 1, d.tgt - feev(d.tgt), d.win) - d.cost
+    d["tleft"] = d.tl / 12; ss = d.ts.map(session)
+    for x in SESS: d[f"s_{x}"] = (ss == x).astype(float)
+    d["mkt"] = d.ticker.map(comm_of)
+    for c in COMMS: d[f"m_{c}"] = (d.mkt == c).astype(float)
+    return d.replace([np.inf, -np.inf], np.nan).dropna(subset=list(LF))
+
+
+def ltrain(D, w8=None):
+    X = D[list(LF)].to_numpy(float); mu, sd = X.mean(0), np.maximum(X.std(0), 1e-4); y = D.hit.to_numpy(float)
+    b = float(logit(np.clip(y.mean(), 0.01, 0.99)))
+    w = fit_offset(np.clip((X - mu) / sd, -6, 6), y, np.full(len(y), b), w8)
+    return dict(w=[round(float(v), 5) for v in w], mu=[round(float(v), 6) for v in mu], sd=[round(float(v), 6) for v in sd], b=round(b, 5))
+
+
+def lp(M, D):
+    Z = np.clip((D[list(LF)].to_numpy(float) - np.asarray(M["mu"])) / np.asarray(M["sd"]), -6, 6)
+    return sig(M["b"] + Z @ np.asarray(M["w"]))
+
+
+def lev(M, D):
+    """Expected profit per contract: spike to target (sell) or, if not, assume it expires worthless (conservative)."""
+    p = lp(M, D); return p, p * (D.tgt.to_numpy() - feev(D.tgt)) - D.cost.to_numpy()
+
+
+def leval(M, D):
+    """Betting test on unseen rows: first minute per window-side with expected profit ≥ LEV."""
+    if not len(D): return {}
+    p, ev = lev(M, D)
+    B = D.assign(p=p, ev=ev)[ev >= LEV].sort_values("ts").groupby(["ticker", "side"]).head(1)
+    r = dict(rows=int(len(D)), base=round(float(D.hit.mean()), 3), trades=int(len(B)))
+    if len(B): r.update(hit=round(float(B.hit.mean()), 3), pred=round(float(B.p.mean()), 3), roi=round(float(B.pnl.sum() / B.cost.sum()), 3),
+                        avg_ask=round(float(B.lask.mean()), 3))
+    return r
+
+
+def lproven(W, Mo, n_w=10, n_m=20):
+    ok = lambda r, n: bool(r and r.get("trades", 0) >= n and (r.get("roi") or -1) > 0)
+    return ok(W, n_w) and ok(Mo, n_m)
+
+
+def fmt_low(r):
+    if not r: return "no data"
+    s = f"cheap rows {r['rows']:,}, spike-to-target normally {r['base']:.0%}"
+    if r.get("trades"): s += f" · alerts {r['trades']}: hit {r['hit']:.0%} (model said {r['pred']:.0%}), ROI {r['roi']:+.0%} at avg {r['avg_ask'] * 100:.0f}¢"
+    return s
+
+
+def train_low(now):
+    """Cheap-spike model: weeks (older 70% → newest 30%) and months (weeks → older months), per market."""
+    D = pd.concat([lframe(load_k(m)) for m in COMMS], ignore_index=True)
+    if not len(D): return {}
+    Wk, Mo = D[D.cl >= now - WEEKS_D * 86400], D[D.cl < now - WEEKS_D * 86400]
+    wins = Wk.sort_values("cl").ticker.drop_duplicates().tolist(); cut = set(wins[int(len(wins) * 0.7):])
+    tr, te = Wk[~Wk.ticker.isin(cut)], Wk[Wk.ticker.isin(cut)]
+    Mw, Mwk = ltrain(tr), ltrain(Wk); Mdep = ltrain(D, np.asarray(0.5 ** ((D.cl.max() - D.cl) / (21 * 86400)), float))
+    by = lambda M, X: {str(k): leval(M, g) for k, g in X.groupby("mkt")} if len(X) else {}
+    L = dict(weeks=dict(test=leval(Mw, te), test_by=by(Mw, te)), months=dict(test=leval(Mwk, Mo), test_by=by(Mwk, Mo)), model=Mdep)
+    L["proven"] = {c: lproven(L["weeks"]["test_by"].get(c), L["months"]["test_by"].get(c)) for c in COMMS}
+    return L
 
 
 def fit_offset(X, y, off, w8=None, lam=0.02, iters=900):
@@ -402,6 +497,8 @@ def train(push=True):
                          by_month=eval_by(Mwk, Mo.assign(mon=pd.to_datetime(Mo.cl, unit="s").dt.strftime("%Y-%m")), "mon")))
     R["proven"] = {c: proven(R["weeks"]["test_by"].get(c), R["months"]["test_by"].get(c)) for c in COMMS}
     R["model"] = Mdep; R["feats"] = sorted(((KF[i], Mdep["w"][i]) for i in range(len(KF))), key=lambda z: -abs(z[1]))[:5]
+    try: R["low"] = train_low(now)
+    except Exception as e: print("low-spike model:", e, flush=True); R["low"] = old.get("low", {})
     save_json(f"{DIR}/model.json", R); write_report(R); print(summary(R), flush=True)
     if push: notify("🧠 Commodity model retrained", summary(R), 3)
     return R
@@ -420,6 +517,12 @@ def summary(R):
     pv = [c for c, v in R["proven"].items() if v]
     L.append("PROVEN (beats Kalshi in both): " + (", ".join(pv) if pv else "none yet: boards show odds, no edge calls"))
     L.append("Leans on: " + ", ".join(f"{k} {'+' if v > 0 else '−'}" for k, v in R["feats"]))
+    lo = R.get("low") or {}
+    if lo:
+        L.append(f"Cheap-spike alerts · weeks: {fmt_low(lo['weeks']['test'])}")
+        L.append(f"Cheap-spike alerts · months: {fmt_low(lo['months']['test'])}")
+        pl = [c for c in SHOW if lo.get("proven", {}).get(c)]
+        L.append("Cheap-spike PROVEN: " + (", ".join(pl) if pl else "none yet"))
     return "\n".join(L)
 
 
@@ -435,6 +538,14 @@ def write_report(R):
     L += ["", f"**All weeks:** {fmt_eval(R['weeks']['test'])}", "", f"**All months:** {fmt_eval(R['months']['test'])}", "", "| Month | Result |", "|---|---|"]
     L += [f"| {k} | {fmt_eval(v)} |" for k, v in sorted(R["months"]["by_month"].items())]
     L += ["", "Strongest signals: " + ", ".join(f"`{k}` {v:+.3f}" for k, v in R["feats"])]
+    lo = R.get("low") or {}
+    if lo:
+        L += ["", "## Cheap-spike alerts", f"Contracts at {LOW * 100:.0f}¢ or less, 2-13 min left. Buy at the ask + fee, sell at 2x (at least +10¢) "
+              "if the bid gets there before the close, otherwise hold to settlement. Alert when expected profit ≥ "
+              f"{LEV * 100:.0f}¢ per contract.", "", "| Market | Weeks test | Months test | Proven |", "|---|---|---|---|"]
+        for c in SHOW:
+            L.append(f"| {c} | {fmt_low(lo['weeks']['test_by'].get(c))} | {fmt_low(lo['months']['test_by'].get(c))} | {'✅' if lo['proven'].get(c) else '—'} |")
+        L += ["", f"**All weeks:** {fmt_low(lo['weeks']['test'])}", "", f"**All months:** {fmt_low(lo['months']['test'])}"]
     os.makedirs(DIR, exist_ok=True); open(f"{DIR}/report.md", "w").write("\n".join(L) + "\n")
 
 
@@ -583,9 +694,27 @@ def open_window(c):
     return min(ms, key=lambda m: m["close_time"]) if ms else None
 
 
+_ROWS = {}
+
+
+def low_live(R, c):
+    """Cheap side of this window right now (≤ 20¢) -> (side, ask, target, p_hit, base, ev) if the model expects profit."""
+    M = (R.get("low") or {}).get("model"); rows = _ROWS.get(c)
+    if not M or not rows: return None
+    D = lframe(pd.DataFrame(rows, columns=KCOLS))
+    if not len(D): return None
+    D = D[D.ts == D.ts.max()]
+    if not len(D): return None
+    p, ev = lev(M, D); i = int(np.argmax(ev)); r = D.iloc[i]
+    base = ((R["low"]["weeks"]["test_by"].get(c) or {}).get("base")) or float(sig(M["b"]))
+    return dict(side="YES (UP)" if r.side > 0 else "NO (DOWN)", up=bool(r.side > 0), ask=float(r.lask), tgt=float(r.tgt), p=float(p[i]),
+                base=float(base), ev=float(ev[i]), tl=float(r.tl), ok=bool(ev[i] >= LEV))
+
+
 def live_pred(R, c, w):
     """Latest complete minute of this window -> (p_up, mid, quote) using the exact training feature code."""
     now = time.time(); rows = [r for r in window_rows(c, {**w, "result": ""}, upto=now) if r["ts"] <= now]
+    _ROWS[c] = rows
     D = kframe(pd.DataFrame(rows, columns=KCOLS)) if rows else []
     if not len(D): return None
     r = D.iloc[[-1]]; p = float(p_of(R["model"], r)[0]) if R.get("model") else float(r.mid.iloc[0])
@@ -599,14 +728,20 @@ def board(L_, R, preds, b, closed=()):
         p, mid, q, flow = preds[c]
         if not on("board", c): continue
         up = p >= 0.5; ps = p if up else 1 - p; ask = q["ask"] if up else 1 - q["bid"]; e = ps - ask - fee(min(max(ask, 0.01), 0.99))
-        L.append(f"{'🟢' if up else '🔴'} {c} {'UP' if up else 'DOWN'} {ps:.0%} vs Kalshi {(mid if up else 1 - mid):.0%} · ask {cents(ask)} · "
-                 f"edge {e * 100:+.0f}pts{' ✅' if pv.get(c) else ' (unproven)'}")
+        go = e >= EDGE and 0.03 < ask <= KMAX; d = "UP" if up else "DOWN"
+        L.append((f"🟢 BET {c} {d} ≤ {cents(ask)}" if go else f"🔴 NO BET {c}") +
+                 f" · settles {d}: model {ps:.0%} vs Kalshi {(mid if up else 1 - mid):.0%} · edge {e * 100:+.0f} pts after fees"
+                 + ("" if not go else " · ✅ tested" if pv.get(c) else " · ⚠️ untested on this market"))
+        lw = q.get("low")
+        if lw: L.append(f"   🚀 cheap {lw['side']} {cents(lw['ask'])}: {lw['p']:.0%} chance it trades {cents(lw['tgt'])}+ before close "
+                        f"(normally {lw['base']:.0%}){' · BUY, sell at ' + cents(lw['tgt']) if lw['ok'] else ' · not worth it'}")
         L.append(f"   whales {flow}")
     rec = [x for x in L_.calls if x.get("won") is not None and x["t"] > time.time() - 86400]
     if rec: L.append(f"\nEdge calls 24h: {sum(x['won'] for x in rec)}/{len(rec)} won, {sum(x['pnl'] for x in rec) / max(sum(x['cost'] for x in rec), 1e-9):+.0%} ROI")
     off = [c for c in SHOW if not switches()["markets"].get(c, True)]
     if closed: L.append("Closed now: " + ", ".join(closed))
     if off: L.append("Switched off: " + ", ".join(off))
+    L.append(f"\n🟢 = model beats Kalshi's ask by {EDGE * 100:.0f}+ pts after fees (≤{KMAX * 100:.0f}¢). % = chance it settles that way at the close.")
     if L: notify(f"📈 Commodities 15-min · closes {et(b)} ET", "\n".join(L), 2)
 
 
@@ -624,6 +759,7 @@ def live():
     seen = set(r[1] for r in warm); last_ts = warm[-1][0] if warm else t0 - 60
     print(f"live: {len(warm)} commodity trades warmed · proven: {[c for c, v in R.get('proven', {}).items() if v] or 'none'}", flush=True)
     if not st.get("started"): notify("Kalshi commodity scanner online", "Reports only (no trading).\n" + (summary(R) if R.get("model") else "Model not built yet."), 3)
+    low_sent = set()
     win, done_min, boarded, saved, trained, settled_t, digest_t = {}, {}, set(), time.time(), time.time(), 0, st.get("digest_t", 0)
     is_open = dict(st.get("is_open", {})); shut_t = {}; switches(force=True)
     while time.time() - t0 < maxmin * 60:
@@ -653,6 +789,15 @@ def live():
                 S = L_.snaps.setdefault(tk, {"c": c, "t1": q["t1"], "cp": {}})
                 for b in CK:
                     if tl <= b and str(b) not in S["cp"] and tl > b - 2.5: S["cp"][str(b)] = [round(p, 4), round(mid, 4)]
+                lw = low_live(R, c)
+                if lw: q["low"] = lw
+                if (lw and lw["ok"] and (R.get("low") or {}).get("proven", {}).get(c) and on("low_spikes", c)
+                        and (tk, lw["up"]) not in low_sent):
+                    low_sent.add((tk, lw["up"])); lb = (R["low"]["weeks"]["test_by"].get(c) or {})
+                    notify(f"🚀 {c} cheap {lw['side']} {cents(lw['ask'])} · spike likely",
+                           f"{lw['p']:.0%} chance it trades {cents(lw['tgt'])}+ before the {et(q['t1'])} close (normally {lw['base']:.0%}), {lw['tl']:.0f} min left\n"
+                           f"Buy ≤ {cents(lw['ask'])}, sell into the spike at {cents(lw['tgt'])}. No spike → likely expires at 0¢.\n"
+                           f"Expected +{lw['ev'] * 100:.0f}¢/contract after fees · backtest: {fmt_low(lb)}", 4, f"{WEB}/{K15[c].lower()}")
                 if 8 <= tl <= 11: preds[c] = (p, mid, q, flow)
                 up = p >= 0.5; ps = p if up else 1 - p; ask = q["ask"] if up else 1 - q["bid"]; e = ps - ask - fee(min(max(ask, 0.01), 0.99))
                 lr = [x for x in L_.calls if x["c"] == c and x.get("won") is not None][-30:]
@@ -789,7 +934,17 @@ def selftest():
     D = kframe(load_k("WTI")); one = D[D.ticker == D.ticker.iloc[0]]
     raw = load_k("WTI"); raw = raw[raw.ticker == D.ticker.iloc[0]]
     assert np.allclose(p_of(R["model"], one), p_of(R["model"], kframe(raw))), "feature parity"
-    print("selftest passed")
+    # cheap-spike labels: YES at 10¢ whose bid later hits 25¢ is a hit (target 20¢); NO side at 1-bid is not cheap
+    t1 = int(now) // 60 * 60; cl = datetime.fromtimestamp(t1, timezone.utc).isoformat()
+    toy = pd.DataFrame([dict(ticker="KXGOLD15M-TOY", close=cl, strike=1, up=0, ts=t1 - 900 + 60 * (j + 1), bid=b, ask=b + 0.02, last=b, vol=5, yf=1, nf=1, bf=0)
+                        for j, b in enumerate([0.08] * 5 + [0.25] + [0.05] * 9)], columns=KCOLS)
+    lf = lframe(toy); first = lf[(lf.side == 1)].sort_values("ts").iloc[0]
+    assert first.hit == 1 and abs(first.tgt - 0.20) < 1e-9 and first.pnl > 0, "cheap-spike label"
+    assert (lf[lf.side == 1].sort_values("ts").iloc[-1].hit == 0), "no later spike = no hit"
+    assert R.get("low", {}).get("weeks", {}).get("test", {}).get("rows", 0) > 0, "cheap-spike model trained"
+    _ROWS["GOLD"] = toy.iloc[:4].to_dict("records"); lw = low_live(R, "GOLD"); assert lw and 0 < lw["p"] < 1, "cheap-spike live path"
+    q = dict(bid=0.6, ask=0.62, tl=10, t1=now + 600, low=lw); board(Live(Meta(), {}), R, {"GOLD": (0.7, 0.61, q, "+$0")}, now + 600)
+    print(summary(R)); print("selftest passed")
 
 
 if __name__ == "__main__":
