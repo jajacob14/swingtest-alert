@@ -967,6 +967,9 @@ def scorecard(st):
     r30, w30 = cnt(half); rt, wt = cnt(today)
     lines = [f"This window ({lo:%-I:%M}–{due:%-I:%M}): {r30} right, {w30} wrong" + (f" ({r30 / (r30 + w30):.0%})" if r30 + w30 else " (no calls)"),
              f"Today: {rt} right, {wt} wrong" + (f" ({rt / (rt + wt):.0%})" if rt + wt else "")]
+    fw = fc_line("15-min forecasts this window", lo=lo, hi=due); fd = fc_line(day=due.date()); _, _, _, fby = fc_record(day=due.date())
+    lines += [x for x in (fw, fd) if x]
+    if fby: lines.append("Forecast W/L by market today: " + " · ".join(f"{NAME.get(m, m)} {a}-{b}" for m, (a, b) in fby.items()))
     if len(today) and "early" in today:
         er = today[today.early.fillna(False).astype(bool)]
         if len(er): lines.append(f"Early calls today: {cnt(er)[0]} right, {cnt(er)[1]} wrong ({cnt(er)[0] / len(er):.0%})")
@@ -1008,7 +1011,9 @@ def scorecard(st):
     if E: lines.append("EARLY record: " + " · ".join(f"{NAME.get(m, m)} {v['acc']:.0%} vs {v['mid']:.0%}K ({v['n']} cases)" for m, v in sorted(E.items(), key=lambda kv: -kv[1]['n'])))
     lines.append("%K = Kalshi's odds. (n cases) = early setups graded live: 9+ min left, model 60%+, Kalshi near even. "
                  "EARLY 83% vs 53%K means the model was right 83% of the time while Kalshi priced it at 53%.")
-    notify(f"W/L {lo:%-I:%M}–{due:%-I:%M}: {r30} right, {w30} wrong · today {rt}-{wt}", "\n".join(lines), "default")
+    fw_, fl_, _, _ = fc_record(day=due.date())
+    notify(f"W/L {lo:%-I:%M}–{due:%-I:%M}: {r30} right, {w30} wrong · today {rt}-{wt}" + (f" · forecasts {fw_}-{fl_}" if fw_ + fl_ else ""),
+           "\n".join(lines), "default")
     # separate alert: markets whose model got 4/4 (or 3/4) of this window's snapshots right
     try:
         g2 = pw.dropna(subset=["wm"]); sc = {m: (int(((x.wm >= 0.5) == x.up).sum()), len(x)) for m, x in g2.groupby("mkt")}
@@ -1021,6 +1026,27 @@ def scorecard(st):
 
 
 PRED_LOG = "preds.jsonl"
+
+
+def fc_record(day=None, lo=None, hi=None):
+    """15-min forecast W/L (display only): each market-window's first forecast (most minutes left) vs how it settled.
+    Returns (wins, losses, kalshi_wins, {mkt: (w, l)}) for one ET day, or for windows closing in (lo, hi]."""
+    try:
+        p = pd.read_json(PRED_LOG, lines=True).dropna(subset=["wm", "mid", "up"])
+        p["c"] = pd.to_datetime(p["close"], utc=True).dt.tz_convert(ET)
+    except Exception: return 0, 0, 0, {}
+    p = p[(p.c > lo) & (p.c <= hi)] if lo is not None else p[p.c.dt.date == (day or dt.datetime.now(ET).date())]
+    if not len(p): return 0, 0, 0, {}
+    f = p.sort_values("left", ascending=False).drop_duplicates(["close", "mkt"])
+    ok = (f.wm >= 0.5) == f.up.astype(bool); kok = (f.mid >= 0.5) == f.up.astype(bool)
+    by = {m: (int(ok[f.mkt == m].sum()), int((~ok[f.mkt == m]).sum())) for m in ALL if (f.mkt == m).any()}
+    return int(ok.sum()), int((~ok).sum()), int(kok.sum()), by
+
+
+def fc_line(prefix="15-min forecasts today", **kw):
+    w, l, kw_, by = fc_record(**kw)
+    if not w + l: return ""
+    return f"{prefix}: {w}W-{l}L ({w / (w + l):.0%}) vs Kalshi {kw_ / (w + l):.0%}"
 CHECKPOINTS = (12, 9, 6, 3)  # minutes left when every window's predictions are snapshotted
 
 
@@ -2373,12 +2399,14 @@ def unified_boards(st):
                 st.setdefault("skipped", {})[label] = sorted(done | {k for k, _ in skips})
                 body = "\n".join(f"{COLOR[k][0]} {NAME[k]}: skip ({', '.join(short_reason(w) for w in why)})" for k, why in skips) or "No skips."
                 if play: body += "\n\nIn play, next 15 min:\n" + "\n".join(overview(k, st) for k in play)
+                if fc := fc_line(): body += "\n\n" + fc
                 notify(f"Skip list for {label}" + ("" if first else " (update)"), body, "default")
     if now.minute % 10 == 0 and st.get("boardslot") != now.strftime("%H:%M"):
         st["boardslot"] = now.strftime("%H:%M")
         lines = [board_line(m, st["ana"][m], st) for m in ALL if m in LIVEVIEW and (st.get("ana") or {}).get(m)]
         shut = [k for k, v in st.get("open", {}).items() if v is False and k not in LIVEVIEW]
         if shut: lines.append("Closed now: " + ", ".join(NAME[k] for k in shut))
+        if lines and (fc := fc_line()): lines.append(fc)
         if lines: notify(f"All commodities {now:%-I:%M %p} ({SH_SESS[session(now)]} session)", "\n".join(lines), "low")
 
 
