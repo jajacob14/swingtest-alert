@@ -1,47 +1,47 @@
 # Kalshi commodity 15-min model report
-Trained 2026-11-05 04:45 ET
+Trained 2026-11-05 16:16 ET
 
 Model = Kalshi's own price + what it misses (quote changes, spread, volume, order flow, big-money flow, time left, session, market).
 **Weeks** = trained on the older 70% of the last 3 weeks, tested on the newest 30%. **Months** = trained on the 3 weeks, tested on older months it never saw. Edge bets buy at the ask + fee when the model beats it by 4+ pts (≤70¢), held to settlement.
-Order-flow coverage: 100% of rows · commodity whale events on file: 1550
+Order-flow coverage: 100% of rows · commodity whale events on file: 2426
 
 | Market | Weeks test | Months test | Proven |
 |---|---|---|---|
-| GOLD | 385 windows · right 75% vs Kalshi 75% · logloss 0.4922 vs 0.4891 · edge bets 35: won 46%, ROI -22% | 2734 windows · right 74% vs Kalshi 74% · logloss 0.5109 vs 0.5109 · edge bets 35: won 51%, ROI -18% | — |
-| SILVER | 384 windows · right 74% vs Kalshi 74% · logloss 0.5118 vs 0.5119 · edge bets 26: won 69%, ROI +13% | 2725 windows · right 74% vs Kalshi 74% · logloss 0.5148 vs 0.515 · edge bets 47: won 49%, ROI -19% | — |
-| WTI | 429 windows · right 74% vs Kalshi 75% · logloss 0.5105 vs 0.5078 · edge bets 53: won 55%, ROI -11% | 2802 windows · right 76% vs Kalshi 76% · logloss 0.4964 vs 0.4963 · edge bets 58: won 53%, ROI -16% | — |
-| BRENT | 428 windows · right 74% vs Kalshi 75% · logloss 0.5223 vs 0.5198 · edge bets 40: won 65%, ROI +4% | no data | — |
-| COPPER | 384 windows · right 77% vs Kalshi 77% · logloss 0.4602 vs 0.462 · edge bets 6: won 67%, ROI +9% | 1892 windows · right 75% vs Kalshi 75% · logloss 0.5002 vs 0.5004 · edge bets 30: won 63%, ROI +8% | — |
-| NATGAS | 428 windows · right 74% vs Kalshi 72% · logloss 0.5108 vs 0.5101 · edge bets 13: won 46%, ROI -22% | 1969 windows · right 75% vs Kalshi 75% · logloss 0.4938 vs 0.4941 · edge bets 12: won 75%, ROI +22% | — |
-| PALLADIUM | 384 windows · right 75% vs Kalshi 75% · logloss 0.5052 vs 0.5055 · edge bets 60: won 60%, ROI +4% | 671 windows · right 75% vs Kalshi 75% · logloss 0.509 vs 0.5085 · edge bets 138: won 56%, ROI -2% | — |
-| PLATINUM | 384 windows · right 73% vs Kalshi 73% · logloss 0.5235 vs 0.523 · edge bets 19: won 74%, ROI +21% | 1026 windows · right 75% vs Kalshi 75% · logloss 0.5037 vs 0.5036 · edge bets 51: won 57%, ROI -1% | — |
+| GOLD | 386 windows · right 75% vs Kalshi 76% · logloss 0.4992 vs 0.4961 · edge bets 49: won 49%, ROI -18% | 2779 windows · right 74% vs Kalshi 74% · logloss 0.5106 vs 0.5105 · edge bets 49: won 51%, ROI -18% | — |
+| SILVER | 386 windows · right 74% vs Kalshi 74% · logloss 0.5208 vs 0.5209 · edge bets 30: won 70%, ROI +16% | 2770 windows · right 74% vs Kalshi 74% · logloss 0.5147 vs 0.5149 · edge bets 61: won 56%, ROI -7% | — |
+| WTI | 430 windows · right 75% vs Kalshi 75% · logloss 0.5079 vs 0.5065 · edge bets 54: won 54%, ROI -13% | 2848 windows · right 76% vs Kalshi 76% · logloss 0.4959 vs 0.4961 · edge bets 59: won 48%, ROI -24% | — |
+| BRENT | 430 windows · right 75% vs Kalshi 75% · logloss 0.5162 vs 0.5151 · edge bets 29: won 76%, ROI +20% | no data | — |
+| COPPER | 385 windows · right 76% vs Kalshi 76% · logloss 0.4761 vs 0.4757 · edge bets 11: won 73%, ROI +16% | 1937 windows · right 75% vs Kalshi 75% · logloss 0.5006 vs 0.5006 · edge bets 69: won 62%, ROI +9% | — |
+| NATGAS | 430 windows · right 74% vs Kalshi 73% · logloss 0.5033 vs 0.5047 · edge bets 14: won 50%, ROI -18% | 2015 windows · right 75% vs Kalshi 75% · logloss 0.4961 vs 0.4963 · edge bets 14: won 64%, ROI +8% | — |
+| PALLADIUM | 387 windows · right 75% vs Kalshi 74% · logloss 0.507 vs 0.5053 · edge bets 66: won 59%, ROI +2% | 716 windows · right 74% vs Kalshi 74% · logloss 0.5126 vs 0.5128 · edge bets 118: won 56%, ROI -2% | — |
+| PLATINUM | 386 windows · right 73% vs Kalshi 72% · logloss 0.5362 vs 0.5354 · edge bets 20: won 75%, ROI +23% | 1071 windows · right 75% vs Kalshi 75% · logloss 0.5059 vs 0.5058 · edge bets 71: won 55%, ROI -6% | — |
 
-**All weeks:** 3206 windows · right 75% vs Kalshi 74% · logloss 0.5051 vs 0.5041 · edge bets 252: won 59%, ROI -2%
+**All weeks:** 3220 windows · right 74% vs Kalshi 74% · logloss 0.5083 vs 0.5075 · edge bets 273: won 60%, ROI -0%
 
-**All months:** 13819 windows · right 75% vs Kalshi 75% · logloss 0.5042 vs 0.5042 · edge bets 371: won 56%, ROI -6%
+**All months:** 14136 windows · right 75% vs Kalshi 75% · logloss 0.5047 vs 0.5048 · edge bets 441: won 55%, ROI -6%
 
 | Month | Result |
 |---|---|
-| 2026-08 | 3122 windows · right 75% vs Kalshi 75% · logloss 0.4984 vs 0.4983 · edge bets 52: won 52%, ROI -17% |
-| 2026-09 | 6734 windows · right 74% vs Kalshi 74% · logloss 0.5084 vs 0.5083 · edge bets 145: won 57%, ROI -6% |
-| 2026-10 | 3963 windows · right 75% vs Kalshi 75% · logloss 0.5015 vs 0.5019 · edge bets 174: won 56%, ROI -3% |
+| 2026-08 | 3122 windows · right 75% vs Kalshi 75% · logloss 0.4983 vs 0.4983 · edge bets 61: won 48%, ROI -22% |
+| 2026-09 | 6734 windows · right 74% vs Kalshi 74% · logloss 0.5084 vs 0.5083 · edge bets 181: won 55%, ROI -7% |
+| 2026-10 | 4280 windows · right 75% vs Kalshi 75% · logloss 0.5036 vs 0.5041 · edge bets 199: won 58%, ROI -1% |
 
-Strongest signals: `s_ASIA` -0.055, `dmid5` +0.044, `s_EU` +0.036, `ofi3` +0.030, `m_PALLADIUM` -0.027
+Strongest signals: `s_ASIA` -0.058, `dmid5` +0.048, `s_EU` +0.044, `ofi3` +0.026, `spread` +0.022
 
 ## Cheap-spike alerts
 Contracts at 20¢ or less, 2-13 min left. Buy at the ask + fee, sell at 2x (at least +10¢) if the bid gets there before the close, otherwise hold to settlement. Alert when expected profit ≥ 3¢ per contract.
 
 | Market | Weeks test | Months test | Proven |
 |---|---|---|---|
-| GOLD | cheap rows 1,499, spike-to-target normally 20% | cheap rows 11,435, spike-to-target normally 19% | — |
-| SILVER | cheap rows 1,551, spike-to-target normally 21% | cheap rows 11,532, spike-to-target normally 21% | — |
-| WTI | cheap rows 1,665, spike-to-target normally 20% | cheap rows 11,781, spike-to-target normally 19% | — |
-| BRENT | cheap rows 1,885, spike-to-target normally 18% | no data | — |
-| COPPER | cheap rows 1,882, spike-to-target normally 12% | cheap rows 8,544, spike-to-target normally 17% | — |
-| NATGAS | cheap rows 1,803, spike-to-target normally 17% | cheap rows 9,023, spike-to-target normally 16% | — |
-| PALLADIUM | cheap rows 1,788, spike-to-target normally 16% | cheap rows 2,433, spike-to-target normally 13% | — |
-| PLATINUM | cheap rows 1,708, spike-to-target normally 17% | cheap rows 4,168, spike-to-target normally 15% | — |
+| GOLD | cheap rows 1,530, spike-to-target normally 21% | cheap rows 11,592, spike-to-target normally 19% | — |
+| SILVER | cheap rows 1,571, spike-to-target normally 24% | cheap rows 11,684, spike-to-target normally 21% | — |
+| WTI | cheap rows 1,650, spike-to-target normally 21% | cheap rows 11,965, spike-to-target normally 19% | — |
+| BRENT | cheap rows 1,868, spike-to-target normally 19% | no data | — |
+| COPPER | cheap rows 1,888, spike-to-target normally 13% | cheap rows 8,718, spike-to-target normally 17% | — |
+| NATGAS | cheap rows 1,752, spike-to-target normally 16% | cheap rows 9,192, spike-to-target normally 16% | — |
+| PALLADIUM | cheap rows 1,781, spike-to-target normally 16% | cheap rows 2,572, spike-to-target normally 13% | — |
+| PLATINUM | cheap rows 1,704, spike-to-target normally 17% | cheap rows 4,320, spike-to-target normally 15% | — |
 
-**All weeks:** cheap rows 13,781, spike-to-target normally 17%
+**All weeks:** cheap rows 13,744, spike-to-target normally 18%
 
-**All months:** cheap rows 58,916, spike-to-target normally 18%
+**All months:** cheap rows 60,043, spike-to-target normally 18%
