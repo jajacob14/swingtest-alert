@@ -71,7 +71,7 @@ def load_json(p, d):
 def save_json(p, o):
     os.makedirs(os.path.dirname(p) or ".", exist_ok=True); tmp = p + ".tmp"; json.dump(o, open(tmp, "w"), indent=1, default=float); os.replace(tmp, p)
 SW_DEFAULT = {"pause_all": False, "markets": {c: True for c in COMMS},
-              "alerts": {"board": True, "edge_calls": True, "results": True, "whales": True, "spikes": True, "digest": True, "open_close": True, "low_spikes": True}}
+              "alerts": {"board": True, "edge_calls": True, "results": True, "whales": True, "spikes": True, "digest": True, "open_close": True, "low_spikes": True, "pred_results": True}}
 _SW = {"sw": None, "t": 0}
 
 
@@ -595,6 +595,8 @@ class Live:
         self.calls = st.get("calls", [])          # edge calls (graded at settlement)
         self.snaps = st.get("snaps", {})          # 15-min ticker -> checkpoint predictions
         self.missed = st.get("missed", []); self.rows = []
+        self.wl = st.get("wl", [])                # graded board predictions: [t1, comm, model right, kalshi right]
+        self.res_pend = st.get("res_pend", {})    # window close -> graded rows waiting to be sent together
         self.stats = st.get("stats", dict(trades=0, whales=0, vol=0.0)); self.quiet = 0; self.cool = {}; self.sent_h = defaultdict(int)
 
     def ingest(self, ts, tk, sd, yp, n, usd, alert=True):
@@ -684,7 +686,8 @@ class Live:
         self.recent = {t: [w for w in ws if w[0] > time.time() - 10800] for t, ws in self.recent.items() if ws}
         self.calls = [c for c in self.calls if c.get("won") is None or c["t"] > time.time() - 14 * 86400]
         return dict(flow=self.flow, unw=self.unw, recent=self.recent, pend_w=self.pend_w, wstats=self.wstats, calls=self.calls,
-                    snaps=self.snaps, missed=self.missed[-500:], stats=self.stats, last_ts=self.quiet)
+                    snaps=self.snaps, missed=self.missed[-500:], stats=self.stats, last_ts=self.quiet,
+                    wl=[w for w in self.wl if w[0] > time.time() - 7 * 86400], res_pend=self.res_pend)
 
 
 # ---------------- live: 15-min predictions ----------------
@@ -731,7 +734,8 @@ def board(L_, R, preds, b, closed=()):
         go = e >= EDGE and 0.03 < ask <= KMAX; d = "UP" if up else "DOWN"
         L.append((f"🟢 BET {c} {d} ≤ {cents(ask)}" if go else f"🔴 NO BET {c}") +
                  f" · settles {d}: model {ps:.0%} vs Kalshi {(mid if up else 1 - mid):.0%} · edge {e * 100:+.0f} pts after fees"
-                 + ("" if not go else " · ✅ tested" if pv.get(c) else " · ⚠️ untested on this market"))
+                 + ("" if not go else " · ✅ tested" if pv.get(c) else " · ⚠️ untested on this market")
+                 + f" · last 15 {last_dot(L_, c)}" + (f" · today {t}" if (t := wl_txt(L_, c)) else ""))
         lw = q.get("low")
         if lw: L.append(f"   🚀 cheap {lw['side']} {cents(lw['ask'])}: {lw['p']:.0%} chance it trades {cents(lw['tgt'])}+ before close "
                         f"(normally {lw['base']:.0%}){' · BUY, sell at ' + cents(lw['tgt']) if lw['ok'] else ' · not worth it'}")
@@ -741,7 +745,8 @@ def board(L_, R, preds, b, closed=()):
     off = [c for c in SHOW if not switches()["markets"].get(c, True)]
     if closed: L.append("Closed now: " + ", ".join(closed))
     if off: L.append("Switched off: " + ", ".join(off))
-    L.append(f"\n🟢 = model beats Kalshi's ask by {EDGE * 100:.0f}+ pts after fees (≤{KMAX * 100:.0f}¢). % = chance it settles that way at the close.")
+    if (t := wl_txt(L_)): L.append(f"\nPrediction record today: {t}")
+    L.append(f"\n🟢 = model beats Kalshi's ask by {EDGE * 100:.0f}+ pts after fees (≤{KMAX * 100:.0f}¢). % = chance it settles that way at the close. last 15 🟢/🔴 = model's prediction right/wrong in the last window.")
     if L: notify(f"📈 Commodities 15-min · closes {et(b)} ET", "\n".join(L), 2)
 
 
@@ -834,6 +839,10 @@ def settle(L_):
         if res not in ("yes", "no"): continue
         up = res == "yes"
         for b, (p, mid) in S["cp"].items(): log.append(dict(t=S["t1"], c=S["c"], left=int(b), p=p, mid=mid, up=int(up)))
+        if S["cp"]:
+            b = min(S["cp"], key=lambda k: abs(int(k) - 9)); p, mid = S["cp"][b]
+            L_.wl.append([S["t1"], S["c"], int((p >= 0.5) == up), int((mid >= 0.5) == up)])
+            L_.res_pend.setdefault(str(int(S["t1"])), []).append(dict(c=S["c"], p=p, mid=mid, up=int(up), left=int(b)))
         for x in L_.calls:
             if x["tk"] == tk and x["won"] is None:
                 x["won"] = int(x["up"] == up); x["pnl"] = round(x["won"] - x["cost"], 4)
@@ -841,9 +850,42 @@ def settle(L_):
                 if on("results", x["c"]): notify(f"{'✅' if x['won'] else '❌'} {x['c']} 15-min call {'won' if x['won'] else 'lost'}",
                        f"Called {'UP' if x['up'] else 'DOWN'} at {cents(x['ask'])}: settled {'UP' if up else 'DOWN'} · {x['pnl'] / x['cost']:+.0%} per $", 3)
         L_.snaps.pop(tk)
+    for t1 in sorted(L_.res_pend):   # one results push per window, once every market in it is graded (or 10 min after close)
+        if any(int(S["t1"]) == int(t1) for S in L_.snaps.values()) and now < int(t1) + 600: continue
+        results(L_, int(t1), L_.res_pend.pop(t1))
     if log:
         os.makedirs(DATA, exist_ok=True); p = f"{DATA}/live_preds.csv.gz"
         pd.DataFrame(log).to_csv(p, mode="ab", index=False, header=not os.path.exists(p), compression="gzip")
+
+
+def wl_txt(L_, c=None, since=None):
+    """Model right / wrong on graded board predictions (today in ET by default), with Kalshi's hit rate."""
+    since = since or datetime.now(ET).replace(hour=0, minute=0, second=0, microsecond=0).timestamp()
+    w = [x for x in L_.wl if x[0] > since and (c is None or x[1] == c)]
+    if not w: return ""
+    r = sum(x[2] for x in w); k = sum(x[3] for x in w)
+    return f"{r}W-{len(w) - r}L ({r / len(w):.0%}) vs Kalshi {k / len(w):.0%}"
+
+
+def last_dot(L_, c):
+    """🟢 / 🔴: was the model's prediction right in this market's last settled window (within 30 min)?"""
+    w = [x for x in L_.wl if x[1] == c and x[0] > time.time() - 1800]
+    return ("🟢" if w[-1][2] else "🔴") if w else "⚪"
+
+
+def results(L_, t1, rows):
+    if not on("pred_results"): return
+    L = []
+    for r in sorted(rows, key=lambda r: SHOW.index(r["c"]) if r["c"] in SHOW else 99):
+        if not on("pred_results", r["c"]): continue
+        up = r["p"] >= 0.5; d = "UP" if up else "DOWN"; ok = up == bool(r["up"])
+        L.append(f"{'🟢' if ok else '🔴'} {r['c']}: said {d} {max(r['p'], 1 - r['p']):.0%} vs Kalshi {(r['mid'] if up else 1 - r['mid']):.0%} "
+                 f"({r['left']}m left) → settled {'UP' if r['up'] else 'DOWN'} · today {wl_txt(L_, r['c'])}")
+    if not L: return
+    n = sum(1 for x in L if x.startswith("🟢"))
+    L += ["", f"Today, all markets: {wl_txt(L_)}", f"Last 7 days: {wl_txt(L_, since=time.time() - 7 * 86400)}",
+          "🟢 = model's prediction was right last window · 🔴 = wrong. Use the record to judge how far to trust the next board."]
+    notify(f"🎯 Predictions {et(t1 - 900)}–{et(t1)}: {n}/{len(rows)} right", "\n".join(L), 2)
 
 
 def digest(L_, R):

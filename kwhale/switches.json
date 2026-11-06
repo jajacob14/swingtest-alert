@@ -18,6 +18,7 @@
   "spikes": true,
   "digest": true,
   "open_close": true,
-  "low_spikes": true
+  "low_spikes": true,
+  "pred_results": true
  }
 }
