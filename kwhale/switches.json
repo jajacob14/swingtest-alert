@@ -19,6 +19,7 @@
   "digest": true,
   "open_close": true,
   "low_spikes": true,
-  "pred_results": true
+  "pred_results": true,
+  "board_update": true
  }
 }

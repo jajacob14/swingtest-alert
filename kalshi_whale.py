@@ -71,7 +71,7 @@ def load_json(p, d):
 def save_json(p, o):
     os.makedirs(os.path.dirname(p) or ".", exist_ok=True); tmp = p + ".tmp"; json.dump(o, open(tmp, "w"), indent=1, default=float); os.replace(tmp, p)
 SW_DEFAULT = {"pause_all": False, "markets": {c: True for c in COMMS},
-              "alerts": {"board": True, "edge_calls": True, "results": True, "whales": True, "spikes": True, "digest": True, "open_close": True, "low_spikes": True, "pred_results": True}}
+              "alerts": {"board": True, "edge_calls": True, "results": True, "whales": True, "spikes": True, "digest": True, "open_close": True, "low_spikes": True, "pred_results": True, "board_update": True}}
 _SW = {"sw": None, "t": 0}
 
 
@@ -723,7 +723,34 @@ def live_pred(R, c, w):
     D = kframe(pd.DataFrame(rows, columns=KCOLS)) if rows else []
     if not len(D): return None
     r = D.iloc[[-1]]; p = float(p_of(R["model"], r)[0]) if R.get("model") else float(r.mid.iloc[0])
-    return p, float(r.mid.iloc[0]), dict(bid=float(r.bid.iloc[0]), ask=float(r.ask.iloc[0]), tl=float(r.tl.iloc[0]), t1=ts_of(w["close_time"]))
+    return p, float(r.mid.iloc[0]), dict(bid=float(r.bid.iloc[0]), ask=float(r.ask.iloc[0]), tl=float(r.tl.iloc[0]), t1=ts_of(w["close_time"]),
+                                                  dmid3=float(r.dmid3.iloc[0]), dmid1=float(r.dmid1.iloc[0]))
+
+
+def update9(L_, R, upd, b):
+    """Second look ~9 min before the close: what changed since the board (lean, odds, BET status) and fast/trending moves."""
+    if not on("board_update"): return
+    pv = R.get("proven", {}); L = []; nch = nflip = 0
+    for c in [x for x in SHOW if x in upd]:
+        p, mid, q, flow = upd[c]; sh = L_.shown.get(q.get("tk"))
+        if not sh or not on("board_update", c): continue
+        up = p >= 0.5; d = "UP" if up else "DOWN"; ps = p if up else 1 - p; ask = q["ask"] if up else 1 - q["bid"]
+        e = ps - ask - fee(min(max(ask, 0.01), 0.99)); go = e >= EDGE and 0.03 < ask <= KMAX
+        b_up = sh["p"] >= 0.5; side = lambda x: x if up else 1 - x            # show everything on the current lean's side
+        flip = b_up != up; dp, dk = (side(p) - side(sh["p"])) * 100, (side(mid) - side(sh["mid"])) * 100
+        L.append((f"🟢 BET {c} {d} ≤ {cents(ask)}" if go else f"🔴 NO BET {c}")
+                 + (f" · ⚡ FLIPPED to {d}" if flip else "") + (" · now BET" if go and not sh["go"] else " · BET dropped" if sh["go"] and not go else "")
+                 + f" · settles {d}: model {side(sh['p']):.0%}→{ps:.0%} vs Kalshi {side(sh['mid']):.0%}→{side(mid):.0%} · edge {e * 100:+.0f} pts")
+        tags = []
+        if abs(q.get("dmid3", 0)) >= 0.08: tags.append(f"📈 Kalshi moved {q['dmid3'] * 100:+.0f} pts in 3 min (fast)")
+        elif abs(dk) >= 5: tags.append(f"trending {'toward' if dk > 0 else 'against'} {d}: Kalshi {dk:+.0f} pts since the board")
+        if not flip and abs(dp) < 3 and abs(dk) < 3 and not tags: tags.append("no real change")
+        L.append("   " + " · ".join(tags) + (" ✅ tested" if go and pv.get(c) else " ⚠️ untested" if go else ""))
+        nch += int(flip or abs(dp) >= 3 or abs(dk) >= 3 or go != sh["go"]); nflip += int(flip)
+        L_.shown[q["tk"]].update(p9=round(p, 4), mid9=round(mid, 4), go9=bool(go), ask9=round(ask, 3))
+    if not L: return
+    L.append("\nArrows = board (~11 min left) → now (~9 min left). Results grade the board and this update separately.")
+    notify(f"🔄 9-min update · closes {et(b)} ET · {nch} changed" + (f", {nflip} flipped" if nflip else ""), "\n".join(L), 2)
 
 
 def board(L_, R, preds, b, closed=()):
@@ -767,7 +794,7 @@ def live():
     seen = set(r[1] for r in warm); last_ts = warm[-1][0] if warm else t0 - 60
     print(f"live: {len(warm)} commodity trades warmed · proven: {[c for c, v in R.get('proven', {}).items() if v] or 'none'}", flush=True)
     if not st.get("started"): notify("Kalshi commodity scanner online", "Reports only (no trading).\n" + (summary(R) if R.get("model") else "Model not built yet."), 3)
-    low_sent = set()
+    low_sent, updated = set(), set()
     win, done_min, boarded, saved, trained, settled_t, digest_t = {}, {}, set(), time.time(), time.time(), 0, st.get("digest_t", 0)
     is_open = dict(st.get("is_open", {})); shut_t = {}; switches(force=True)
     while time.time() - t0 < maxmin * 60:
@@ -777,7 +804,7 @@ def live():
                 if r[1] in seen: continue
                 seen.add(r[1]); last_ts = max(last_ts, r[0]); L_.ingest(r[0], *r[2:])
             if len(seen) > 200000: seen = set(list(seen)[-50000:])
-            L_.tick(time.time()); now = time.time(); minute = int(now // 60); preds = {}
+            L_.tick(time.time()); now = time.time(); minute = int(now // 60); preds, upd = {}, {}
             for c in COMMS:  # 15-min windows: one prediction per completed minute
                 if c not in win or ts_of(win[c]["close_time"]) <= now:
                     w = open_window(c); win[c] = w if w else {"close_time": datetime.fromtimestamp(now + 60, timezone.utc).isoformat()}
@@ -808,6 +835,7 @@ def live():
                            f"Expected +{lw['ev'] * 100:.0f}¢/contract after fees · backtest: {fmt_low(lb)}", 4, f"{WEB}/{K15[c].lower()}")
                 q["tk"] = tk
                 if 8 <= tl <= 11: preds[c] = (p, mid, q, flow)
+                if 7.5 <= tl <= 9.5 and tk in L_.shown: upd[c] = (p, mid, q, flow)
                 up = p >= 0.5; ps = p if up else 1 - p; ask = q["ask"] if up else 1 - q["bid"]; e = ps - ask - fee(min(max(ask, 0.01), 0.99))
                 lr = [x for x in L_.calls if x["c"] == c and x.get("won") is not None][-30:]
                 bad = len(lr) >= 20 and sum(x["pnl"] for x in lr) < -0.05 * sum(x["cost"] for x in lr)  # live results disproving it
@@ -819,6 +847,7 @@ def live():
                            f"Closes {et(q['t1'])} ET · whales {flow}\nBacktest: {fmt_eval(R['weeks']['test_by'].get(c))}", 4, f"{WEB}/{K15[c].lower()}")
             b = int(now // 900 * 900) + 900
             if preds and b not in boarded: boarded.add(b); board(L_, R, preds, b, [c for c in SHOW if is_open.get(c) is False])
+            if upd and b in boarded and b not in updated: updated.add(b); update9(L_, R, upd, b)
             if now - settled_t > 60: settle(L_); settled_t = now
             if now - trained > 6 * 3600:
                 L_.flush()
@@ -846,7 +875,10 @@ def settle(L_):
         sh = L_.shown.pop(tk, None)
         if sh:   # grade exactly what the board showed: its lean, and whether it said BET
             ok = int((sh["p"] >= 0.5) == up)
-            L_.wl.append([S["t1"], S["c"], ok, int((sh["mid"] >= 0.5) == up), int(sh["go"]), ok if sh["go"] else None])
+            bet = sh["go"] or sh.get("go9", False)                      # a BET shown on the board or the 9-min update
+            bside = (sh["p"] if sh["go"] else sh.get("p9", sh["p"])) >= 0.5
+            L_.wl.append([S["t1"], S["c"], ok, int((sh["mid"] >= 0.5) == up), int(bet), int(bside == up) if bet else None,
+                          int((sh["p9"] >= 0.5) == up) if "p9" in sh else None])
             L_.res_pend.setdefault(str(int(S["t1"])), []).append(dict(sh, up=int(up)))
         for x in L_.calls:
             if x["tk"] == tk and x["won"] is None:
@@ -872,6 +904,13 @@ def wl_txt(L_, c=None, since=None):
     return f"{r}W-{len(w) - r}L ({r / len(w):.0%}) vs Kalshi {k / len(w):.0%}"
 
 
+def u9_txt(L_):
+    since = datetime.now(ET).replace(hour=0, minute=0, second=0, microsecond=0).timestamp()
+    w = [x for x in L_.wl if x[0] > since and len(x) > 6 and x[6] is not None]
+    if not w: return ""
+    r = sum(x[6] for x in w); return f"{r}W-{len(w) - r}L ({r / len(w):.0%})"
+
+
 def bets_txt(L_, since=None):
     """Only the windows where the board said 🟢 BET."""
     since = since or datetime.now(ET).replace(hour=0, minute=0, second=0, microsecond=0).timestamp()
@@ -895,14 +934,20 @@ def results(L_, t1, rows):
         odds = f"{max(r['p'], 1 - r['p']):.0%} vs Kalshi {(r['mid'] if up else 1 - r['mid']):.0%}"
         if r.get("go"): L.append(f"{'🟢' if ok else '🔴'} {r['c']}: BET {d} ≤ {cents(r['ask'])} ({odds}) → settled {end} · bet {'WON' if ok else 'LOST'}")
         else: L.append(f"{'🟢' if ok else '🔴'} {r['c']}: NO BET · leaned {d} {odds} → settled {end} · lean {'right' if ok else 'wrong'}")
+        if "p9" in r:
+            u9 = r["p9"] >= 0.5; ok9 = u9 == bool(r["up"])
+            if u9 != up or r.get("go9", False) != r.get("go", False):
+                L[-1] += (f" · 9m update: {'BET' if r.get('go9') else 'lean'} {'UP' if u9 else 'DOWN'} {max(r['p9'], 1 - r['p9']):.0%}"
+                          f" → {'right' if ok9 else 'wrong'}")
         L[-1] += f" · leans today {wl_txt(L_, r['c'])}"
     if not L: return
     n, k = sum(1 for x in L if x.startswith("🟢")), len(L)
     L += ["", f"Board leans today: {wl_txt(L_)} · Bets today (🟢 BET only): {bets_txt(L_)}",
           f"Leans last 7 days: {wl_txt(L_, since=time.time() - 7 * 86400)} · Bets: {bets_txt(L_, since=time.time() - 7 * 86400)}",
+          (f"9-min updates today: {u9_txt(L_)} · " if u9_txt(L_) else "") +
           "Graded on exactly what the board showed (about 11 min before the close). A lean is the side the model thought more likely, "
           "not a call: only 🟢 BET rows are calls. 🟢/🔴 = right/wrong."]
-    notify(f"🎯 Board results {et(t1 - 900)}–{et(t1)}: {n}/{k} leans right · bets {sum(1 for r in rows if r.get('go'))}",
+    notify(f"🎯 Board results {et(t1 - 900)}–{et(t1)}: {n}/{k} leans right · bets {sum(1 for r in rows if r.get('go') or r.get('go9'))}",
            "\n".join(L), 2)
 
 
