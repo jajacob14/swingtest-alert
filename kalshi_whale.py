@@ -84,7 +84,7 @@ def load_json(p, d):
 def save_json(p, o):
     os.makedirs(os.path.dirname(p) or ".", exist_ok=True); tmp = p + ".tmp"; json.dump(o, open(tmp, "w"), indent=1, default=float); os.replace(tmp, p)
 SW_DEFAULT = {"pause_all": False, "markets": {c: True for c in COMMS},
-              "alerts": {"board": True, "edge_calls": True, "results": True, "whales": True, "spikes": True, "digest": True, "open_close": True, "low_spikes": True, "pred_results": True, "board_update": True}}
+              "alerts": {"board": True, "edge_calls": True, "results": True, "whales": True, "spikes": True, "digest": True, "open_close": True, "low_spikes": True, "pred_results": True, "board_update": True, "waves": True}}
 _SW = {"sw": None, "t": 0}
 
 
@@ -444,6 +444,10 @@ def kframe(kd):
 
 
 LOW, LEV = 0.20, 0.03   # cheap side = ask ≤ 20¢; alert when expected profit ≥ 3¢/contract after fees
+WAVE = E("KW_WAVE_TGT", 0.12)   # wave: buy a side at 12-60¢ near its low, cash out +12¢ higher before the close
+WAVES_ON = CRYPTO or E("KW_WAVES", 0) == 1
+KINDS = {"low": dict(lo=0.02, hi=LOW, tlmin=2, tgt=lambda a: np.minimum(np.maximum(2 * a, a + 0.10), 0.99)),
+         "wave": dict(lo=0.12, hi=0.60, tlmin=4, tgt=lambda a: np.minimum(a + WAVE, 0.99))}
 LF = ("lask", "dmid1s", "dmid3s", "dmid5s", "spread", "kvol", "vcum", "tleft", "ofi3s", "bigcs") + \
      tuple(f"s_{s}" for s in SESS) + tuple(f"m_{c}" for c in COMMS)
 
@@ -451,7 +455,7 @@ LF = ("lask", "dmid1s", "dmid3s", "dmid5s", "spread", "kvol", "vcum", "tleft", "
 def feev(a): a = np.clip(np.asarray(a, float), 0.01, 0.99); return np.ceil(7 * a * (1 - a) - 1e-9) / 100
 
 
-def lframe(kd):
+def lframe(kd, kind="low"):
     """Cheap contracts (either side ≤ 20¢, 2-13 min left). Target = sell at 2x the entry (at least +10¢).
     hit = that side's bid reached the target later in the window; pnl = buy at ask + fee, sell at target (fee) if hit,
     otherwise hold to settlement."""
@@ -464,10 +468,10 @@ def lframe(kd):
     for sgn in (1, -1):
         d = kd.assign(side=sgn, lask=kd.ask if sgn > 0 else 1 - kd.bid, fb=kd.fyb if sgn > 0 else kd.fnb,
                       win=(pd.to_numeric(kd.up, errors="coerce") == (1 if sgn > 0 else 0)).astype(float))
-        d = d[(d.tl >= 2) & (d.tl <= 13) & (d.lask >= 0.02) & (d.lask <= LOW)].copy()
+        K_ = KINDS[kind]; d = d[(d.tl >= K_["tlmin"]) & (d.tl <= 13) & (d.lask >= K_["lo"]) & (d.lask <= K_["hi"])].copy()
         for n in (1, 3, 5): d[f"dmid{n}s"] = d[f"dmid{n}"] * sgn
         d["ofi3s"], d["bigcs"] = d.ofi3 * sgn, d.bigc * sgn; out.append(d)
-    d = pd.concat(out); d["tgt"] = np.minimum(np.maximum(2 * d.lask, d.lask + 0.10), 0.99)
+    d = pd.concat(out); d["tgt"] = KINDS[kind]["tgt"](d.lask)
     d["hit"] = (d.fb >= d.tgt - 1e-9).astype(float)
     d["cost"] = d.lask + feev(d.lask); d["pnl"] = np.where(d.hit == 1, d.tgt - feev(d.tgt), d.win) - d.cost
     d["tleft"] = d.tl / 12; ss = d.ts.map(session)
@@ -477,11 +481,12 @@ def lframe(kd):
     return d.replace([np.inf, -np.inf], np.nan).dropna(subset=list(LF))
 
 
-def ltrain(D, w8=None):
+def ltrain(D, w8=None, kind="low"):
     X = D[list(LF)].to_numpy(float); mu, sd = X.mean(0), np.maximum(X.std(0), 1e-4); y = D.hit.to_numpy(float)
     b = float(logit(np.clip(y.mean(), 0.01, 0.99)))
     w = fit_offset(np.clip((X - mu) / sd, -6, 6), y, np.full(len(y), b), w8)
-    return dict(w=[round(float(v), 5) for v in w], mu=[round(float(v), 6) for v in mu], sd=[round(float(v), 6) for v in sd], b=round(b, 5))
+    w0 = round(float(D.win[D.hit == 0].mean()), 4) if kind == "wave" and (D.hit == 0).any() else 0.0  # no wave: chance it still settles your way
+    return dict(w0=w0, w=[round(float(v), 5) for v in w], mu=[round(float(v), 6) for v in mu], sd=[round(float(v), 6) for v in sd], b=round(b, 5))
 
 
 def lp(M, D):
@@ -491,7 +496,7 @@ def lp(M, D):
 
 def lev(M, D):
     """Expected profit per contract: spike to target (sell) or, if not, assume it expires worthless (conservative)."""
-    p = lp(M, D); return p, p * (D.tgt.to_numpy() - feev(D.tgt)) - D.cost.to_numpy()
+    p = lp(M, D); return p, p * (D.tgt.to_numpy() - feev(D.tgt)) + (1 - p) * M.get("w0", 0.0) - D.cost.to_numpy()
 
 
 def leval(M, D):
@@ -512,19 +517,19 @@ def lproven(W, Mo, n_w=10, n_m=20):
 
 def fmt_low(r):
     if not r: return "no data"
-    s = f"cheap rows {r['rows']:,}, spike-to-target normally {r['base']:.0%}"
+    s = f"setups {r['rows']:,}, target reached normally {r['base']:.0%}"
     if r.get("trades"): s += f" · alerts {r['trades']}: hit {r['hit']:.0%} (model said {r['pred']:.0%}), ROI {r['roi']:+.0%} at avg {r['avg_ask'] * 100:.0f}¢"
     return s
 
 
-def train_low(now):
-    """Cheap-spike model: weeks (older 70% → newest 30%) and months (weeks → older months), per market."""
-    D = pd.concat([lframe(load_k(m)) for m in COMMS], ignore_index=True)
+def train_low(now, kind="low"):
+    """Cheap-spike / wave model: weeks (older 70% → newest 30%) and months (weeks → older months), per market."""
+    D = pd.concat([lframe(load_k(m), kind) for m in COMMS], ignore_index=True)
     if not len(D): return {}
     Wk, Mo = D[D.cl >= now - WEEKS_D * 86400], D[D.cl < now - WEEKS_D * 86400]
     wins = Wk.sort_values("cl").ticker.drop_duplicates().tolist(); cut = set(wins[int(len(wins) * 0.7):])
     tr, te = Wk[~Wk.ticker.isin(cut)], Wk[Wk.ticker.isin(cut)]
-    Mw, Mwk = ltrain(tr), ltrain(Wk); Mdep = ltrain(D, np.asarray(0.5 ** ((D.cl.max() - D.cl) / (21 * 86400)), float))
+    Mw, Mwk = ltrain(tr, kind=kind), ltrain(Wk, kind=kind); Mdep = ltrain(D, np.asarray(0.5 ** ((D.cl.max() - D.cl) / (21 * 86400)), float), kind)
     by = lambda M, X: {str(k): leval(M, g) for k, g in X.groupby("mkt")} if len(X) else {}
     L = dict(weeks=dict(test=leval(Mw, te), test_by=by(Mw, te)), months=dict(test=leval(Mwk, Mo), test_by=by(Mwk, Mo)), model=Mdep)
     L["proven"] = {c: lproven(L["weeks"]["test_by"].get(c), L["months"]["test_by"].get(c)) for c in COMMS}
@@ -595,6 +600,9 @@ def train(push=True):
     R["model"] = Mdep; R["feats"] = sorted(((KF[i], Mdep["w"][i]) for i in range(len(KF))), key=lambda z: -abs(z[1]))[:5]
     try: R["low"] = train_low(now)
     except Exception as e: print("low-spike model:", e, flush=True); R["low"] = old.get("low", {})
+    if WAVES_ON:
+        try: R["wave"] = train_low(now, "wave")
+        except Exception as e: print("wave model:", e, flush=True); R["wave"] = old.get("wave", {})
     save_json(f"{DIR}/model.json", R); write_report(R); print(summary(R), flush=True)
     if push: notify(f"🧠 {LBL} model retrained", summary(R), 3)
     return R
@@ -619,6 +627,12 @@ def summary(R):
         L.append(f"Cheap-spike alerts · months: {fmt_low(lo['months']['test'])}")
         pl = [c for c in SHOW if lo.get("proven", {}).get(c)]
         L.append("Cheap-spike PROVEN: " + (", ".join(pl) if pl else "none yet"))
+    wv = R.get("wave") or {}
+    if wv:
+        L.append(f"Wave (buy the low, cash out +{WAVE * 100:.0f}¢) · weeks: {fmt_low(wv['weeks']['test'])}")
+        L.append(f"Wave · months: {fmt_low(wv['months']['test'])}")
+        pw = [c for c in SHOW if wv.get("proven", {}).get(c)]
+        L.append("Wave PROVEN: " + (", ".join(pw) if pw else "none yet"))
     return "\n".join(L)
 
 
@@ -642,6 +656,13 @@ def write_report(R):
         for c in SHOW:
             L.append(f"| {c} | {fmt_low(lo['weeks']['test_by'].get(c))} | {fmt_low(lo['months']['test_by'].get(c))} | {'✅' if lo['proven'].get(c) else '—'} |")
         L += ["", f"**All weeks:** {fmt_low(lo['weeks']['test'])}", "", f"**All months:** {fmt_low(lo['months']['test'])}"]
+    wv = R.get("wave") or {}
+    if wv:
+        L += ["", "## Wave alerts (buy near the low, cash out before the close)", f"Either side at 12-60¢ with 4-13 min left. Buy at the ask + fee, "
+              f"sell when the bid is {WAVE * 100:.0f}¢ higher, otherwise hold to settlement. Alert when expected profit ≥ {LEV * 100:.0f}¢.", "",
+              "| Market | Weeks test | Months test | Proven |", "|---|---|---|---|"]
+        for c in SHOW:
+            L.append(f"| {c} | {fmt_low(wv['weeks']['test_by'].get(c))} | {fmt_low(wv['months']['test_by'].get(c))} | {'✅' if wv['proven'].get(c) else '—'} |")
     os.makedirs(DIR, exist_ok=True); open(f"{DIR}/report.md", "w").write("\n".join(L) + "\n")
 
 
@@ -694,6 +715,7 @@ class Live:
         self.wl = [w for w in st.get("wl", []) if len(w) > 4]  # graded board leans: [t1, comm, lean right, kalshi right, bet?, bet won]
         self.res_pend = st.get("res_pend", {})    # window close -> graded rows waiting to be sent together
         self.shown = st.get("shown", {})          # ticker -> exactly what the board showed (graded at settlement)
+        self.waves = st.get("waves", [])          # wave alerts: buy pushed, waiting for the cash-out / settlement
         self.stats = st.get("stats", dict(trades=0, whales=0, vol=0.0)); self.quiet = 0; self.cool = {}; self.sent_h = defaultdict(int)
 
     def ingest(self, ts, tk, sd, yp, n, usd, alert=True):
@@ -785,7 +807,8 @@ class Live:
         return dict(flow=self.flow, unw=self.unw, recent=self.recent, pend_w=self.pend_w, wstats=self.wstats, calls=self.calls,
                     snaps=self.snaps, missed=self.missed[-500:], stats=self.stats, last_ts=self.quiet,
                     wl=[w for w in self.wl if w[0] > time.time() - 7 * 86400], res_pend=self.res_pend,
-                    shown={k: v for k, v in self.shown.items() if v["t1"] > time.time() - 7200})
+                    shown={k: v for k, v in self.shown.items() if v["t1"] > time.time() - 7200},
+                    waves=[w for w in self.waves if w["t1"] > time.time() - 3 * 86400])
 
 
 # ---------------- live: 15-min predictions ----------------
@@ -798,16 +821,16 @@ def open_window(c):
 _ROWS = {}
 
 
-def low_live(R, c):
-    """Cheap side of this window right now (≤ 20¢) -> (side, ask, target, p_hit, base, ev) if the model expects profit."""
-    M = (R.get("low") or {}).get("model"); rows = _ROWS.get(c)
+def low_live(R, c, kind="low"):
+    """Best setup of this kind in the window right now -> (side, ask, target, p_hit, base, ev, ok)."""
+    M = (R.get(kind) or {}).get("model"); rows = _ROWS.get(c)
     if not M or not rows: return None
-    D = lframe(pd.DataFrame(rows, columns=KCOLS))
+    D = lframe(pd.DataFrame(rows, columns=KCOLS), kind)
     if not len(D): return None
     D = D[D.ts == D.ts.max()]
     if not len(D): return None
     p, ev = lev(M, D); i = int(np.argmax(ev)); r = D.iloc[i]
-    base = ((R["low"]["weeks"]["test_by"].get(c) or {}).get("base")) or float(sig(M["b"]))
+    base = ((R[kind]["weeks"]["test_by"].get(c) or {}).get("base")) or float(sig(M["b"]))
     return dict(side="YES (UP)" if r.side > 0 else "NO (DOWN)", up=bool(r.side > 0), ask=float(r.lask), tgt=float(r.tgt), p=float(p[i]),
                 base=float(base), ev=float(ev[i]), tl=float(r.tl), ok=bool(ev[i] >= LEV))
 
@@ -855,6 +878,10 @@ def scorecard(L_):
            f"All: model {m}-{len(w) - m} ({m / len(w):.0%}) · K {k}-{len(w) - k} ({k / len(w):.0%}) · 🟢 bets {bets_txt(L_)}"]
     out += [" · ".join(per[i:i + 3]) for i in range(0, len(per), 3)]
     if (u := u9_txt(L_)): out.append(f"9-min updates: {u}")
+    wv = [x for x in L_.waves if x["t"] > since and not x.get("open")]
+    if wv:
+        pnl = sum(x["exit"] - x["entry"] - fee(min(max(x["entry"], .01), .99)) - (fee(min(max(x["exit"], .01), .99)) if x["hit"] else 0) for x in wv)
+        out.append(f"🌊 Waves: {sum(x['hit'] for x in wv)} cashed out / {len(wv)} · {pnl * 100:+.0f}¢ per contract total after fees")
     return out
 
 
@@ -895,6 +922,9 @@ def board(L_, R, preds, b, closed=()):
         L.append(f"   {d} {ps:.0%} vs K {(mid if up else 1 - mid):.0%} · edge {int(round(e * 100)):+d}"
                  + (" · ✅ tested" if go and pv.get(c) else " · ⚠️ untested" if go else "") + f" · last {last_dot(L_, c)}")
         L.append(f"   {trend_txt(q, up)} · {flow_h(L_, c)}")
+        wv = q.get("wave")
+        if wv: L.append(f"   🌊 wave {wv['side'].split()[0]} {cents(wv['ask'])} → {cents(wv['tgt'])}: {wv['p']:.0%} (normal {wv['base']:.0%})"
+                        + (" · BUY" if wv["ok"] and (R.get("wave") or {}).get("proven", {}).get(c) else " · watch" if wv["ok"] else " · skip"))
         lw = q.get("low")
         if lw: L.append(f"   🚀 cheap {lw['side'].split()[0]} {cents(lw['ask'])}: {lw['p']:.0%} → {cents(lw['tgt'])}+ (normal {lw['base']:.0%})"
                         + (f" · BUY, sell {cents(lw['tgt'])}" if lw["ok"] else " · skip"))
@@ -923,7 +953,7 @@ def live():
     seen = set(r[1] for r in warm); last_ts = warm[-1][0] if warm else t0 - 60
     print(f"live: {len(warm)} commodity trades warmed · proven: {[c for c, v in R.get('proven', {}).items() if v] or 'none'}", flush=True)
     if not st.get("started"): notify(f"Kalshi {lbl} scanner online", "Reports only (no trading).\n" + (summary(R) if R.get("model") else "Model not built yet."), 3)
-    low_sent, updated = set(), set()
+    low_sent, updated, wave_sent = set(), set(), set()
     win, done_min, boarded, saved, trained, settled_t, digest_t = {}, {}, set(), time.time(), time.time(), 0, st.get("digest_t", 0)
     is_open = dict(st.get("is_open", {})); shut_t = {}; switches(force=True)
     while time.time() - t0 < maxmin * 60:
@@ -963,6 +993,30 @@ def live():
                            f"Buy ≤ {cents(lw['ask'])}, sell into the spike at {cents(lw['tgt'])}. No spike → likely expires at 0¢.\n"
                            f"Expected +{lw['ev'] * 100:.0f}¢/contract after fees · backtest: {fmt_low(lb)}", 4, f"{WEB}/{K15[c].lower()}")
                 q["tk"] = tk
+                wv = low_live(R, c, "wave") if R.get("wave") else None
+                if wv: q["wave"] = wv
+                link = f"{WEB}/{K15[c].lower()}"
+                if (wv and wv["ok"] and R["wave"].get("proven", {}).get(c) and on("waves", c) and (tk, wv["up"]) not in wave_sent
+                        and not any(x["tk"] == tk and x.get("open") for x in L_.waves)):
+                    wave_sent.add((tk, wv["up"])); wb = (R["wave"]["weeks"]["test_by"].get(c) or {})
+                    L_.waves.append(dict(t=now, c=c, tk=tk, up=wv["up"], entry=wv["ask"], tgt=wv["tgt"], t1=q["t1"], open=True))
+                    notify(f"🌊 {c} BUY {wv['side']} ≤ {cents(wv['ask'])} · wave to {cents(wv['tgt'])}",
+                           f"Near its low: {wv['p']:.0%} chance it trades {cents(wv['tgt'])}+ before the {et(q['t1'])} close (normally {wv['base']:.0%}), "
+                           f"{wv['tl']:.0f} min left.\nBuy ≤ {cents(wv['ask'])}. You'll get a 💰 CASH OUT push when it reaches {cents(wv['tgt'])}.\n"
+                           f"Expected {wv['ev'] * 100:+.0f}¢/contract after fees · backtest: {fmt_low(wb)}", 4, link)
+                for x in L_.waves:   # cash-out watch for open wave alerts on this window
+                    if not x.get("open") or x["tk"] != tk: continue
+                    sb = q["bid"] if x["up"] else 1 - q["ask"]; sd_ = "YES" if x["up"] else "NO"
+                    if sb >= x["tgt"] - 1e-9:
+                        x.update(open=False, hit=1, exit=round(sb, 2))
+                        if on("waves", c): notify(f"💰 {c} CASH OUT {sd_} at {cents(sb)}",
+                                                  f"Wave reached: bought ≤ {cents(x['entry'])}, bid now {cents(sb)} ({(sb - x['entry']) * 100:+.0f}¢/contract before fees), "
+                                                  f"{tl:.0f} min left. Sell now.", 4, link)
+                    elif tl <= 3.5 and not x.get("warned"):   # last minute the live model sees (3 min left)
+                        x["warned"] = True; ps_ = p if x["up"] else 1 - p
+                        if on("waves", c): notify(f"⏱ {c} wave stalled · {sd_} at {cents(sb)}",
+                                                  f"Didn't reach {cents(x['tgt'])} (bought ≤ {cents(x['entry'])}). Sell at {cents(sb)} now, or hold: "
+                                                  f"model {ps_:.0%} vs Kalshi {(mid if x['up'] else 1 - mid):.0%} that it settles {sd_}.", 3, link)
                 if 8 <= tl <= 11: preds[c] = (p, mid, q, flow)
                 if 7.5 <= tl <= 9.5 and tk in L_.shown: upd[c] = (p, mid, q, flow)
                 up = p >= 0.5; ps = p if up else 1 - p; ask = q["ask"] if up else 1 - q["bid"]; e = ps - ask - fee(min(max(ask, 0.01), 0.99))
@@ -1015,6 +1069,9 @@ def settle(L_):
                 if not x["won"]: L_.missed.append(tk)
                 if on("results", x["c"]): notify(f"{'✅' if x['won'] else '❌'} {x['c']} 15-min call {'won' if x['won'] else 'lost'}",
                        f"Called {'UP' if x['up'] else 'DOWN'} at {cents(x['ask'])}: settled {'UP' if up else 'DOWN'} · {x['pnl'] / x['cost']:+.0%} per $", 3)
+        for x in L_.waves:
+            if x["tk"] == tk and x.get("open"):
+                x.update(open=False, hit=0, exit=float(x["up"] == up))
         L_.snaps.pop(tk)
     for t1 in sorted(L_.res_pend):   # one results push per window, once every market in it is graded (or 10 min after close)
         if any(int(S["t1"]) == int(t1) for S in L_.snaps.values()) and now < int(t1) + 600: continue
@@ -1168,6 +1225,9 @@ def selftest_crypto():
     D = kframe(load_k(COMMS[0])); one = D[D.ticker == D.ticker.iloc[0]]
     raw = load_k(COMMS[0]); raw = raw[raw.ticker == D.ticker.iloc[0]]
     assert np.allclose(p_of(R["model"], one), p_of(R["model"], kframe(raw))), "feature parity"
+    assert R.get("wave", {}).get("weeks", {}).get("test", {}).get("rows", 0) > 0, "wave model trained"
+    _ROWS[COMMS[0]] = load_k(COMMS[0]).query("ticker == @D.ticker.iloc[0]").head(6).to_dict("records")
+    wv = low_live(R, COMMS[0], "wave"); print("wave live:", wv)
     print("crypto selftest passed")
 
 

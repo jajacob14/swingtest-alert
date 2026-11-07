@@ -20,6 +20,7 @@
   "open_close": true,
   "low_spikes": true,
   "pred_results": true,
-  "board_update": true
+  "board_update": true,
+  "waves": true
  }
 }
