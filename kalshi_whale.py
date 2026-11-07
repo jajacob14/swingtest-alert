@@ -942,7 +942,7 @@ def board(L_, R, preds, b, closed=()):
 def live():
     t0, maxmin = time.time(), float(os.getenv("LIVE_MAX_MIN") or 1e9)
     meta = Meta(); st = load_json(f"{DATA}/state.json", {}); R = load_json(f"{DIR}/model.json", {})
-    if not R.get("model") or time.time() - R.get("trained", 0) > 6 * 3600:
+    if not R.get("model") or time.time() - R.get("trained", 0) > 6 * 3600 or (WAVES_ON and not R.get("wave")):
         harvest()
         for c in COMMS: kfetch(c, WEEKS_D if R.get("model") else MONTHS_D, 1 if R.get("model") else SAMPLE)
         R = train(push=False) or R
