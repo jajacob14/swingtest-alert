@@ -4,7 +4,7 @@ on:
     - cron: "23 */6 * * *"   # fallback starter; normally each ~6h run chains the next one itself (24/7)
   workflow_dispatch:
     inputs:
-      cmd: {description: "build | live | train | report | testnotify | doctor", default: live}
+      cmd: {description: "build | live | train | report | testnotify | doctor | recent", default: live}
       maxmin: {description: "live run length in minutes", default: "345"}
 permissions: {contents: write, actions: write}
 concurrency:

@@ -1012,6 +1012,15 @@ def doctor():
         print(f"  messages on topic (12h): {len(msgs)} · this check found: {any(tag in (m.get('message') or '') for m in msgs)}")
 
 
+def recent():
+    """Last pushes on the scanner topic (read-only: sends nothing)."""
+    t = os.getenv("KW_NTFY_TOPIC") or ""; srv = os.getenv("KW_NTFY_SERVER", "https://ntfy.sh").rstrip("/")
+    if not t: print("KW_NTFY_TOPIC not set"); return
+    ms = [json.loads(x) for x in requests.get(f"{srv}/{t}/json", params={"poll": 1, "since": "12h"}, timeout=20).text.splitlines() if x.strip()]
+    print(f"{len(ms)} pushes in 12h")
+    for m in ms[-25:]: print(datetime.fromtimestamp(m.get("time", 0), ET).strftime("%a %-I:%M%p"), "|", (m.get("title") or "")[:90])
+
+
 def selftest():
     """Offline: synthetic windows where Kalshi under-reacts to order flow -> the model must find it; live path parity."""
     global DIR, DATA, OLD_CACHE
@@ -1054,7 +1063,7 @@ def selftest():
 
 if __name__ == "__main__":
     a = sys.argv[1:] or ["live"]
-    cmds = dict(live=live, build=build, train=lambda: (train(), persist("kwhale: retrain")), selftest=selftest, doctor=doctor,
+    cmds = dict(live=live, build=build, train=lambda: (train(), persist("kwhale: retrain")), selftest=selftest, doctor=doctor, recent=recent,
                 report=lambda: print(open(f"{DIR}/report.md").read() if os.path.exists(f"{DIR}/report.md") else "no report yet"),
                 testnotify=lambda: notify("Kalshi scanner test", "KW_NTFY_TOPIC works. Separate from your commodity swing alerts.", 4))
     cmds.get(a[0], lambda: print(__doc__))()
