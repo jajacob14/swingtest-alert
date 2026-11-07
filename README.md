@@ -92,3 +92,21 @@ trading (daily break, weekend, halt), you get one 🔕 push and its predictions 
 - Kalshi trades are anonymous, so cash-outs are measured per commodity (an opposite whale following a whale), not per person.
 - If you act on a call, a limit order at or inside the spread beats paying the ask: liquidity providers take most profits
   (Akey et al., 2026).
+
+# Kalshi Crypto Scanner (`kalshi-crypto` workflow)
+Same engine as the commodity scanner (`kalshi_whale.py` with `KW_PROFILE=crypto`), on Kalshi's 15-min crypto markets:
+BTC, ETH, SOL, XRP, DOGE, BNB, HYPE. Reports only, never trades. Pushes go to its own ntfy topic (`KC_NTFY_TOPIC`).
+
+- **Same pushes:** 📈 board (🟢 BET / 🔴 NO BET, settles-at-close odds vs Kalshi), 🔄 9-min update, 🎯 results (leans vs bets),
+  🐋 whales (15-min markets, $10k+ default), ⚡ spikes, 🚀 cheap-spike odds, 📊 digest, 🔕/🔔 market closed/reopened.
+- **Extra crypto inputs:** live Coinbase spot (a constituent of the CF Benchmarks index Kalshi settles on, 60-s average):
+  - `sgap`: digital fair value N(ln(S/K) / (σ√h)) vs Kalshi's price (h = minutes left − 0.5), in log-odds
+  - `sr1/sr3/sr5`: spot returns over 1/3/5 min in σ units; `svz`: log of 30-min realized σ; `sok`: spot available
+- **Same safeguards:** model = Kalshi's own price + what it misses; trained on 3 weeks, tested on the newest 30% and on
+  past months; 🎯 calls only on markets PROVEN in both. Per-window trade pulls are off (`KW_FLOW=0`) because crypto
+  windows have too many trades; spot carries the signal.
+- **Setup:** add repo secret `KC_NTFY_TOPIC` (e.g. `kalshicrypto-jj7342`), subscribe to it in the ntfy app (server
+  ntfy.sh), run `kalshi-crypto` with `cmd=build` once (it chains into live). Switches: `kcrypto/switches.json`.
+- **Research basis:** settlement on CF Benchmarks real-time indexes (60-s average); N(d2) digital pricing with realized
+  vol (Paradigm; arXiv 2606.19517 on prediction-market vs option prices); practitioner reports of short crypto prediction
+  markets lagging spot by 30-90 s (unverified, so it must pass the same PROVEN test); minute-level order flow alone is weak.

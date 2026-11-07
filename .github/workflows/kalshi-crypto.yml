@@ -1,0 +1,45 @@
+name: kalshi-crypto
+on:
+  schedule:
+    - cron: "53 */6 * * *"   # fallback starter; normally each ~6h run chains the next one itself (24/7)
+  workflow_dispatch:
+    inputs:
+      cmd: {description: "build | live | train | report | testnotify | doctor | recent", default: live}
+      maxmin: {description: "live run length in minutes", default: "345"}
+permissions: {contents: write, actions: write}
+concurrency:
+  group: kcrypto-${{ inputs.cmd || 'live' }}
+  cancel-in-progress: false
+jobs:
+  run:
+    runs-on: ubuntu-latest
+    timeout-minutes: 355
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with: {python-version: "3.12", cache: pip}
+      - run: pip install -q -r requirements.txt && git config user.name bot && git config user.email bot@users.noreply.github.com
+      - name: restore crypto scanner data (Kalshi windows, spot, whale history, state)
+        uses: actions/cache/restore@v4
+        with: {path: kcrypto/data, key: "kcrypto-data-${{ github.run_id }}", restore-keys: "kcrypto-data-"}
+      - run: python kalshi_whale.py "$CMD"
+        env:
+          CMD: ${{ inputs.cmd || 'live' }}
+          LIVE_MAX_MIN: ${{ inputs.maxmin || '345' }}
+          PYTHONUNBUFFERED: "1"
+          GIT_PERSIST: "1"
+          KW_PROFILE: crypto
+          KC_NTFY_TOPIC: ${{ secrets.KC_NTFY_TOPIC }}
+          NTFY_TOPIC: ${{ inputs.cmd == 'doctor' && secrets.NTFY_TOPIC || '' }}
+          KW_MIN_WHALE: ${{ vars.KC_MIN_WHALE }}
+          KW_ALERT_WHALE: ${{ vars.KC_ALERT_WHALE }}
+          KW_EDGE: ${{ vars.KC_EDGE }}
+      - name: save scanner data
+        if: always()
+        uses: actions/cache/save@v4
+        with: {path: kcrypto/data, key: "kcrypto-data-${{ github.run_id }}-${{ github.run_attempt }}"}
+      - name: chain the next live run
+        if: ${{ (inputs.cmd == 'build' && always()) || (success() && (inputs.cmd || 'live') == 'live') }}   # a build that fails or times out still starts live
+        run: gh workflow run kalshi-crypto --ref "$GITHUB_REF_NAME" -f cmd=live
+        env:
+          GH_TOKEN: ${{ github.token }}

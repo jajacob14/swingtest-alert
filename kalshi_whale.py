@@ -30,15 +30,27 @@ def E(k, d): return type(d)(os.getenv(k) or d)
 
 
 API, WEB = "https://api.elections.kalshi.com/trade-api/v2", "https://kalshi.com/markets"
-DIR = E("KW_DIR", "kwhale"); DATA = f"{DIR}/data"   # data/ lives in the Actions cache; model.json + report.md go in git
+PROFILE = os.getenv("KW_PROFILE", "commodity")       # "crypto" = same engine on Kalshi's crypto 15-min markets + live spot
+CRYPTO = PROFILE == "crypto"
+DIR = E("KW_DIR", "kcrypto" if CRYPTO else "kwhale"); DATA = f"{DIR}/data"   # data/ lives in the Actions cache; model.json + report.md go in git
 OLD_CACHE = "data"                                   # commodity bot's 3-week Kalshi cache (read only)
-COMMS = ("WTI", "BRENT", "NATGAS", "GOLD", "SILVER", "COPPER", "PLATINUM", "PALLADIUM")
+if CRYPTO:
+    COMMS = ("BTC", "ETH", "SOL", "XRP", "DOGE", "BNB", "HYPE")
+    SHOW = COMMS
+    KEYS = {c: (c,) for c in COMMS}
+    SPOT = {"BTC": "BTC-USD", "ETH": "ETH-USD", "SOL": "SOL-USD", "XRP": "XRP-USD", "DOGE": "DOGE-USD", "BNB": "BNB-USD", "HYPE": "HYPE-USD"}
+    LBL, lbl, TOPIC_ENV = "Crypto", "crypto", "KC_NTFY_TOPIC"
+else:
+    COMMS = ("WTI", "BRENT", "NATGAS", "GOLD", "SILVER", "COPPER", "PLATINUM", "PALLADIUM")
+    SHOW = ("GOLD", "SILVER", "WTI", "BRENT", "COPPER", "NATGAS", "PALLADIUM", "PLATINUM")  # Kalshi's on-screen order (display only; COMMS stays the model's order)
+    KEYS = {"WTI": ("WTI", "OIL"), "BRENT": ("BRENT",), "NATGAS": ("NATGAS", "NG"), "GOLD": ("GOLD",), "SILVER": ("SILVER",),
+            "COPPER": ("COPPER",), "PLATINUM": ("PLATINUM",), "PALLADIUM": ("PALLADIUM",)}
+    SPOT = {}
+    LBL, lbl, TOPIC_ENV = "Commodities", "commodity", "KW_NTFY_TOPIC"
 K15 = {c: f"KX{c}15M" for c in COMMS}
-SHOW = ("GOLD", "SILVER", "WTI", "BRENT", "COPPER", "NATGAS", "PALLADIUM", "PLATINUM")  # Kalshi's on-screen order (display only; COMMS stays the model's order)
-KEYS = {"WTI": ("WTI", "OIL"), "BRENT": ("BRENT",), "NATGAS": ("NATGAS", "NG"), "GOLD": ("GOLD",), "SILVER": ("SILVER",),
-        "COPPER": ("COPPER",), "PLATINUM": ("PLATINUM",), "PALLADIUM": ("PALLADIUM",)}
-MIN_WHALE = E("KW_MIN_WHALE", 500.0)      # commodity markets are thin: $500+ merged order = whale
-ALERT_WHALE = E("KW_ALERT_WHALE", 2000.0)
+FLOW = E("KW_FLOW", 0 if CRYPTO else 1) == 1  # per-window trade pulls (crypto windows have too many trades; spot carries the signal)
+MIN_WHALE = E("KW_MIN_WHALE", 2000.0 if CRYPTO else 500.0)      # commodity markets are thin: $500+ merged order = whale
+ALERT_WHALE = E("KW_ALERT_WHALE", 10000.0 if CRYPTO else 2000.0)
 BIG = 100.0                               # single trade ≥ $100 counts toward big-money flow in 15-min windows
 EDGE = E("KW_EDGE", 0.04)                 # model must beat Kalshi's ask by 4 pts after fees
 KMAX = 0.70                               # never suggest paying over 70¢ (call it before Kalshi prices it in)
@@ -47,7 +59,8 @@ WEEKS_D, MONTHS_D, SAMPLE = E("KW_WEEKS_DAYS", 21), E("KW_MONTHS_DAYS", 90), E("
 CLUSTER_GAP, CK = 30, (12, 9, 6, 3)
 ET = ZoneInfo("America/New_York")
 SESS = ("ASIA", "EU", "US")
-KF = ("dmid1", "dmid3", "dmid5", "spread", "kvol", "vcum", "tleft", "ext", "ofi3", "bigc") + tuple(f"s_{s}" for s in SESS) + tuple(f"m_{c}" for c in COMMS)
+SF = ("sgap", "sr1", "sr3", "sr5", "svz", "sok") if CRYPTO else ()   # crypto: live spot vs the window's target (digital fair value), spot momentum, vol
+KF = ("dmid1", "dmid3", "dmid5", "spread", "kvol", "vcum", "tleft", "ext", "ofi3", "bigc") + tuple(f"s_{s}" for s in SESS) + tuple(f"m_{c}" for c in COMMS) + SF
 KCOLS = ["ticker", "close", "strike", "up", "ts", "bid", "ask", "last", "vol", "yf", "nf", "bf"]
 
 
@@ -224,7 +237,7 @@ def candles(series, tk, t0, t1):
 def window_rows(mkt, m, upto=None):
     """One 15-min window -> 1-min Kalshi quote rows + that minute's order flow (same schema offline and live)."""
     t1 = int(ts_of(m["close_time"])); t_end = min(t1, int(upto)) if upto else t1
-    fl = minute_flow(ticker_trades(m["ticker"], t1 - 900, t_end))
+    fl = minute_flow(ticker_trades(m["ticker"], t1 - 900, t_end)) if FLOW else {}
     out = []
     for cd in candles(K15[mkt], m["ticker"], t1 - 900, t_end):
         e = int(cd["end_period_ts"]); y, n, b = fl.get(e, (0.0, 0.0, 0.0))
@@ -305,7 +318,7 @@ def harvest():
     out = pd.concat([read_gz(f"{DATA}/c_whales.csv.gz")] + wh, ignore_index=True) if wh else read_gz(f"{DATA}/c_whales.csv.gz")
     if len(out): out.drop_duplicates(["t", "tk", "sd"]).to_csv(f"{DATA}/c_whales.csv.gz", index=False, compression="gzip")
     for p in glob.glob(f"{DATA}/*"):
-        if not os.path.basename(p).startswith(("k15_", "c_whales", "meta", "state", "live_preds")): os.remove(p)
+        if not os.path.basename(p).startswith(("k15_", "c_whales", "meta", "state", "live_preds", "spot_")): os.remove(p)
     print(f"HARVEST: {len(out)} commodity whale events kept · {n_marks} commodity snapshots seen", flush=True)
     return out
 
@@ -331,7 +344,82 @@ def kcols(kd):
     kd["kvol"] = np.log1p(r3("vol")); kd["vcum"] = np.log1p(g.vol.cumsum())
     y3, n3 = r3("yf"), r3("nf"); kd["ofi3"] = (y3 - n3) / (y3 + n3 + 1); kd["bigc"] = slog(g.bf.cumsum())
     kd["cl"] = kd.close.map(ts_of); kd["tl"] = (kd.cl - kd.ts) / 60
-    return kd
+    return spot_feats(kd) if CRYPTO else kd
+
+
+# ---------------- crypto: live spot (Coinbase 1-min, a constituent of the CF Benchmarks index Kalshi settles on) ----------------
+_SPOT, _SPLOCK, _SPLAST = {}, threading.Lock(), [0.0]
+
+
+def spot_get(c, a, b):
+    """Coinbase 1-min candles [a, b] (≤300 per call) -> {minute_end_ts: close}."""
+    with _SPLOCK:
+        w = 0.15 - (time.time() - _SPLAST[0])
+        if w > 0: time.sleep(w)
+        _SPLAST[0] = time.time()
+    try:
+        r = requests.get(f"https://api.exchange.coinbase.com/products/{SPOT[c]}/candles", timeout=15,
+                         params=dict(granularity=60, start=datetime.fromtimestamp(a, timezone.utc).isoformat(),
+                                     end=datetime.fromtimestamp(b, timezone.utc).isoformat()))
+        if r.status_code in (400, 404): return -1          # product not listed on Coinbase
+        if r.status_code != 200: return None
+        return {int(x[0]) + 60: float(x[4]) for x in r.json()}
+    except (requests.RequestException, ValueError, IndexError, TypeError): return None
+
+
+def ensure_spot(c, t0, t1):
+    """Spot minute closes covering [t0, t1], cached in DATA/spot_<c>.csv.gz; minutes with no trades are kept as gaps."""
+    if c not in SPOT: return pd.DataFrame(columns=["ts", "px"])
+    if c not in _SPOT:
+        d = read_gz(f"{DATA}/spot_{c}.csv.gz", ["ts", "px"]); _SPOT[c] = {int(t): p for t, p in zip(d.ts, d.px)}
+    S = _SPOT[c]; a0, b0 = int(t0) // 60 * 60, int(min(t1, time.time() - 5)) // 60 * 60
+    miss = [t for t in range(a0, b0 + 60, 60) if t not in S]
+    if miss and SPOT.get(c):
+        added = False
+        for a in range(miss[0], miss[-1] + 60, 300 * 60):
+            b = min(a + 299 * 60, miss[-1])
+            if all(t in S for t in range(a, b + 60, 60)): continue
+            got = spot_get(c, a - 60, b)
+            if got == -1: SPOT[c] = None; print(f"spot: {c} not on Coinbase, Kalshi-only features", flush=True); break
+            if got is None: continue
+            S.update(got); added = True
+            for t in range(a, b + 60, 60):
+                if t not in S and t < time.time() - 300: S[t] = float("nan")   # no trades that minute (not a fetch gap)
+        if added:
+            os.makedirs(DATA, exist_ok=True)
+            pd.DataFrame(sorted(S.items()), columns=["ts", "px"]).to_csv(f"{DATA}/spot_{c}.csv.gz", index=False, compression="gzip")
+    d = pd.DataFrame([(t, S[t]) for t in range(a0 - 2400, b0 + 60, 60) if t in S], columns=["ts", "px"])
+    return d
+
+
+def ncdf(z): return 0.5 * (1 + np.vectorize(math.erf)(np.asarray(z, float) / math.sqrt(2)))
+
+
+def spot_feats(kd):
+    """Digital fair value from spot: P(average at close ≥ target) = N(ln(S/K) / (σ·√h)), h = minutes left − 0.5 (60-s
+    settlement average). sgap = how far Kalshi's price is from it (log-odds); sr = spot returns in σ units; svz = log σ."""
+    if not len(kd): return kd
+    kd = kd.copy(); kd["mk_"] = kd.ticker.map(comm_of); parts = []
+    for c, g in kd.groupby("mk_"):
+        sp = ensure_spot(c, g.ts.min() - 2400, g.ts.max()).dropna().sort_values("ts")
+        if len(sp) > 40:
+            lr = np.log(sp.px).diff(); sp["sv"] = lr.rolling(30, min_periods=10).std()
+            for n in (1, 3, 5): sp[f"r{n}"] = np.log(sp.px).diff(n)
+            sp["ts"] = sp.ts.astype("int64"); g = g.assign(ts=g.ts.astype("int64")).sort_values("ts")
+            g = pd.merge_asof(g, sp[["ts", "px", "sv", "r1", "r3", "r5"]], on="ts", direction="backward", tolerance=150)
+        parts.append(g)
+    kd = pd.concat(parts, ignore_index=True)
+    for col in ("tl", "mid", "ts", "cl"): kd[col] = pd.to_numeric(kd[col], errors="coerce").astype(float)
+    for col in ("px", "sv", "r1", "r3", "r5"):
+        if col not in kd: kd[col] = np.nan
+    K = pd.to_numeric(kd.strike, errors="coerce"); S = kd.px.astype(float); sv = kd.sv.astype(float).clip(lower=1e-5)
+    ok = S.notna() & K.notna() & (K > 0) & kd.sv.notna()
+    z = np.log(S / K) / (sv * np.sqrt((kd.tl - 0.5).clip(lower=0.25)))
+    fair = pd.Series(np.where(ok, ncdf(z.fillna(0)), np.nan), index=kd.index)
+    kd["sgap"] = np.where(ok, (logit(fair.fillna(0.5)) - logit(kd.mid)).clip(-4, 4), 0.0)
+    for n in (1, 3, 5): kd[f"sr{n}"] = np.where(ok, (kd[f"r{n}"] / (sv * math.sqrt(n))).clip(-6, 6), 0.0)
+    kd["svz"] = np.where(ok, np.log(sv * 1e4), 0.0); kd["sok"] = ok.astype(float)
+    return kd.drop(columns=["mk_", "px", "sv", "r1", "r3", "r5"]).sort_values(["ticker", "ts"]).reset_index(drop=True)
 
 
 def kframe(kd):
@@ -500,7 +588,7 @@ def train(push=True):
     try: R["low"] = train_low(now)
     except Exception as e: print("low-spike model:", e, flush=True); R["low"] = old.get("low", {})
     save_json(f"{DIR}/model.json", R); write_report(R); print(summary(R), flush=True)
-    if push: notify("🧠 Commodity model retrained", summary(R), 3)
+    if push: notify(f"🧠 {LBL} model retrained", summary(R), 3)
     return R
 
 
@@ -527,7 +615,7 @@ def summary(R):
 
 
 def write_report(R):
-    L = ["# Kalshi commodity 15-min model report", f"Trained {datetime.fromtimestamp(R['trained'], ET):%Y-%m-%d %H:%M} ET", "",
+    L = [f"# Kalshi {lbl} 15-min model report", f"Trained {datetime.fromtimestamp(R['trained'], ET):%Y-%m-%d %H:%M} ET", "",
          "Model = Kalshi's own price + what it misses (quote changes, spread, volume, order flow, big-money flow, time left, session, market).",
          "**Weeks** = trained on the older 70% of the last 3 weeks, tested on the newest 30%. **Months** = trained on the 3 weeks, tested on "
          f"older months it never saw. Edge bets buy at the ask + fee when the model beats it by {EDGE * 100:.0f}+ pts (≤70¢), held to settlement.",
@@ -777,7 +865,7 @@ def board(L_, R, preds, b, closed=()):
     if off: L.append("Switched off: " + ", ".join(off))
     if (t := wl_txt(L_)): L.append(f"\nBoard leans today: {t} · Bets today (🟢 BET only): {bets_txt(L_)}")
     L.append(f"\n🟢 = model beats Kalshi's ask by {EDGE * 100:.0f}+ pts after fees (≤{KMAX * 100:.0f}¢). % = chance it settles that way at the close. last 15 🟢/🔴 = last window's lean right/wrong (a lean is not a call; only 🟢 BET is).")
-    if L: notify(f"📈 Commodities 15-min · closes {et(b)} ET", "\n".join(L), 2)
+    if L: notify(f"📈 {LBL} 15-min · closes {et(b)} ET", "\n".join(L), 2)
 
 
 def live():
@@ -793,7 +881,7 @@ def live():
     L_.quiet = max(st.get("last_ts", 0), warm[-1][0] if warm else 0)
     seen = set(r[1] for r in warm); last_ts = warm[-1][0] if warm else t0 - 60
     print(f"live: {len(warm)} commodity trades warmed · proven: {[c for c, v in R.get('proven', {}).items() if v] or 'none'}", flush=True)
-    if not st.get("started"): notify("Kalshi commodity scanner online", "Reports only (no trading).\n" + (summary(R) if R.get("model") else "Model not built yet."), 3)
+    if not st.get("started"): notify(f"Kalshi {lbl} scanner online", "Reports only (no trading).\n" + (summary(R) if R.get("model") else "Model not built yet."), 3)
     low_sent, updated = set(), set()
     win, done_min, boarded, saved, trained, settled_t, digest_t = {}, {}, set(), time.time(), time.time(), 0, st.get("digest_t", 0)
     is_open = dict(st.get("is_open", {})); shut_t = {}; switches(force=True)
@@ -953,7 +1041,7 @@ def results(L_, t1, rows):
 
 def digest(L_, R):
     if not on("digest"): L_.stats = dict(trades=0, whales=0, vol=0.0); return
-    s = L_.stats; L = [f"{s['trades']:,} commodity trades · {s['whales']:,} whales · {money(s['vol'])} whale volume since last digest"]
+    s = L_.stats; L = [f"{s['trades']:,} {lbl} trades · {s['whales']:,} whales · {money(s['vol'])} whale volume since last digest"]
     d = read_gz(f"{DATA}/live_preds.csv.gz")
     if len(d):
         d = d[d.t > time.time() - 86400]
@@ -962,7 +1050,7 @@ def digest(L_, R):
     if rec: L.append(f"Edge calls (14d): {sum(x['won'] for x in rec)}/{len(rec)} won, ROI {sum(x['pnl'] for x in rec) / sum(x['cost'] for x in rec):+.0%}")
     L += [f"{c}: whales {L_.flow_txt(c)}" for c in SHOW if L_.flow.get(c)]
     if R.get("model"): L += ["", summary(R)]
-    notify("📊 Kalshi commodities digest", "\n".join(L), 2); L_.stats = dict(trades=0, whales=0, vol=0.0)
+    notify(f"📊 Kalshi {LBL.lower()} digest", "\n".join(L), 2); L_.stats = dict(trades=0, whales=0, vol=0.0)
 
 
 # ---------------- push + persist ----------------
@@ -971,7 +1059,7 @@ _PUSHED = []
 
 def notify(title, body, prio=3, click=None):
     print(f"\n=== {title}\n{body}", flush=True)
-    t = os.getenv("KW_NTFY_TOPIC"); now = time.time(); _PUSHED[:] = [x for x in _PUSHED if x > now - 86400]
+    t = os.getenv(TOPIC_ENV); now = time.time(); _PUSHED[:] = [x for x in _PUSHED if x > now - 86400]
     if not t or (len(_PUSHED) >= E("KW_DAILY_PUSH", 230) and prio < 4): return
     j = {"topic": t, "title": title, "message": body[:3900], "priority": prio, **({"click": click} if click else {})}
     try: requests.post(os.getenv("KW_NTFY_SERVER", "https://ntfy.sh").rstrip("/") + "/", json=j, timeout=15).raise_for_status(); _PUSHED.append(now)
@@ -992,7 +1080,7 @@ def build():
     for i, c in enumerate(COMMS):                          # fair share of the remaining time per commodity
         kfetch(c, MONTHS_D, SAMPLE, deadline=time.time() + (end - time.time()) / (len(COMMS) - i))
     R = train(push=False)
-    if R.get("model"): notify("🧠 Commodity model built", summary(R) + "\nFull table: kwhale/report.md", 3)
+    if R.get("model"): notify(f"🧠 {LBL} model built", summary(R) + f"\nFull table: {DIR}/report.md", 3)
     persist("kwhale: commodity model build")
 
 
@@ -1000,7 +1088,7 @@ def doctor():
     """Delivery check for both bots' topics. Prints a fingerprint (not the name: logs are public) to compare with the app."""
     import hashlib
     srv = os.getenv("KW_NTFY_SERVER", "https://ntfy.sh").rstrip("/")
-    for name in ("KW_NTFY_TOPIC", "NTFY_TOPIC"):
+    for name in (TOPIC_ENV, "NTFY_TOPIC"):
         t = os.getenv(name) or ""
         print(f"{name} set: {bool(t)} · length {len(t)} · uppercase: {any(c.isupper() for c in t)} · spaces: {t != t.strip()} · "
               f"fingerprint {hashlib.sha256(t.encode()).hexdigest()[:10]}")
@@ -1014,15 +1102,42 @@ def doctor():
 
 def recent():
     """Last pushes on the scanner topic (read-only: sends nothing)."""
-    t = os.getenv("KW_NTFY_TOPIC") or ""; srv = os.getenv("KW_NTFY_SERVER", "https://ntfy.sh").rstrip("/")
-    if not t: print("KW_NTFY_TOPIC not set"); return
+    t = os.getenv(TOPIC_ENV) or ""; srv = os.getenv("KW_NTFY_SERVER", "https://ntfy.sh").rstrip("/")
+    if not t: print(f"{TOPIC_ENV} not set"); return
     ms = [json.loads(x) for x in requests.get(f"{srv}/{t}/json", params={"poll": 1, "since": "12h"}, timeout=20).text.splitlines() if x.strip()]
     print(f"{len(ms)} pushes in 12h")
     for m in ms[-25:]: print(datetime.fromtimestamp(m.get("time", 0), ET).strftime("%a %-I:%M%p"), "|", (m.get("title") or "")[:90])
 
 
+def selftest_crypto():
+    """Offline: synthetic crypto windows where Kalshi's price lags spot by 2 min -> the spot features must find it."""
+    global DIR, DATA, OLD_CACHE
+    import tempfile; DIR = tempfile.mkdtemp(); DATA = f"{DIR}/data"; OLD_CACHE = DIR + "/old"; os.makedirs(DATA); os.makedirs(OLD_CACHE)
+    rng = np.random.default_rng(5); now = int(time.time()) // 900 * 900 - 900
+    for c in COMMS[:2]:
+        n_w = 2600; t_start = now - n_w * 900 - 3600; px = 100.0; S = {}
+        for t in range(t_start, now + 60, 60): px *= math.exp(rng.normal(0, 0.0012)); S[t] = px
+        _SPOT[c] = S; SPOT[c] = "X"; rows = []
+        for i in range(n_w):
+            t1 = now - i * 900; K = S[t1 - 900]; final = np.mean([S[t1 - 60], S[t1]])
+            for j in range(15):
+                ts = t1 - 900 + 60 * (j + 1); lag = S[ts - 120]; h = max((t1 - ts) / 60 - 0.5, 0.25)
+                m = float(np.clip(ncdf(math.log(lag / K) / (0.0012 * math.sqrt(h + 2)))[()], 0.03, 0.97))
+                rows.append(dict(ticker=f"{K15[c]}-T{i}", close=datetime.fromtimestamp(t1, timezone.utc).isoformat(), strike=K, up=int(final >= K),
+                                 ts=ts, bid=round(m - 0.01, 2), ask=round(m + 0.01, 2), last=m, vol=5.0, yf=0, nf=0, bf=0))
+        pd.DataFrame(rows, columns=KCOLS).to_csv(kpath(c), index=False, compression="gzip")
+    R = train(push=False); print(summary(R))
+    assert R["weeks"]["test"]["ll_model"] < R["weeks"]["test"]["ll_kalshi"], "crypto model failed to use spot lead"
+    assert any(k in ("sgap", "sr1", "sr3") for k, _ in R["feats"][:3]), "spot features should lead"
+    D = kframe(load_k(COMMS[0])); one = D[D.ticker == D.ticker.iloc[0]]
+    raw = load_k(COMMS[0]); raw = raw[raw.ticker == D.ticker.iloc[0]]
+    assert np.allclose(p_of(R["model"], one), p_of(R["model"], kframe(raw))), "feature parity"
+    print("crypto selftest passed")
+
+
 def selftest():
     """Offline: synthetic windows where Kalshi under-reacts to order flow -> the model must find it; live path parity."""
+    if CRYPTO: return selftest_crypto()
     global DIR, DATA, OLD_CACHE
     import tempfile; DIR = tempfile.mkdtemp(); DATA = f"{DIR}/data"; OLD_CACHE = DIR + "/old"; os.makedirs(DATA); os.makedirs(OLD_CACHE)
     rng = np.random.default_rng(3); now = time.time()
@@ -1065,5 +1180,5 @@ if __name__ == "__main__":
     a = sys.argv[1:] or ["live"]
     cmds = dict(live=live, build=build, train=lambda: (train(), persist("kwhale: retrain")), selftest=selftest, doctor=doctor, recent=recent,
                 report=lambda: print(open(f"{DIR}/report.md").read() if os.path.exists(f"{DIR}/report.md") else "no report yet"),
-                testnotify=lambda: notify("Kalshi scanner test", "KW_NTFY_TOPIC works. Separate from your commodity swing alerts.", 4))
+                testnotify=lambda: notify(f"Kalshi {lbl} scanner test", f"{TOPIC_ENV} works. Separate from your other alerts.", 4))
     cmds.get(a[0], lambda: print(__doc__))()
