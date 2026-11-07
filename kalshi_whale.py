@@ -57,6 +57,9 @@ KMAX = 0.70                               # never suggest paying over 70¢ (call
 POLL, RPS = E("KW_POLL", 8), E("KW_RPS", 10.0)
 WEEKS_D, MONTHS_D, SAMPLE = E("KW_WEEKS_DAYS", 21), E("KW_MONTHS_DAYS", 90), E("KW_MONTHS_SAMPLE", 3)
 CLUSTER_GAP, CK = 30, (12, 9, 6, 3)
+# crypto 15-min books trade several times a second, so a 30-s gap would merge a whole window of strangers into one
+# "whale": there a whale is one order's fills (prints ≤1 s apart, ≤5 s from its first print). Commodity unchanged.
+CLUSTER_GAP, CLUSTER_SPAN, WHALE_V = (1, 5, 2) if CRYPTO else (CLUSTER_GAP, float("inf"), 1)
 ET = ZoneInfo("America/New_York")
 SESS = ("ASIA", "EU", "US")
 SF = ("sgap", "sr1", "sr3", "sr5", "svz", "sok") if CRYPTO else ()   # crypto: live spot vs the window's target (digital fair value), spot momentum, vol
@@ -704,6 +707,9 @@ class Tk:
 class Live:
     def __init__(self, meta, st):
         self.meta, self.T = meta, defaultdict(Tk)
+        if st.get("whale_v", 1) != WHALE_V:          # whale rule changed: drop flow/whales tallied under the old one
+            st = {k: v for k, v in st.items() if k not in ("flow", "unw", "recent", "pend_w", "wstats")}
+            if os.path.exists(f"{DATA}/c_whales.csv.gz") and CRYPTO: os.remove(f"{DATA}/c_whales.csv.gz")
         self.flow = st.get("flow", {})            # comm -> {hour: bullish $ (YES on up/above markets, NO on below)}
         self.unw = st.get("unw", {})              # comm -> [whales, opposite whales after (likely cash-outs), minutes, gain]
         self.recent = st.get("recent", {})        # ticker -> whales of last 3h
@@ -726,7 +732,7 @@ class Live:
         while len(k.mids) > 1 and k.mids[1][0] < ts - 3900: k.mids.popleft()
         while k.tr and k.tr[0][0] < ts - 300: k.tr.popleft()
         c = k.cl.get(sd)
-        if c and ts - c[1] <= CLUSTER_GAP: c[1] = ts; c[2] += usd; c[3] += 1; c[4] += n
+        if c and ts - c[1] <= CLUSTER_GAP and ts - c[0] <= CLUSTER_SPAN: c[1] = ts; c[2] += usd; c[3] += 1; c[4] += n
         else:
             if c: self.close_whale(tk, sd, c, alert)
             k.cl[sd] = [ts, ts, usd, 1, n, m0 if m0 is not None else m]
@@ -804,7 +810,7 @@ class Live:
         self.flow = {c: {k: v for k, v in f.items() if int(k) > h} for c, f in self.flow.items()}
         self.recent = {t: [w for w in ws if w[0] > time.time() - 10800] for t, ws in self.recent.items() if ws}
         self.calls = [c for c in self.calls if c.get("won") is None or c["t"] > time.time() - 14 * 86400]
-        return dict(flow=self.flow, unw=self.unw, recent=self.recent, pend_w=self.pend_w, wstats=self.wstats, calls=self.calls,
+        return dict(whale_v=WHALE_V, flow=self.flow, unw=self.unw, recent=self.recent, pend_w=self.pend_w, wstats=self.wstats, calls=self.calls,
                     snaps=self.snaps, missed=self.missed[-500:], stats=self.stats, last_ts=self.quiet,
                     wl=[w for w in self.wl if w[0] > time.time() - 7 * 86400], res_pend=self.res_pend,
                     shown={k: v for k, v in self.shown.items() if v["t1"] > time.time() - 7200},
