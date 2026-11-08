@@ -930,7 +930,7 @@
   "BRENT": "KXBRENT15M-26NOV022145-45",
   "WTI": "KXWTI15M-26NOV022000-00"
  },
- "scoreslot": "2026-11-08 13:45",
+ "scoreslot": "2026-11-08 14:00",
  "live_min": {
   "BRENT": 240,
   "WTI": 241,
@@ -9590,7 +9590,7 @@
    }
   }
  },
- "boardslot": "13:50",
+ "boardslot": "14:00",
  "kp": {
   "BRENT": {
    "p": 0.99,
