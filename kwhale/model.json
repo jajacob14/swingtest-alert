@@ -1,7 +1,7 @@
 {
- "trained": 1794063228,
+ "trained": 1794104657,
  "flow_coverage": 0.996,
- "whale_events": 4810,
+ "whale_events": 4820,
  "weeks": {
   "windows": 10888,
   "test": {
