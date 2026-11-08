@@ -1158,10 +1158,15 @@ _PUSHED = []
 
 def notify(title, body, prio=3, click=None):
     print(f"\n=== {title}\n{body}", flush=True)
-    t = os.getenv(TOPIC_ENV); now = time.time(); _PUSHED[:] = [x for x in _PUSHED if x > now - 86400]
-    if not t or (len(_PUSHED) >= E("KW_DAILY_PUSH", 230) and prio < 4): return
+    # daily budget (ntfy.sh free tier ~250/day): only ⚡ spikes and 🐋 whales draw from the noise budget, so boards,
+    # 9-min updates, results, calls and waves always go out (a hard ceiling only guards against a runaway loop)
+    t = os.getenv(TOPIC_ENV); now = time.time(); _PUSHED[:] = [x for x in _PUSHED if x[0] > now - 86400]
+    noise = title.startswith(("⚡", "🐋"))
+    if not t: return
+    if noise and sum(x[1] for x in _PUSHED) >= E("KW_NOISE_PUSH", 70): print("  (noise budget used: not pushed)", flush=True); return
+    if len(_PUSHED) >= E("KW_DAILY_PUSH", 240): print("  (daily ceiling: not pushed)", flush=True); return
     j = {"topic": t, "title": title, "message": body[:3900], "priority": prio, **({"click": click} if click else {})}
-    try: requests.post(os.getenv("KW_NTFY_SERVER", "https://ntfy.sh").rstrip("/") + "/", json=j, timeout=15).raise_for_status(); _PUSHED.append(now)
+    try: requests.post(os.getenv("KW_NTFY_SERVER", "https://ntfy.sh").rstrip("/") + "/", json=j, timeout=15).raise_for_status(); _PUSHED.append((now, noise))
     except Exception as e: print("ntfy failed:", e, flush=True)
 
 
