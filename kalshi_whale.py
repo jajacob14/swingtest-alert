@@ -1211,7 +1211,7 @@ def recent():
     if not t: print(f"{TOPIC_ENV} not set"); return
     ms = [json.loads(x) for x in requests.get(f"{srv}/{t}/json", params={"poll": 1, "since": "12h"}, timeout=20).text.splitlines() if x.strip()]
     print(f"{len(ms)} pushes in 12h")
-    for m in ms[-40:]:
+    for m in [m for m in ms[:-40] if "Results" in (m.get("title") or "")] + ms[-40:]:   # every results push, then the latest 40
         print(datetime.fromtimestamp(m.get("time", 0), ET).strftime("%a %-I:%M%p"), "|", m.get("event"), "|", (m.get("title") or "")[:90])
         print("    " + (m.get("message") or "").replace("\n", "\n    ")[:1500])
 
