@@ -5,9 +5,7 @@
   "ETH": true,
   "SOL": true,
   "XRP": true,
-  "DOGE": true,
-  "BNB": true,
-  "HYPE": true
+  "DOGE": true
  },
  "alerts": {
   "board": true,

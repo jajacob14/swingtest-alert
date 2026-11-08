@@ -35,10 +35,10 @@ CRYPTO = PROFILE == "crypto"
 DIR = E("KW_DIR", "kcrypto" if CRYPTO else "kwhale"); DATA = f"{DIR}/data"   # data/ lives in the Actions cache; model.json + report.md go in git
 OLD_CACHE = "data"                                   # commodity bot's 3-week Kalshi cache (read only)
 if CRYPTO:
-    COMMS = ("BTC", "ETH", "SOL", "XRP", "DOGE", "BNB", "HYPE")
+    COMMS = ("BTC", "ETH", "SOL", "XRP", "DOGE")             # the markets on your Kalshi (BNB, HYPE dropped)
     SHOW = COMMS
     KEYS = {c: (c,) for c in COMMS}
-    SPOT = {"BTC": "BTC-USD", "ETH": "ETH-USD", "SOL": "SOL-USD", "XRP": "XRP-USD", "DOGE": "DOGE-USD", "BNB": "BNB-USD", "HYPE": "HYPE-USD"}
+    SPOT = {"BTC": "BTC-USD", "ETH": "ETH-USD", "SOL": "SOL-USD", "XRP": "XRP-USD", "DOGE": "DOGE-USD"}
     LBL, lbl, TOPIC_ENV = "Crypto", "crypto", "KC_NTFY_TOPIC"
 else:
     COMMS = ("WTI", "BRENT", "NATGAS", "GOLD", "SILVER", "COPPER", "PLATINUM", "PALLADIUM")
@@ -600,7 +600,7 @@ def train(push=True):
              months=dict(windows=int(Mo.ticker.nunique()), test=evaluate(Mwk, Mo), test_by=eval_by(Mwk, Mo, "mkt"),
                          by_month=eval_by(Mwk, Mo.assign(mon=pd.to_datetime(Mo.cl, unit="s").dt.strftime("%Y-%m")), "mon")))
     R["proven"] = {c: proven(R["weeks"]["test_by"].get(c), R["months"]["test_by"].get(c)) for c in COMMS}
-    R["model"] = Mdep; R["feats"] = sorted(((KF[i], Mdep["w"][i]) for i in range(len(KF))), key=lambda z: -abs(z[1]))[:5]
+    R["model"] = Mdep; R["kf"] = list(KF); R["feats"] = sorted(((KF[i], Mdep["w"][i]) for i in range(len(KF))), key=lambda z: -abs(z[1]))[:5]
     try: R["low"] = train_low(now)
     except Exception as e: print("low-spike model:", e, flush=True); R["low"] = old.get("low", {})
     if WAVES_ON:
@@ -718,7 +718,7 @@ class Live:
         self.calls = st.get("calls", [])          # edge calls (graded at settlement)
         self.snaps = st.get("snaps", {})          # 15-min ticker -> checkpoint predictions
         self.missed = st.get("missed", []); self.rows = []
-        self.wl = [w for w in st.get("wl", []) if len(w) > 4]  # graded board leans: [t1, comm, lean right, kalshi right, bet?, bet won]
+        self.wl = [w for w in st.get("wl", []) if len(w) > 4 and w[1] in COMMS]  # graded board leans: [t1, comm, lean right, kalshi right, bet?, bet won]
         self.res_pend = st.get("res_pend", {})    # window close -> graded rows waiting to be sent together
         self.shown = st.get("shown", {})          # ticker -> exactly what the board showed (graded at settlement)
         self.waves = st.get("waves", [])          # wave alerts: buy pushed, waiting for the cash-out / settlement
@@ -948,7 +948,8 @@ def board(L_, R, preds, b, closed=()):
 def live():
     t0, maxmin = time.time(), float(os.getenv("LIVE_MAX_MIN") or 1e9)
     meta = Meta(); st = load_json(f"{DATA}/state.json", {}); R = load_json(f"{DIR}/model.json", {})
-    if not R.get("model") or time.time() - R.get("trained", 0) > 6 * 3600 or (WAVES_ON and not R.get("wave")):
+    if (not R.get("model") or time.time() - R.get("trained", 0) > 6 * 3600 or (WAVES_ON and not R.get("wave"))
+            or R.get("kf", list(KF)) != list(KF) or set(R.get("proven", {})) - set(COMMS)):   # market list changed
         harvest()
         for c in COMMS: kfetch(c, WEEKS_D if R.get("model") else MONTHS_D, 1 if R.get("model") else SAMPLE)
         R = train(push=False) or R

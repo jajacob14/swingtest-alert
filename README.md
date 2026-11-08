@@ -95,7 +95,7 @@ trading (daily break, weekend, halt), you get one 🔕 push and its predictions 
 
 # Kalshi Crypto Scanner (`kalshi-crypto` workflow)
 Same engine as the commodity scanner (`kalshi_whale.py` with `KW_PROFILE=crypto`), on Kalshi's 15-min crypto markets:
-BTC, ETH, SOL, XRP, DOGE, BNB, HYPE. Reports only, never trades. Pushes go to its own ntfy topic (`KC_NTFY_TOPIC`).
+BTC, ETH, SOL, XRP, DOGE. Reports only, never trades. Pushes go to its own ntfy topic (`KC_NTFY_TOPIC`).
 
 - **Same pushes:** 📈 board (🟢 BET / 🔴 NO BET, settles-at-close odds vs Kalshi), 🔄 9-min update, 🎯 results (leans vs bets),
   🐋 whales (15-min markets, $10k+ default), ⚡ spikes, 🚀 cheap-spike odds, 📊 digest, 🔕/🔔 market closed/reopened.
