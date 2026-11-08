@@ -1,7 +1,7 @@
 {
- "trained": 1794104657,
+ "trained": 1794146118,
  "flow_coverage": 0.996,
- "whale_events": 4820,
+ "whale_events": 4824,
  "weeks": {
   "windows": 10888,
   "test": {
@@ -315,6 +315,29 @@
    0.275495
   ]
  },
+ "kf": [
+  "dmid1",
+  "dmid3",
+  "dmid5",
+  "spread",
+  "kvol",
+  "vcum",
+  "tleft",
+  "ext",
+  "ofi3",
+  "bigc",
+  "s_ASIA",
+  "s_EU",
+  "s_US",
+  "m_WTI",
+  "m_BRENT",
+  "m_NATGAS",
+  "m_GOLD",
+  "m_SILVER",
+  "m_COPPER",
+  "m_PLATINUM",
+  "m_PALLADIUM"
+ ],
  "feats": [
   [
    "s_ASIA",
