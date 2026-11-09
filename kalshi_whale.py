@@ -820,7 +820,7 @@ class Live:
 # ---------------- live: 15-min predictions ----------------
 def open_window(c):
     ms = get("/markets", series_ticker=K15[c], status="open", limit=5).get("markets") or []
-    ms = [m for m in ms if m.get("floor_strike") is not None]
+    ms = [m for m in ms if m.get("floor_strike") is not None and ts_of(m["close_time"]) > time.time() + 30]  # a window that just closed can still list as open
     return min(ms, key=lambda m: m["close_time"]) if ms else None
 
 
@@ -1036,6 +1036,8 @@ def live():
                            f"Model {ps:.0%} vs Kalshi {(mid if up else 1 - mid):.0%} · edge {int(round(e * 100)):+d} pts after fees · {tl:.0f} min left\n"
                            f"Closes {et(q['t1'])} ET · whales {flow}\nBacktest: {fmt_eval(R['weeks']['test_by'].get(c))}", 4, f"{WEB}/{K15[c].lower()}")
             b = int(now // 900 * 900) + 900
+            preds = {c: v for c, v in preds.items() if int(round(v[2]["t1"])) == b}   # only the window closing at b (never a just-closed one)
+            upd = {c: v for c, v in upd.items() if int(round(v[2]["t1"])) == b}
             if preds and b not in boarded: boarded.add(b); board(L_, R, preds, b, [c for c in SHOW if is_open.get(c) is False])
             if upd and b in boarded and b not in updated: updated.add(b); update9(L_, R, upd, b)
             if now - settled_t > 60: settle(L_); settled_t = now
