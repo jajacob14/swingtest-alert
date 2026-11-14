@@ -28,7 +28,7 @@
   "PLATINUM": "KXPLATINUM15M-26NOV030100-00",
   "PALLADIUM": "KXPALLADIUM15M-26NOV031915-15"
  },
- "skipslot": "2026-11-14 03:46",
+ "skipslot": "2026-11-14 03:52",
  "lpos": {},
  "skipped": {
   "12:00\u201312:15": [
@@ -9255,7 +9255,7 @@
   "PALLADIUM": "partial"
  },
  "preds": {},
- "pl_slot": "03:33",
+ "pl_slot": "03:48",
  "pcal": {
   "BRENT": {
    "a": 0.0269,
@@ -9592,7 +9592,7 @@
    }
   }
  },
- "boardslot": "03:40",
+ "boardslot": "03:50",
  "kp": {
   "BRENT": {
    "p": 0.01,
