@@ -1,7 +1,7 @@
 {
- "trained": 1794727223,
+ "trained": 1794768674,
  "flow_coverage": 0.996,
- "whale_events": 13939,
+ "whale_events": 13943,
  "weeks": {
   "windows": 11169,
   "test": {
@@ -11,9 +11,9 @@
    "ll_kalshi": 0.5144,
    "acc_model": 0.741,
    "acc_kalshi": 0.742,
-   "trades": 7,
-   "win": 0.143,
-   "roi": -0.754
+   "trades": 8,
+   "win": 0.25,
+   "roi": -0.573
   },
   "test_by": {
    "BRENT": {
@@ -50,11 +50,11 @@
     "roi": -1.0
    },
    "NATGAS": {
-    "windows": 449,
-    "rows": 4310,
-    "ll_model": 0.5303,
-    "ll_kalshi": 0.53,
-    "acc_model": 0.734,
+    "windows": 448,
+    "rows": 4300,
+    "ll_model": 0.5309,
+    "ll_kalshi": 0.5305,
+    "acc_model": 0.733,
     "acc_kalshi": 0.736,
     "trades": 0,
     "win": null,
@@ -83,12 +83,12 @@
     "roi": null
    },
    "SILVER": {
-    "windows": 400,
-    "rows": 3736,
-    "ll_model": 0.5122,
-    "ll_kalshi": 0.51,
-    "acc_model": 0.745,
-    "acc_kalshi": 0.745,
+    "windows": 401,
+    "rows": 3746,
+    "ll_model": 0.5113,
+    "ll_kalshi": 0.5091,
+    "acc_model": 0.746,
+    "acc_kalshi": 0.746,
     "trades": 0,
     "win": null,
     "roi": null
@@ -98,11 +98,11 @@
     "rows": 4272,
     "ll_model": 0.5156,
     "ll_kalshi": 0.5135,
-    "acc_model": 0.738,
+    "acc_model": 0.737,
     "acc_kalshi": 0.739,
-    "trades": 5,
-    "win": 0.0,
-    "roi": -1.0
+    "trades": 6,
+    "win": 0.167,
+    "roi": -0.721
    }
   }
  },
@@ -374,7 +374,7 @@
  "low": {
   "weeks": {
    "test": {
-    "rows": 14898,
+    "rows": 14905,
     "base": 0.19,
     "trades": 0
    },
@@ -385,13 +385,13 @@
      "trades": 0
     },
     "COPPER": {
-     "rows": 2038,
+     "rows": 2049,
      "base": 0.155,
      "trades": 0
     },
     "GOLD": {
-     "rows": 1739,
-     "base": 0.243,
+     "rows": 1732,
+     "base": 0.241,
      "trades": 0
     },
     "NATGAS": {
@@ -410,12 +410,12 @@
      "trades": 0
     },
     "SILVER": {
-     "rows": 1671,
-     "base": 0.217,
+     "rows": 1679,
+     "base": 0.219,
      "trades": 0
     },
     "WTI": {
-     "rows": 1793,
+     "rows": 1788,
      "base": 0.189,
      "trades": 0
     }
