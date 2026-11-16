@@ -1,52 +1,52 @@
 # Kalshi crypto 15-min model report
-Trained 2026-11-15 12:51 ET
+Trained 2026-11-16 00:22 ET
 
 Model = Kalshi's own price + what it misses (quote changes, spread, volume, order flow, big-money flow, time left, session, market).
 **Weeks** = trained on the older 70% of the last 3 weeks, tested on the newest 30%. **Months** = trained on the 3 weeks, tested on older months it never saw. Edge bets buy at the ask + fee when the model beats it by 4+ pts (≤70¢), held to settlement.
-Order-flow coverage: 0% of rows · commodity whale events on file: 158753
+Order-flow coverage: 0% of rows · commodity whale events on file: 170420
 
 | Market | Weeks test | Months test | Proven |
 |---|---|---|---|
-| BTC | 598 windows · right 76% vs Kalshi 76% · logloss 0.4894 vs 0.4905 · edge bets 5: won 20%, ROI -66% | 2710 windows · right 75% vs Kalshi 75% · logloss 0.4982 vs 0.4979 · edge bets 13: won 77%, ROI +27% | — |
-| ETH | 596 windows · right 75% vs Kalshi 75% · logloss 0.5009 vs 0.5004 · edge bets 1: won 100%, ROI +117% | 2556 windows · right 77% vs Kalshi 77% · logloss 0.4707 vs 0.4702 · edge bets 1: won 0%, ROI -100% | — |
-| SOL | 598 windows · right 75% vs Kalshi 75% · logloss 0.4904 vs 0.4926 · edge bets 3: won 33%, ROI -36% | 2556 windows · right 76% vs Kalshi 76% · logloss 0.4831 vs 0.4829 · edge bets 4: won 50%, ROI -10% | — |
-| XRP | 598 windows · right 78% vs Kalshi 77% · logloss 0.477 vs 0.4759 · edge bets 13: won 46%, ROI -15% | 2553 windows · right 76% vs Kalshi 77% · logloss 0.4753 vs 0.4759 · edge bets 32: won 53%, ROI -3% | — |
-| DOGE | 598 windows · right 74% vs Kalshi 74% · logloss 0.497 vs 0.4989 · edge bets 6: won 67%, ROI +12% | 2554 windows · right 77% vs Kalshi 77% · logloss 0.4747 vs 0.476 · edge bets 8: won 100%, ROI +90% | — |
+| BTC | 598 windows · right 75% vs Kalshi 75% · logloss 0.5013 vs 0.5022 · edge bets 3: won 0%, ROI -100% | 2756 windows · right 75% vs Kalshi 75% · logloss 0.4988 vs 0.4986 · edge bets 21: won 57%, ROI -3% | — |
+| ETH | 598 windows · right 75% vs Kalshi 75% · logloss 0.5107 vs 0.5103 · edge bets 1: won 100%, ROI +117% | 2602 windows · right 77% vs Kalshi 77% · logloss 0.4715 vs 0.471 · edge bets 6: won 17%, ROI -71% | — |
+| SOL | 597 windows · right 75% vs Kalshi 75% · logloss 0.4889 vs 0.4911 · edge bets 2: won 50%, ROI -2% | 2602 windows · right 76% vs Kalshi 76% · logloss 0.4841 vs 0.4842 · edge bets 3: won 100%, ROI +91% | — |
+| XRP | 598 windows · right 77% vs Kalshi 77% · logloss 0.4866 vs 0.4861 · edge bets 14: won 43%, ROI -21% | 2599 windows · right 76% vs Kalshi 77% · logloss 0.4752 vs 0.4759 · edge bets 31: won 55%, ROI -0% | — |
+| DOGE | 597 windows · right 74% vs Kalshi 74% · logloss 0.5065 vs 0.5084 · edge bets 5: won 80%, ROI +30% | 2600 windows · right 77% vs Kalshi 76% · logloss 0.4764 vs 0.4779 · edge bets 10: won 70%, ROI +31% | — |
 
-**All weeks:** 2988 windows · right 76% vs Kalshi 76% · logloss 0.491 vs 0.4917 · edge bets 28: won 46%, ROI -16%
+**All weeks:** 2988 windows · right 75% vs Kalshi 75% · logloss 0.4988 vs 0.4996 · edge bets 25: won 48%, ROI -14%
 
-**All months:** 12929 windows · right 76% vs Kalshi 76% · logloss 0.4807 vs 0.4808 · edge bets 58: won 64%, ROI +14%
+**All months:** 13159 windows · right 76% vs Kalshi 76% · logloss 0.4815 vs 0.4818 · edge bets 71: won 56%, ROI +0%
 
 | Month | Result |
 |---|---|
-| 2026-08 | 1616 windows · right 78% vs Kalshi 78% · logloss 0.4637 vs 0.4642 · edge bets 10: won 50%, ROI -11% |
-| 2026-09 | 4743 windows · right 77% vs Kalshi 77% · logloss 0.4716 vs 0.4719 · edge bets 28: won 68%, ROI +18% |
-| 2026-10 | 6570 windows · right 76% vs Kalshi 76% · logloss 0.4917 vs 0.4916 · edge bets 20: won 65%, ROI +21% |
+| 2026-08 | 1616 windows · right 78% vs Kalshi 78% · logloss 0.4635 vs 0.4642 · edge bets 9: won 56%, ROI -3% |
+| 2026-09 | 4743 windows · right 77% vs Kalshi 77% · logloss 0.4715 vs 0.4719 · edge bets 33: won 58%, ROI +2% |
+| 2026-10 | 6800 windows · right 76% vs Kalshi 76% · logloss 0.4931 vs 0.4931 · edge bets 29: won 55%, ROI -0% |
 
-Strongest signals: `sgap` +0.059, `s_EU` +0.038, `tleft` -0.031, `s_US` -0.028, `dmid5` +0.025
+Strongest signals: `sgap` +0.067, `s_EU` +0.036, `tleft` -0.030, `s_US` -0.025, `dmid5` +0.023
 
 ## Cheap-spike alerts
 Contracts at 20¢ or less, 2-13 min left. Buy at the ask + fee, sell at 2x (at least +10¢) if the bid gets there before the close, otherwise hold to settlement. Alert when expected profit ≥ 3¢ per contract.
 
 | Market | Weeks test | Months test | Proven |
 |---|---|---|---|
-| BTC | setups 2,517, target reached normally 23% | setups 10,897, target reached normally 19% | — |
-| ETH | setups 2,459, target reached normally 26% | setups 10,866, target reached normally 19% | — |
-| SOL | setups 2,547, target reached normally 21% | setups 11,037, target reached normally 21% | — |
-| XRP | setups 2,565, target reached normally 23% | setups 11,291, target reached normally 20% | — |
-| DOGE | setups 2,603, target reached normally 23% | setups 11,024, target reached normally 20% | — |
+| BTC | setups 2,515, target reached normally 24% | setups 11,097, target reached normally 19% | — |
+| ETH | setups 2,477, target reached normally 27% | setups 11,054, target reached normally 19% | — |
+| SOL | setups 2,553, target reached normally 22% | setups 11,234, target reached normally 21% | — |
+| XRP | setups 2,591, target reached normally 22% | setups 11,484, target reached normally 20% | — |
+| DOGE | setups 2,625, target reached normally 24% | setups 11,220, target reached normally 20% | — |
 
-**All weeks:** setups 12,691, target reached normally 23%
+**All weeks:** setups 12,761, target reached normally 24%
 
-**All months:** setups 55,115, target reached normally 20%
+**All months:** setups 56,089, target reached normally 20%
 
 ## Wave alerts (buy near the low, cash out before the close)
 Either side at 12-60¢ with 4-13 min left. Buy at the ask + fee, sell when the bid is 12¢ higher, otherwise hold to settlement. Alert when expected profit ≥ 3¢.
 
 | Market | Weeks test | Months test | Proven |
 |---|---|---|---|
-| BTC | setups 5,651, target reached normally 56% | setups 27,966, target reached normally 55% | — |
-| ETH | setups 5,632, target reached normally 56% | setups 24,620, target reached normally 54% | — |
-| SOL | setups 5,640, target reached normally 56% | setups 24,503, target reached normally 55% | — |
-| XRP | setups 5,494, target reached normally 53% | setups 24,595, target reached normally 55% | — |
-| DOGE | setups 5,534, target reached normally 56% | setups 24,342, target reached normally 56% | — |
+| BTC | setups 5,706, target reached normally 57% | setups 28,432, target reached normally 55% | — |
+| ETH | setups 5,617, target reached normally 57% | setups 25,066, target reached normally 54% | — |
+| SOL | setups 5,662, target reached normally 56% | setups 24,941, target reached normally 55% | — |
+| XRP | setups 5,530, target reached normally 54% | setups 25,065, target reached normally 55% | — |
+| DOGE | setups 5,523, target reached normally 56% | setups 24,821, target reached normally 56% | — |
