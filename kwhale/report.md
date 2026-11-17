@@ -1,47 +1,47 @@
 # Kalshi commodity 15-min model report
-Trained 2026-11-17 00:30 ET
+Trained 2026-11-17 12:01 ET
 
 Model = Kalshi's own price + what it misses (quote changes, spread, volume, order flow, big-money flow, time left, session, market).
 **Weeks** = trained on the older 70% of the last 3 weeks, tested on the newest 30%. **Months** = trained on the 3 weeks, tested on older months it never saw. Edge bets buy at the ask + fee when the model beats it by 4+ pts (≤70¢), held to settlement.
-Order-flow coverage: 100% of rows · commodity whale events on file: 16095
+Order-flow coverage: 100% of rows · commodity whale events on file: 16937
 
 | Market | Weeks test | Months test | Proven |
 |---|---|---|---|
-| GOLD | 399 windows · right 73% vs Kalshi 74% · logloss 0.5262 vs 0.5239 | 3356 windows · right 74% vs Kalshi 74% · logloss 0.5097 vs 0.51 | — |
-| SILVER | 399 windows · right 74% vs Kalshi 74% · logloss 0.517 vs 0.5144 · edge bets 1: won 100%, ROI +92% | 3339 windows · right 74% vs Kalshi 74% · logloss 0.513 vs 0.5136 | — |
-| WTI | 448 windows · right 75% vs Kalshi 76% · logloss 0.4975 vs 0.4951 | 3500 windows · right 75% vs Kalshi 75% · logloss 0.504 vs 0.5044 | — |
-| BRENT | 448 windows · right 75% vs Kalshi 76% · logloss 0.4937 vs 0.4913 | 341 windows · right 76% vs Kalshi 76% · logloss 0.481 vs 0.4833 | — |
-| COPPER | 399 windows · right 76% vs Kalshi 76% · logloss 0.4887 vs 0.4892 | 2595 windows · right 76% vs Kalshi 75% · logloss 0.4994 vs 0.5001 | — |
-| NATGAS | 448 windows · right 75% vs Kalshi 75% · logloss 0.5084 vs 0.51 | 2760 windows · right 75% vs Kalshi 75% · logloss 0.4951 vs 0.4958 | — |
-| PALLADIUM | 399 windows · right 75% vs Kalshi 74% · logloss 0.5169 vs 0.5123 | 1374 windows · right 75% vs Kalshi 75% · logloss 0.5071 vs 0.5091 | — |
-| PLATINUM | 399 windows · right 74% vs Kalshi 74% · logloss 0.5263 vs 0.5238 | 1729 windows · right 75% vs Kalshi 75% · logloss 0.5017 vs 0.5029 | — |
+| GOLD | 401 windows · right 74% vs Kalshi 74% · logloss 0.5221 vs 0.5219 | 3402 windows · right 74% vs Kalshi 74% · logloss 0.5114 vs 0.5114 | — |
+| SILVER | 401 windows · right 74% vs Kalshi 74% · logloss 0.5132 vs 0.5108 | 3385 windows · right 74% vs Kalshi 74% · logloss 0.5121 vs 0.513 | — |
+| WTI | 444 windows · right 75% vs Kalshi 75% · logloss 0.5091 vs 0.5062 | 3546 windows · right 75% vs Kalshi 75% · logloss 0.5041 vs 0.5045 | — |
+| BRENT | 445 windows · right 74% vs Kalshi 75% · logloss 0.5072 vs 0.5052 | 387 windows · right 76% vs Kalshi 76% · logloss 0.4842 vs 0.4851 | — |
+| COPPER | 401 windows · right 75% vs Kalshi 76% · logloss 0.4953 vs 0.4958 | 2641 windows · right 75% vs Kalshi 75% · logloss 0.5004 vs 0.5011 | — |
+| NATGAS | 445 windows · right 75% vs Kalshi 75% · logloss 0.5117 vs 0.5131 | 2806 windows · right 75% vs Kalshi 75% · logloss 0.4962 vs 0.4966 | — |
+| PALLADIUM | 401 windows · right 75% vs Kalshi 75% · logloss 0.5113 vs 0.5092 | 1420 windows · right 75% vs Kalshi 75% · logloss 0.508 vs 0.5101 | — |
+| PLATINUM | 401 windows · right 74% vs Kalshi 74% · logloss 0.5266 vs 0.5231 | 1775 windows · right 75% vs Kalshi 75% · logloss 0.5016 vs 0.5029 | — |
 
-**All weeks:** 3339 windows · right 75% vs Kalshi 75% · logloss 0.5088 vs 0.507 · edge bets 1: won 100%, ROI +92%
+**All weeks:** 3339 windows · right 74% vs Kalshi 75% · logloss 0.5119 vs 0.5105
 
-**All months:** 18994 windows · right 75% vs Kalshi 75% · logloss 0.5042 vs 0.5049
+**All months:** 19362 windows · right 75% vs Kalshi 75% · logloss 0.5048 vs 0.5054
 
 | Month | Result |
 |---|---|
-| 2026-08 | 2859 windows · right 75% vs Kalshi 75% · logloss 0.5013 vs 0.5019 |
-| 2026-09 | 6734 windows · right 74% vs Kalshi 74% · logloss 0.5081 vs 0.5083 |
-| 2026-10 | 9401 windows · right 75% vs Kalshi 75% · logloss 0.5023 vs 0.5034 |
+| 2026-08 | 2859 windows · right 75% vs Kalshi 75% · logloss 0.5014 vs 0.5019 |
+| 2026-09 | 6734 windows · right 75% vs Kalshi 74% · logloss 0.5081 vs 0.5083 |
+| 2026-10 | 9769 windows · right 75% vs Kalshi 75% · logloss 0.5034 vs 0.5044 |
 
-Strongest signals: `s_ASIA` -0.040, `s_EU` +0.029, `ofi3` +0.029, `dmid5` +0.027, `m_BRENT` +0.024
+Strongest signals: `s_ASIA` -0.042, `s_EU` +0.030, `ofi3` +0.029, `dmid5` +0.025, `m_BRENT` +0.020
 
 ## Cheap-spike alerts
 Contracts at 20¢ or less, 2-13 min left. Buy at the ask + fee, sell at 2x (at least +10¢) if the bid gets there before the close, otherwise hold to settlement. Alert when expected profit ≥ 3¢ per contract.
 
 | Market | Weeks test | Months test | Proven |
 |---|---|---|---|
-| GOLD | setups 1,678, target reached normally 25% | setups 13,876, target reached normally 20% | — |
-| SILVER | setups 1,665, target reached normally 21% | setups 13,856, target reached normally 21% | — |
-| WTI | setups 1,834, target reached normally 18% | setups 14,646, target reached normally 20% | — |
-| BRENT | setups 2,113, target reached normally 19% | setups 1,390, target reached normally 11% | — |
-| COPPER | setups 2,003, target reached normally 15% | setups 11,552, target reached normally 16% | — |
-| NATGAS | setups 1,786, target reached normally 16% | setups 12,253, target reached normally 16% | — |
-| PALLADIUM | setups 1,926, target reached normally 18% | setups 5,293, target reached normally 14% | — |
-| PLATINUM | setups 1,850, target reached normally 19% | setups 6,959, target reached normally 14% | — |
+| GOLD | setups 1,684, target reached normally 24% | setups 14,025, target reached normally 20% | — |
+| SILVER | setups 1,683, target reached normally 20% | setups 14,008, target reached normally 21% | — |
+| WTI | setups 1,841, target reached normally 20% | setups 14,879, target reached normally 20% | — |
+| BRENT | setups 2,121, target reached normally 19% | setups 1,618, target reached normally 11% | — |
+| COPPER | setups 2,016, target reached normally 17% | setups 11,719, target reached normally 16% | — |
+| NATGAS | setups 1,719, target reached normally 16% | setups 12,494, target reached normally 16% | — |
+| PALLADIUM | setups 1,987, target reached normally 17% | setups 5,456, target reached normally 14% | — |
+| PLATINUM | setups 1,878, target reached normally 20% | setups 7,137, target reached normally 15% | — |
 
-**All weeks:** setups 14,855, target reached normally 19%
+**All weeks:** setups 14,929, target reached normally 19%
 
-**All months:** setups 79,825, target reached normally 18%
+**All months:** setups 81,336, target reached normally 18%
