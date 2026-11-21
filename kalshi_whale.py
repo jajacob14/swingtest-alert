@@ -321,7 +321,7 @@ def harvest():
     out = pd.concat([read_gz(f"{DATA}/c_whales.csv.gz")] + wh, ignore_index=True) if wh else read_gz(f"{DATA}/c_whales.csv.gz")
     if len(out): out.drop_duplicates(["t", "tk", "sd"]).to_csv(f"{DATA}/c_whales.csv.gz", index=False, compression="gzip")
     for p in glob.glob(f"{DATA}/*"):
-        if not os.path.basename(p).startswith(("k15_", "c_whales", "meta", "state", "live_preds", "spot_")): os.remove(p)
+        if not os.path.basename(p).startswith(("k15_", "c_whales", "meta", "state", "live_preds", "spot_", "flow_log")): os.remove(p)
     print(f"HARVEST: {len(out)} commodity whale events kept · {n_marks} commodity snapshots seen", flush=True)
     return out
 
@@ -962,7 +962,8 @@ def board_c(L_, R, preds, b, closed=()):
             rows.append(f"🟢 BET {c} {d} ≤ {cents(ask)} · {ps:.0%} vs K {kp:.0%}" + (" ✅tested" if pv.get(c) else " ⚠️untested"))
         else:
             if ps >= STRONG: strong.append(f"{c} {d}")
-            rows.append(f"{mark(ps)} {c} {d} {ps:.0%} · K {kp:.0%} {arrow(q, up)}" + (" · toss-up" if ps < TOSS else "") + (f" · last {dot}" if dot != "⚪" else ""))
+            rows.append(f"{mark(ps)} {c} {d} {ps:.0%} · K {kp:.0%} {arrow(q, up)}" + (" · toss-up" if TIERS and ps < TOSS else "") + (f" · last {dot}" if dot != "⚪" else ""))
+        if (fn := flow_note(flow_of(L_, c, q.get("tk")), up)): rows.append(fn)
         wv, lw = q.get("wave"), q.get("low")
         if wv and wv["ok"] and (R.get("wave") or {}).get("proven", {}).get(c):
             rows.append(f"   🌊 wave BUY {wv['side'].split()[0]} {cents(wv['ask'])} → sell {cents(wv['tgt'])}")
@@ -1006,13 +1007,111 @@ def results_c(L_, t1, rows):
         s = f"{'✅' if ok else '❌'} {r['c']} {d} {ps:.0%} {mark(ps)}" + ("" if ok else f" → went {end}")
         if r.get("go"): s += f" · BET ≤ {cents(r['ask'])} {'WON' if ok else 'LOST'}"
         if "p9" in r and (r["p9"] >= 0.5) != up: s += f" · 9m switched {'✓' if (r['p9'] >= 0.5) == bool(r['up']) else '✗'}"
+        if "p5" in r and (r["p5"] >= 0.5) != up: s += f" · final {'UP' if r['p5'] >= 0.5 else 'DOWN'} {'✓' if (r['p5'] >= 0.5) == bool(r['up']) else '✗'}"
         L.append(s)
     if not L: return
     rec, line = wl_line(L_); since = _today(); w = [x for x in L_.wl if x[0] > since]
     per = " · ".join(f"{c} {sum(x[2] for x in w if x[1] == c)}-{sum(1 - x[2] for x in w if x[1] == c)}" for c in SHOW if any(x[1] == c for x in w))
-    tail = [line, tiers_txt(w), per, f"🟢 Bets today: {bets_txt(L_)}" + (f" · 9-min updates {u}" if (u := u9_txt(L_)) else "")]
+    tail = [line, tiers_txt(w), (f"🏁 Final calls (5 min left): {u5}" if (u5 := u5_txt(L_)) else ""), per,
+            f"🟢 Bets today: {bets_txt(L_)}" + (f" · 9-min updates {u}" if (u := u9_txt(L_)) else "")]
     notify(f"{'✅' if n == k else '🎯'} {n}/{k} right · {et(t1 - 900)}–{et(t1)}" + (f" · today {rec}" if rec else ""),
            "\n".join(L + [""] + [x for x in tail if x]), 2)
+
+
+# ---------------- live market flow (shown on pushes + logged for the self-check; not in the model until it proves itself) ----------------
+_FLOW = {}
+
+
+def spot_flow(c):
+    """Coinbase, refreshed ≤ once a minute: spot volume last 3 min vs the hour's normal, and the share bought by takers."""
+    if not CRYPTO or not SPOT.get(c): return {}
+    hit = _FLOW.get(c)
+    if hit and time.time() - hit[0] < 50: return hit[1]
+    out = {}
+    try:
+        base = f"https://api.exchange.coinbase.com/products/{SPOT[c]}"
+        cd = requests.get(base + "/candles", params=dict(granularity=60), timeout=10).json()[:63]   # newest first: [t, low, high, open, close, vol]
+        v = [float(x[5]) for x in cd[1:]]                                                       # skip the minute still forming
+        if len(v) >= 30:
+            n3 = sum(v[:3]); norm = np.median([sum(v[i:i + 3]) for i in range(3, len(v) - 2, 3)])
+            if norm > 0: out["volx"] = round(float(n3 / norm), 2)
+        tr = requests.get(base + "/trades", params=dict(limit=1000), timeout=10).json()
+        t0 = time.time() - 180; b = s_ = 0.0
+        for x in tr:
+            if ts_of(x["time"]) < t0: continue
+            q = float(x["size"]) * float(x["price"])
+            if x["side"] == "sell": b += q      # Coinbase 'side' is the maker's: maker sell = taker BUY
+            else: s_ += q
+        if b + s_ > 0: out.update(buy=round(b / (b + s_), 3), usd3=round(b + s_))
+    except Exception as e: print("spot flow:", c, e, flush=True)
+    _FLOW[c] = (time.time(), out); return out
+
+
+def kflow(L_, tk):
+    """Kalshi trades in this window, last 3 min: $ traded and the share taking YES (UP)."""
+    k = L_.T.get(tk)
+    if not k: return {}
+    t0 = time.time() - 180; y = n = 0.0
+    for ts, sd, usd in k.tr:
+        if ts >= t0: y, n = (y + usd, n) if sd > 0 else (y, n + usd)
+    return dict(kusd=round(y + n), kyes=round(y / (y + n), 3)) if y + n > 0 else {}
+
+
+def flow_note(f, up):
+    """Short line only when the flow is notable, read toward the pick's side."""
+    bits = []
+    if f.get("volx") and f["volx"] >= 2: bits.append(f"spot vol {f['volx']:.1f}x")
+    if f.get("buy") is not None and abs(f["buy"] - 0.5) >= 0.15:
+        sh = f["buy"] if up else 1 - f["buy"]; bits.append(f"spot {'buyers' if f['buy'] > 0.5 else 'sellers'} {max(f['buy'], 1 - f['buy']):.0%} ({'with' if sh > 0.5 else 'against'} pick)")
+    if f.get("kusd", 0) >= 2000 and abs(f.get("kyes", 0.5) - 0.5) >= 0.2:
+        ky = f["kyes"]; bits.append(f"Kalshi ${f['kusd'] / 1e3:.0f}k/3m {max(ky, 1 - ky):.0%} on {'UP' if ky > 0.5 else 'DOWN'}")
+    return ("   🔊 " + " · ".join(bits)) if bits else ""
+
+
+def flow_of(L_, c, tk):
+    f = {**spot_flow(c), **kflow(L_, tk)}
+    if tk in L_.shown and f: L_.shown[tk].setdefault("flow", {}).update({k: v for k, v in f.items()})
+    return f
+
+
+def final_c(L_, R, fin, b):
+    """~5 min before the close: the last call (the most accurate checkpoint the scanner posts)."""
+    if not on("board_update"): return
+    rows, strong = [], []
+    for c in [x for x in SHOW if x in fin]:
+        p, mid, q, flow = fin[c]; tk = q.get("tk"); sh = L_.shown.get(tk)
+        if not sh or not on("board_update", c): continue
+        up = p >= 0.5; d = "UP" if up else "DOWN"; ps = p if up else 1 - p; kp = mid if up else 1 - mid
+        L_.shown[tk].update(p5=round(p, 4), mid5=round(mid, 4))
+        if ps >= STRONG and TIERS: strong.append(f"{c} {d} {ps:.0%}")
+        ch = " · ⚡ changed from board" if (sh["p"] >= 0.5) != up else ""
+        rows.append(f"{mark(ps)} {c} {d} {ps:.0%} · K {kp:.0%} {arrow(q, up)}" + (" · toss-up" if TIERS and ps < TOSS else "") + ch)
+        if (fn := flow_note(flow_of(L_, c, tk), up)): rows.append(fn)
+    if not rows: return
+    rec, line = wl_line(L_); u5 = u5_txt(L_)
+    tail = [x for x in (f"Final calls today: {u5}" if u5 else "", line) if x]
+    pick = ("⭐ " + ", ".join(strong)) if strong else "no strong picks"
+    notify(f"🏁 Final call {et(b)} · {pick} · 5 min left", "\n".join(rows + ([""] + tail if tail else [])), 3)
+
+
+def u5_txt(L_):
+    w = [x for x in L_.wl if x[0] > _today() and len(x) > 8 and x[8] is not None]
+    if not w: return ""
+    r = sum(x[8] for x in w); out = f"{r}-{len(w) - r} ({r / len(w):.0%})"
+    st = [x for x in w if len(x) > 9 and x[9] is not None and x[9] >= STRONG]
+    if TIERS and st: out += f" · ⭐ {sum(x[8] for x in st)}-{len(st) - sum(x[8] for x in st)}"
+    return out
+
+
+def flow_check():
+    """Self-check of the live flow readings: when spot takers lean one way, how often does that side win, vs Kalshi's price?"""
+    d = read_gz(f"{DATA}/flow_log.csv.gz")
+    if len(d) < 200 or "buy" not in d: return ""
+    d = d.dropna(subset=["buy"]); g = d[(d.buy - 0.5).abs() >= 0.15]
+    if len(g) < 50: return f"Flow self-check: {len(d)} windows logged, waiting for more one-sided ones"
+    side_up = g.buy > 0.5; won = (side_up == (g.up == 1)).mean(); kimp = np.where(side_up, g.mid, 1 - g.mid).mean()
+    return (f"Flow self-check ({len(g)} one-sided windows): the takers' side won {won:.0%} vs Kalshi's price {kimp:.0%} → "
+            + ("adds info ✅" if won - kimp >= 0.03 else "no edge yet (shown, not used in calls)"))
 
 
 def update9(L_, R, upd, b):
@@ -1087,7 +1186,7 @@ def live():
     seen = set(r[1] for r in warm); last_ts = warm[-1][0] if warm else t0 - 60
     print(f"live: {len(warm)} commodity trades warmed · proven: {[c for c, v in R.get('proven', {}).items() if v] or 'none'}", flush=True)
     if not st.get("started"): notify(f"Kalshi {lbl} scanner online", "Reports only (no trading).\n" + (summary(R) if R.get("model") else "Model not built yet."), 3)
-    low_sent, updated, wave_sent = set(), set(), set()
+    low_sent, updated, wave_sent, finaled = set(), set(), set(), set()
     win, done_min, boarded, saved, trained, settled_t, digest_t = {}, {}, set(), time.time(), time.time(), 0, st.get("digest_t", 0)
     is_open = dict(st.get("is_open", {})); shut_t = {}; switches(force=True)
     while time.time() - t0 < maxmin * 60:
@@ -1097,7 +1196,7 @@ def live():
                 if r[1] in seen: continue
                 seen.add(r[1]); last_ts = max(last_ts, r[0]); L_.ingest(r[0], *r[2:])
             if len(seen) > 200000: seen = set(list(seen)[-50000:])
-            L_.tick(time.time()); now = time.time(); minute = int(now // 60); preds, upd = {}, {}
+            L_.tick(time.time()); now = time.time(); minute = int(now // 60); preds, upd, fin = {}, {}, {}
             for c in COMMS:  # 15-min windows: one prediction per completed minute
                 if c not in win or ts_of(win[c]["close_time"]) <= now:
                     w = open_window(c); win[c] = w if w else {"close_time": datetime.fromtimestamp(now + 60, timezone.utc).isoformat()}
@@ -1153,6 +1252,7 @@ def live():
                                                   f"model {ps_:.0%} vs Kalshi {(mid if x['up'] else 1 - mid):.0%} that it settles {sd_}.", 3, link)
                 if 8 <= tl <= 11: preds[c] = (p, mid, q, flow)
                 if 7.5 <= tl <= 9.5 and tk in L_.shown: upd[c] = (p, mid, q, flow)
+                if 4.5 <= tl <= 5.5 and tk in L_.shown: fin[c] = (p, mid, q, flow)
                 up = p >= 0.5; ps = p if up else 1 - p; ask = q["ask"] if up else 1 - q["bid"]; e = ps - ask - fee(min(max(ask, 0.01), 0.99))
                 lr = [x for x in L_.calls if x["c"] == c and x.get("won") is not None][-30:]
                 bad = len(lr) >= 20 and sum(x["pnl"] for x in lr) < -0.05 * sum(x["cost"] for x in lr)  # live results disproving it
@@ -1165,9 +1265,11 @@ def live():
             b = int(now // 900 * 900) + 900
             preds = {c: v for c, v in preds.items() if int(round(v[2]["t1"])) == b}   # only the window closing at b (never a just-closed one)
             upd = {c: v for c, v in upd.items() if int(round(v[2]["t1"])) == b}
+            fin = {c: v for c, v in fin.items() if int(round(v[2]["t1"])) == b}
             snap = lambda: save_json(f"{DATA}/state.json", {**L_.state(), "started": True, "digest_t": digest_t, "is_open": is_open})
             if preds and b not in boarded: boarded.add(b); board(L_, R, preds, b, [c for c in SHOW if is_open.get(c) is False]); snap()
             if upd and b in boarded and b not in updated: updated.add(b); update9(L_, R, upd, b); snap()
+            if fin and b in boarded and b not in finaled: finaled.add(b); final_c(L_, R, fin, b); snap()
             if now - settled_t > 60: settle(L_); settled_t = now; snap()   # a restart keeps what the board showed
             if now - trained > 6 * 3600:
                 L_.flush()
@@ -1198,7 +1300,12 @@ def settle(L_):
             bet = sh["go"] or sh.get("go9", False)                      # a BET shown on the board or the 9-min update
             bside = (sh["p"] if sh["go"] else sh.get("p9", sh["p"])) >= 0.5
             L_.wl.append([S["t1"], S["c"], ok, int((sh["mid"] >= 0.5) == up), int(bet), int(bside == up) if bet else None,
-                          int((sh["p9"] >= 0.5) == up) if "p9" in sh else None, round(max(sh["p"], 1 - sh["p"]), 3)])
+                          int((sh["p9"] >= 0.5) == up) if "p9" in sh else None, round(max(sh["p"], 1 - sh["p"]), 3),
+                          int((sh["p5"] >= 0.5) == up) if "p5" in sh else None, round(max(sh["p5"], 1 - sh["p5"]), 3) if "p5" in sh else None])
+            if sh.get("flow"):
+                fl = f"{DATA}/flow_log.csv.gz"; os.makedirs(DATA, exist_ok=True)
+                pd.DataFrame([dict(t1=S["t1"], c=S["c"], tk=tk, p=sh["p"], mid=sh["mid"], up=int(up), **sh["flow"])]).to_csv(
+                    fl, mode="ab", index=False, header=not os.path.exists(fl), compression="gzip")
             L_.res_pend.setdefault(str(int(S["t1"])), []).append(dict(sh, up=int(up)))
         for x in L_.calls:
             if x["tk"] == tk and x["won"] is None:
@@ -1282,6 +1389,7 @@ def digest(L_, R):
     rec = [x for x in L_.calls if x.get("won") is not None]
     if rec: L.append(f"Edge calls (14d): {sum(x['won'] for x in rec)}/{len(rec)} won, ROI {sum(x['pnl'] for x in rec) / sum(x['cost'] for x in rec):+.0%}")
     L += [f"{c}: whales {L_.flow_txt(c)}" for c in SHOW if L_.flow.get(c)]
+    if (fc := flow_check()): L.append(fc)
     if R.get("model"): L += ["", summary(R)]
     notify(f"📊 Kalshi {LBL.lower()} digest", "\n".join(L), 2); L_.stats = dict(trades=0, whales=0, vol=0.0)
 
