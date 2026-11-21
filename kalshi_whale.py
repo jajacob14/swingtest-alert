@@ -1314,7 +1314,7 @@ def live():
     seen = set(r[1] for r in warm); last_ts = warm[-1][0] if warm else t0 - 60
     print(f"live: {len(warm)} commodity trades warmed · proven: {[c for c, v in R.get('proven', {}).items() if v] or 'none'}", flush=True)
     if not st.get("started"): notify(f"Kalshi {lbl} scanner online", "Reports only (no trading).\n" + (summary(R) if R.get("model") else "Model not built yet."), 3)
-    low_sent, updated, wave_sent, finaled = set(), set(), set(), set()
+    low_sent, updated, wave_sent, finaled, board_t = set(), set(), set(), set(), {}
     win, done_min, boarded, saved, trained, settled_t, digest_t = {}, {}, set(), time.time(), time.time(), 0, st.get("digest_t", 0)
     is_open = dict(st.get("is_open", {})); shut_t = {}; switches(force=True)
     while time.time() - t0 < maxmin * 60:
@@ -1399,11 +1399,15 @@ def live():
             if COMPACT and preds and b not in boarded:   # opening push waits (≤ ~2 min) for the last window's results to bundle them
                 prev = b - 900; wait = any(int(S["t1"]) == prev for S in L_.snaps.values())
                 if wait and now < prev + 150: preds = {}
+            if preds and b not in boarded and any(int(round(v["t1"])) == b for v in L_.shown.values()):
+                boarded.add(b); board_t[b] = 0; preds = {}       # restarted mid-window: this window's opening push already went out
             if preds and b not in boarded:
-                boarded.add(b); res = L_.res_pend.pop(str(b - 900), None) if COMPACT else None
+                boarded.add(b); board_t[b] = now; res = L_.res_pend.pop(str(b - 900), None) if COMPACT else None
                 board(L_, R, preds, b, [c for c in SHOW if is_open.get(c) is False], res); snap()
             for ck, u in sorted(upd.items(), reverse=True):
-                if u and b in boarded and (b, ck) not in updated: updated.add((b, ck)); update9(L_, R, u, b); snap()
+                if u and b in boarded and (b, ck) not in updated:
+                    updated.add((b, ck))
+                    if now - board_t.get(b, 0) > 120: update9(L_, R, u, b); snap()   # no check-in right on top of the opening push
             if fin and b in boarded and b not in finaled: finaled.add(b); final_c(L_, R, fin, b); snap()
             if now - settled_t > 60: settle(L_); settled_t = now; snap()   # a restart keeps what the board showed
             if now - trained > 6 * 3600:
