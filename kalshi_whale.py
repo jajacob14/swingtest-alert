@@ -870,6 +870,25 @@ def trend_txt(q, d_up):
     return t
 
 
+TIERS = CRYPTO      # crypto: grade leans by how sure they are (backtest: ≥80% sure → right ~87%, <65% → ~55-65%)
+STRONG, TOSS = 0.80, 0.65
+
+
+def tier_tag(ps, d):
+    """Board label for a NO BET lean: ⭐ STRONG (≥80% sure), plain lean, or toss-up (<65%)."""
+    if not TIERS: return f"(leans {d})"
+    return f"· ⭐ STRONG {d}" if ps >= STRONG else f"(leans {d})" if ps >= TOSS else f"· toss-up (leans {d})"
+
+
+def tiers_txt(w):
+    """Strong leans and toss-ups graded separately (entries carry the board's confidence at index 7)."""
+    if not TIERS: return ""
+    g = [x for x in w if len(x) > 7 and x[7] is not None]
+    st, ts = [x for x in g if x[7] >= STRONG], [x for x in g if x[7] < TOSS]
+    f = lambda a: f"{sum(x[2] for x in a)}-{len(a) - sum(x[2] for x in a)} ({sum(x[2] for x in a) / len(a):.0%})" if a else "none yet"
+    return f"⭐ Strong leans (≥{STRONG:.0%}): {f(st)} · toss-ups (<{TOSS:.0%}): {f(ts)}" if g else ""
+
+
 def scorecard(L_):
     """Model vs Kalshi on every graded board lean today (ET), per market in Kalshi's order, plus bets."""
     since = datetime.now(ET).replace(hour=0, minute=0, second=0, microsecond=0).timestamp()
@@ -883,6 +902,7 @@ def scorecard(L_):
     out = ["━━━━━━━━━━", f"📊 Scorecard today · model vs Kalshi (K)",
            f"All: model {m}-{len(w) - m} ({m / len(w):.0%}) · K {k}-{len(w) - k} ({k / len(w):.0%}) · 🟢 bets {bets_txt(L_)}"]
     out += [" · ".join(per[i:i + 3]) for i in range(0, len(per), 3)]
+    if (tt := tiers_txt(w)): out.append(tt)
     if (u := u9_txt(L_)): out.append(f"9-min updates: {u}")
     wv = [x for x in L_.waves if x["t"] > since and not x.get("open")]
     if wv:
@@ -903,7 +923,7 @@ def update9(L_, R, upd, b):
         b_up = sh["p"] >= 0.5; side = lambda x: x if up else 1 - x            # show everything on the current lean's side
         flip = b_up != up; dp, dk = (side(p) - side(sh["p"])) * 100, (side(mid) - side(sh["mid"])) * 100
         moved = flip or abs(dp) >= 3 or abs(dk) >= 3 or go != sh["go"]
-        head = (f"🟢 {c} · BET {d} ≤ {cents(ask)}" if go else f"🔴 {c} · NO BET (leans {d})") + (" ⚡FLIPPED" if flip else "") \
+        head = (f"🟢 {c} · BET {d} ≤ {cents(ask)}" if go else f"🔴 {c} · NO BET {tier_tag(ps, d)}") + (" ⚡FLIPPED" if flip else "") \
             + (" · now BET" if go and not sh["go"] else " · BET dropped" if sh["go"] and not go else "") + ("" if moved else " · no real change")
         L.append(head)
         L.append(f"   {d} {side(sh['p']):.0%}→{ps:.0%} vs K {side(sh['mid']):.0%}→{side(mid):.0%} · edge {int(round(e * 100)):+d}"
@@ -924,7 +944,7 @@ def board(L_, R, preds, b, closed=()):
         up = p >= 0.5; ps = p if up else 1 - p; ask = q["ask"] if up else 1 - q["bid"]; e = ps - ask - fee(min(max(ask, 0.01), 0.99))
         go = e >= EDGE and 0.03 < ask <= KMAX; d = "UP" if up else "DOWN"
         if q.get("tk"): L_.shown[q["tk"]] = dict(c=c, t1=q["t1"], p=round(p, 4), mid=round(mid, 4), go=bool(go), ask=round(ask, 3), left=round(q["tl"]))
-        L.append(f"🟢 {c} · BET {d} ≤ {cents(ask)}" if go else f"🔴 {c} · NO BET (leans {d})")
+        L.append(f"🟢 {c} · BET {d} ≤ {cents(ask)}" if go else f"🔴 {c} · NO BET {tier_tag(ps, d)}")
         L.append(f"   {d} {ps:.0%} vs K {(mid if up else 1 - mid):.0%} · edge {int(round(e * 100)):+d}"
                  + (" · ✅ tested" if go and pv.get(c) else " · ⚠️ untested" if go else "") + f" · last {last_dot(L_, c)}")
         L.append(f"   {trend_txt(q, up)} · {flow_h(L_, c)}")
@@ -941,7 +961,8 @@ def board(L_, R, preds, b, closed=()):
     if off: L.append("Switched off: " + ", ".join(off))
     L += [""] + scorecard(L_)
     L.append(f"🟢 BET = model beats K's ask by {EDGE * 100:.0f}+ pts after fees (≤{KMAX * 100:.0f}¢) · % = chance it settles that way · "
-             "last = last window's lean right/wrong (a lean isn't a call)")
+             "last = last window's lean right/wrong (a lean isn't a call)"
+             + (f" · ⭐ STRONG = ≥{STRONG:.0%} sure (backtest: right ~87%) · toss-up = <{TOSS:.0%} (~55-65%, close to a coin flip)" if TIERS else ""))
     if L: notify(f"📈 {LBL} 15-min · closes {et(b)} ET", "\n".join(L), 2)
 
 
@@ -1070,7 +1091,7 @@ def settle(L_):
             bet = sh["go"] or sh.get("go9", False)                      # a BET shown on the board or the 9-min update
             bside = (sh["p"] if sh["go"] else sh.get("p9", sh["p"])) >= 0.5
             L_.wl.append([S["t1"], S["c"], ok, int((sh["mid"] >= 0.5) == up), int(bet), int(bside == up) if bet else None,
-                          int((sh["p9"] >= 0.5) == up) if "p9" in sh else None])
+                          int((sh["p9"] >= 0.5) == up) if "p9" in sh else None, round(max(sh["p"], 1 - sh["p"]), 3)])
             L_.res_pend.setdefault(str(int(S["t1"])), []).append(dict(sh, up=int(up)))
         for x in L_.calls:
             if x["tk"] == tk and x["won"] is None:
@@ -1128,7 +1149,7 @@ def results(L_, t1, rows):
         up = r["p"] >= 0.5; d = "UP" if up else "DOWN"; ok = up == bool(r["up"]); end = "UP" if r["up"] else "DOWN"
         odds = f"{max(r['p'], 1 - r['p']):.0%} (K {(r['mid'] if up else 1 - r['mid']):.0%})"; kok = (r["mid"] >= 0.5) == bool(r["up"])
         line = (f"{'🟢' if ok else '🔴'} {r['c']} BET {d} ≤ {cents(r['ask'])} → {end} · {'WON' if ok else 'LOST'}" if r.get("go")
-                else f"{'🟢' if ok else '🔴'} {r['c']} lean {d} {odds} → {end}" + ("" if ok == kok else " · beat K" if ok else " · K was right"))
+                else f"{'🟢' if ok else '🔴'} {r['c']} {'⭐ ' if TIERS and max(r['p'], 1 - r['p']) >= STRONG else ''}lean {d} {odds} → {end}" + ("" if ok == kok else " · beat K" if ok else " · K was right"))
         if "p9" in r:
             u9 = r["p9"] >= 0.5; ok9 = u9 == bool(r["up"])
             if u9 != up or r.get("go9", False) != r.get("go", False):
@@ -1136,8 +1157,10 @@ def results(L_, t1, rows):
         L.append(line)
     if not L: return
     n, k = sum(1 for x in L if x.startswith("🟢")), len(L); nb = [r for r in rows if r.get("go") or r.get("go9")]
+    st = [r for r in rows if TIERS and not r.get("go") and max(r["p"], 1 - r["p"]) >= STRONG and on("pred_results", r["c"])]
+    sok = sum(int((r["p"] >= 0.5) == bool(r["up"])) for r in st)
     L += [""] + scorecard(L_) + ["A lean is the side the model thought more likely; only BET rows are calls. Graded on what the board showed."]
-    notify(f"🎯 Results {et(t1 - 900)}–{et(t1)}: leans {n}/{k} right" + (f" · bets {len(nb)}" if nb else ""),
+    notify(f"🎯 Results {et(t1 - 900)}–{et(t1)}: leans {n}/{k} right" + (f" · ⭐ strong {sok}/{len(st)}" if st else "") + (f" · bets {len(nb)}" if nb else ""),
            "\n".join(L), 2)
 
 
