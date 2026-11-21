@@ -911,9 +911,114 @@ def scorecard(L_):
     return out
 
 
+# ---------------- compact pushes (quick to read: did the last window hit, today's W-L, this window's picks) ----------------
+COMPACT = E("KW_COMPACT", 1) == 1
+
+
+def _today():
+    return datetime.now(ET).replace(hour=0, minute=0, second=0, microsecond=0).timestamp()
+
+
+def wl_line(L_):
+    """Today's board leans W-L (and Kalshi's on the same windows)."""
+    w = [x for x in L_.wl if x[0] > _today()]
+    if not w: return "", ""
+    m, k = sum(x[2] for x in w), sum(x[3] for x in w)
+    return f"{m}-{len(w) - m}", f"Today: {m}-{len(w) - m} ({m / len(w):.0%}) · Kalshi {k / len(w):.0%}"
+
+
+def last_line(L_):
+    """The most recent graded window: e.g. 'Last 3:15: 4/5 ✅  BTC🟢 ETH🟢 SOL🔴 XRP🟢 DOGE🟢'."""
+    if not L_.wl: return ""
+    t1 = max(x[0] for x in L_.wl)
+    if t1 < time.time() - 1800: return ""
+    g = sorted([x for x in L_.wl if x[0] == t1], key=lambda x: SHOW.index(x[1]) if x[1] in SHOW else 99)
+    n = sum(x[2] for x in g)
+    return f"Last {et(t1)}: {n}/{len(g)} right {'✅' if n == len(g) else ''}  " + " ".join(f"{x[1]}{'🟢' if x[2] else '🔴'}" for x in g)
+
+
+def mark(ps):
+    if not TIERS: return "•"
+    return "⭐" if ps >= STRONG else "🔹" if ps >= TOSS else "⚪"
+
+
+def arrow(q, up):
+    k = q.get("dmid3", 0.0) * 100
+    a = "→" if abs(k) < 2 else ("↗" if (k > 0) == up else "↘")
+    return a + ("⚡" if abs(k) >= 8 else "")
+
+
+def board_c(L_, R, preds, b, closed=()):
+    pv = R.get("proven", {}); rows, bets, strong = [], [], []
+    for c in [x for x in SHOW if x in preds]:
+        p, mid, q, flow = preds[c]
+        if not on("board", c): continue
+        up = p >= 0.5; ps = p if up else 1 - p; ask = q["ask"] if up else 1 - q["bid"]; e = ps - ask - fee(min(max(ask, 0.01), 0.99))
+        go = e >= EDGE and 0.03 < ask <= KMAX; d = "UP" if up else "DOWN"; kp = mid if up else 1 - mid
+        if q.get("tk"): L_.shown[q["tk"]] = dict(c=c, t1=q["t1"], p=round(p, 4), mid=round(mid, 4), go=bool(go), ask=round(ask, 3), left=round(q["tl"]))
+        dot = last_dot(L_, c)
+        if go:
+            bets.append(f"{c} {d}")
+            rows.append(f"🟢 BET {c} {d} ≤ {cents(ask)} · {ps:.0%} vs K {kp:.0%}" + (" ✅tested" if pv.get(c) else " ⚠️untested"))
+        else:
+            if ps >= STRONG: strong.append(f"{c} {d}")
+            rows.append(f"{mark(ps)} {c} {d} {ps:.0%} · K {kp:.0%} {arrow(q, up)}" + (" · toss-up" if ps < TOSS else "") + (f" · last {dot}" if dot != "⚪" else ""))
+        wv, lw = q.get("wave"), q.get("low")
+        if wv and wv["ok"] and (R.get("wave") or {}).get("proven", {}).get(c):
+            rows.append(f"   🌊 wave BUY {wv['side'].split()[0]} {cents(wv['ask'])} → sell {cents(wv['tgt'])}")
+        if lw and lw["ok"]: rows.append(f"   🚀 cheap BUY {lw['side'].split()[0]} {cents(lw['ask'])} → sell {cents(lw['tgt'])}")
+    if not rows: return
+    rec, line = wl_line(L_)
+    head = [x for x in (last_line(L_), line) if x]
+    if closed: rows.append("Closed: " + ", ".join(closed))
+    tail = [(f"⭐ ≥{STRONG:.0%} sure (~87% right) · 🔹 {TOSS:.0%}-{STRONG:.0%} · ⚪ toss-up · " if TIERS else "% = chance it settles that way · ")
+            + f"↗ Kalshi moving its way · 🟢 BET = beats K's price by {EDGE * 100:.0f}+ after fees"]
+    pick = ("🟢 BET " + ", ".join(bets)) if bets else ("⭐ " + ", ".join(strong)) if strong else "no strong picks"
+    notify(f"📈 {et(b)} window · {pick}" + (f" · today {rec}" if rec else ""), "\n".join(head + ([""] if head else []) + rows + [""] + tail), 2)
+
+
+def update9_c(L_, R, upd, b):
+    rows, same = [], []; nch = nflip = 0
+    for c in [x for x in SHOW if x in upd]:
+        p, mid, q, flow = upd[c]; sh = L_.shown.get(q.get("tk"))
+        if not sh or not on("board_update", c): continue
+        up = p >= 0.5; d = "UP" if up else "DOWN"; ps = p if up else 1 - p; ask = q["ask"] if up else 1 - q["bid"]
+        e = ps - ask - fee(min(max(ask, 0.01), 0.99)); go = e >= EDGE and 0.03 < ask <= KMAX
+        b_up = sh["p"] >= 0.5; ps0 = sh["p"] if b_up else 1 - sh["p"]; flip = b_up != up
+        L_.shown[q["tk"]].update(p9=round(p, 4), mid9=round(mid, 4), go9=bool(go), ask9=round(ask, 3))
+        if flip:
+            rows.append(f"⚡ {c} FLIPPED → {d} {ps:.0%} (was {'UP' if b_up else 'DOWN'} {ps0:.0%})"); nflip += 1; nch += 1
+        elif go != sh["go"] or abs(ps - ps0) >= 0.05 or mark(ps) != mark(ps0):
+            rows.append(f"{mark(ps)} {c} {d} {ps0:.0%} → {ps:.0%} {arrow(q, up)}" + (" · now 🟢 BET ≤ " + cents(ask) if go and not sh["go"] else " · BET off" if sh["go"] and not go else ""))
+            nch += 1
+        else: same.append(f"{c} {d} {ps:.0%}")
+    if not rows and not same: return
+    if same: rows.append("Same: " + " · ".join(same))
+    notify(f"🔄 {et(b)} window · " + (f"{nflip} flipped" if nflip else f"{nch} changed" if nch else "no changes") + " (9 min left)", "\n".join(rows), 2)
+
+
+def results_c(L_, t1, rows):
+    L = []; n = k = 0
+    for r in sorted(rows, key=lambda r: SHOW.index(r["c"]) if r["c"] in SHOW else 99):
+        if not on("pred_results", r["c"]): continue
+        up = r["p"] >= 0.5; d = "UP" if up else "DOWN"; ok = up == bool(r["up"]); ps = max(r["p"], 1 - r["p"]); end = "UP" if r["up"] else "DOWN"
+        n += ok; k += 1
+        s = f"{'✅' if ok else '❌'} {r['c']} {d} {ps:.0%} {mark(ps)}" + ("" if ok else f" → went {end}")
+        if r.get("go"): s += f" · BET ≤ {cents(r['ask'])} {'WON' if ok else 'LOST'}"
+        if "p9" in r and (r["p9"] >= 0.5) != up: s += f" · 9m switched {'✓' if (r['p9'] >= 0.5) == bool(r['up']) else '✗'}"
+        L.append(s)
+    if not L: return
+    rec, line = wl_line(L_); since = _today(); w = [x for x in L_.wl if x[0] > since]
+    per = " · ".join(f"{c} {sum(x[2] for x in w if x[1] == c)}-{sum(1 - x[2] for x in w if x[1] == c)}" for c in SHOW if any(x[1] == c for x in w))
+    tail = [line, tiers_txt(w), per, f"🟢 Bets today: {bets_txt(L_)}" + (f" · 9-min updates {u}" if (u := u9_txt(L_)) else "")]
+    notify(f"{'✅' if n == k else '🎯'} {n}/{k} right · {et(t1 - 900)}–{et(t1)}" + (f" · today {rec}" if rec else ""),
+           "\n".join(L + [""] + [x for x in tail if x]), 2)
+
+
 def update9(L_, R, upd, b):
     """Second look ~9 min before the close: what changed since the board (lean, odds, BET status) and fast/trending moves."""
     if not on("board_update"): return
+    if COMPACT: return update9_c(L_, R, upd, b)
     pv = R.get("proven", {}); L = []; nch = nflip = 0
     for c in [x for x in SHOW if x in upd]:
         p, mid, q, flow = upd[c]; sh = L_.shown.get(q.get("tk"))
@@ -937,6 +1042,7 @@ def update9(L_, R, upd, b):
 
 def board(L_, R, preds, b, closed=()):
     if not on("board"): return
+    if COMPACT: return board_c(L_, R, preds, b, closed)
     pv = R.get("proven", {}); L = []
     for c in [x for x in SHOW if x in preds]:
         p, mid, q, flow = preds[c]
@@ -1059,9 +1165,10 @@ def live():
             b = int(now // 900 * 900) + 900
             preds = {c: v for c, v in preds.items() if int(round(v[2]["t1"])) == b}   # only the window closing at b (never a just-closed one)
             upd = {c: v for c, v in upd.items() if int(round(v[2]["t1"])) == b}
-            if preds and b not in boarded: boarded.add(b); board(L_, R, preds, b, [c for c in SHOW if is_open.get(c) is False])
-            if upd and b in boarded and b not in updated: updated.add(b); update9(L_, R, upd, b)
-            if now - settled_t > 60: settle(L_); settled_t = now
+            snap = lambda: save_json(f"{DATA}/state.json", {**L_.state(), "started": True, "digest_t": digest_t, "is_open": is_open})
+            if preds and b not in boarded: boarded.add(b); board(L_, R, preds, b, [c for c in SHOW if is_open.get(c) is False]); snap()
+            if upd and b in boarded and b not in updated: updated.add(b); update9(L_, R, upd, b); snap()
+            if now - settled_t > 60: settle(L_); settled_t = now; snap()   # a restart keeps what the board showed
             if now - trained > 6 * 3600:
                 L_.flush()
                 for c in COMMS: kfetch(c, 3)
@@ -1143,6 +1250,7 @@ def last_dot(L_, c):
 
 def results(L_, t1, rows):
     if not on("pred_results"): return
+    if COMPACT: return results_c(L_, t1, rows)
     L = []
     for r in sorted(rows, key=lambda r: SHOW.index(r["c"]) if r["c"] in SHOW else 99):
         if not on("pred_results", r["c"]): continue
