@@ -1,5 +1,5 @@
 # Kalshi commodity 15-min model report
-Trained 2026-11-21 03:47 ET
+Trained 2026-11-21 15:18 ET
 
 Model = Kalshi's own price + what it misses (quote changes, spread, volume, order flow, big-money flow, time left, session, market).
 **Weeks** = trained on the older 70% of the last 3 weeks, tested on the newest 30%. **Months** = trained on the 3 weeks, tested on older months it never saw. Edge bets buy at the ask + fee when the model beats it by 4+ pts (≤70¢), held to settlement.
