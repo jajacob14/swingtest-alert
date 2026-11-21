@@ -433,11 +433,13 @@ def spot_feats(kd):
     return kd.drop(columns=["mk_", "px", "sv", "r1", "r3", "r5"]).sort_values(["ticker", "ts"]).reset_index(drop=True)
 
 
-def kframe(kd):
-    """1-min Kalshi quotes + flow -> one row per window-minute with 3-12 min left: features, Kalshi mid, outcome."""
+def kframe(kd, tlmax=12, live=False):
+    """1-min Kalshi quotes + flow -> one row per window-minute with 3-12 min left: features, Kalshi mid, outcome.
+    live=True (predicting, not training): also the window's opening minutes and near-certain prices."""
     kd = kcols(kd)
     if not len(kd): return kd
-    kd = kd[(kd.tl >= 3) & (kd.tl <= 12) & (kd.mid > 0.02) & (kd.mid < 0.98)].copy()
+    lo, hi = (0.003, 0.997) if live else (0.02, 0.98)
+    kd = kd[(kd.tl >= 3) & (kd.tl <= tlmax) & (kd.mid > lo) & (kd.mid < hi)].copy()
     kd["tleft"] = kd.tl / 12; kd["ext"] = (kd.mid - 0.5).abs()
     ss = kd.ts.map(session)
     for s in SESS: kd[f"s_{s}"] = (ss == s).astype(float)
@@ -845,7 +847,7 @@ def live_pred(R, c, w):
     """Latest complete minute of this window -> (p_up, mid, quote) using the exact training feature code."""
     now = time.time(); rows = [r for r in window_rows(c, {**w, "result": ""}, upto=now) if r["ts"] <= now]
     _ROWS[c] = rows
-    D = kframe(pd.DataFrame(rows, columns=KCOLS)) if rows else []
+    D = kframe(pd.DataFrame(rows, columns=KCOLS), *((14.6, True) if COMPACT else ())) if rows else []
     if not len(D): return None
     r = D.iloc[[-1]]; p = float(p_of(R["model"], r)[0]) if R.get("model") else float(r.mid.iloc[0])
     return p, float(r.mid.iloc[0]), dict(bid=float(r.bid.iloc[0]), ask=float(r.ask.iloc[0]), tl=float(r.tl.iloc[0]), t1=ts_of(w["close_time"]),
@@ -948,15 +950,15 @@ def arrow(q, up):
     return a + ("⚡" if abs(k) >= 8 else "")
 
 
-def board_c(L_, R, preds, b, closed=()):
-    pv = R.get("proven", {}); rows, bets, strong = [], [], []
+def board_c(L_, R, preds, b, closed=(), res=None):
+    pv = R.get("proven", {}); rows, bets, strong = [], [], []; early = False
     for c in [x for x in SHOW if x in preds]:
         p, mid, q, flow = preds[c]
         if not on("board", c): continue
         up = p >= 0.5; ps = p if up else 1 - p; ask = q["ask"] if up else 1 - q["bid"]; e = ps - ask - fee(min(max(ask, 0.01), 0.99))
         go = e >= EDGE and 0.03 < ask <= KMAX; d = "UP" if up else "DOWN"; kp = mid if up else 1 - mid
         if q.get("tk"): L_.shown[q["tk"]] = dict(c=c, t1=q["t1"], p=round(p, 4), mid=round(mid, 4), go=bool(go), ask=round(ask, 3), left=round(q["tl"]))
-        dot = last_dot(L_, c)
+        dot = last_dot(L_, c); early |= q["tl"] > 12.5
         if go:
             bets.append(f"{c} {d}")
             rows.append(f"🟢 BET {c} {d} ≤ {cents(ask)} · {ps:.0%} vs K {kp:.0%}" + (" ✅tested" if pv.get(c) else " ⚠️untested"))
@@ -969,13 +971,17 @@ def board_c(L_, R, preds, b, closed=()):
             rows.append(f"   🌊 wave BUY {wv['side'].split()[0]} {cents(wv['ask'])} → sell {cents(wv['tgt'])}")
         if lw and lw["ok"]: rows.append(f"   🚀 cheap BUY {lw['side'].split()[0]} {cents(lw['ask'])} → sell {cents(lw['tgt'])}")
     if not rows: return
+    R_ = results_c(L_, b - 900, res, send=False) if res else None
     rec, line = wl_line(L_)
-    head = [x for x in (last_line(L_), line) if x]
+    head = [x for x in (last_line(L_), line) if x] if not R_ else \
+        [f"🎯 Last window {et(b - 1800)}–{et(b - 900)}: {R_[0]}/{R_[1]} right"] + R_[2] + [""] + R_[3] + ["", f"━━ 📈 Calls for the {et(b)} window ━━"]
+    if early: rows.append("Early read: the window just opened, so odds start near 50/50. Watch the 10-min and final calls.")
     if closed: rows.append("Closed: " + ", ".join(closed))
     tail = [(f"⭐ ≥{STRONG:.0%} sure (~87% right) · 🔹 {TOSS:.0%}-{STRONG:.0%} · ⚪ toss-up · " if TIERS else "% = chance it settles that way · ")
             + f"↗ Kalshi moving its way · 🟢 BET = beats K's price by {EDGE * 100:.0f}+ after fees"]
     pick = ("🟢 BET " + ", ".join(bets)) if bets else ("⭐ " + ", ".join(strong)) if strong else "no strong picks"
-    notify(f"📈 {et(b)} window · {pick}" + (f" · today {rec}" if rec else ""), "\n".join(head + ([""] if head else []) + rows + [""] + tail), 2)
+    lead = f"{'✅' if R_[0] == R_[1] else '🎯'} {R_[0]}/{R_[1]} last · " if R_ else ""
+    notify(f"{lead}📈 {et(b)} calls · {pick}" + (f" · today {rec}" if rec else ""), "\n".join(head + ([""] if head else []) + rows + [""] + tail), 2)
 
 
 def update9_c(L_, R, upd, b):
@@ -995,10 +1001,10 @@ def update9_c(L_, R, upd, b):
         else: same.append(f"{c} {d} {ps:.0%}")
     if not rows and not same: return
     if same: rows.append("Same: " + " · ".join(same))
-    notify(f"🔄 {et(b)} window · " + (f"{nflip} flipped" if nflip else f"{nch} changed" if nch else "no changes") + " (9 min left)", "\n".join(rows), 2)
+    notify(f"🔄 {et(b)} window · " + (f"{nflip} flipped" if nflip else f"{nch} changed" if nch else "no changes") + (" (10 min left)" if COMPACT else " (9 min left)"), "\n".join(rows), 2)
 
 
-def results_c(L_, t1, rows):
+def results_c(L_, t1, rows, send=True):
     L = []; n = k = 0
     for r in sorted(rows, key=lambda r: SHOW.index(r["c"]) if r["c"] in SHOW else 99):
         if not on("pred_results", r["c"]): continue
@@ -1006,14 +1012,15 @@ def results_c(L_, t1, rows):
         n += ok; k += 1
         s = f"{'✅' if ok else '❌'} {r['c']} {d} {ps:.0%} {mark(ps)}" + ("" if ok else f" → went {end}")
         if r.get("go"): s += f" · BET ≤ {cents(r['ask'])} {'WON' if ok else 'LOST'}"
-        if "p9" in r and (r["p9"] >= 0.5) != up: s += f" · 9m switched {'✓' if (r['p9'] >= 0.5) == bool(r['up']) else '✗'}"
+        if "p9" in r and (r["p9"] >= 0.5) != up: s += f" · {'10m' if COMPACT else '9m'} switched {'✓' if (r['p9'] >= 0.5) == bool(r['up']) else '✗'}"
         if "p5" in r and (r["p5"] >= 0.5) != up: s += f" · final {'UP' if r['p5'] >= 0.5 else 'DOWN'} {'✓' if (r['p5'] >= 0.5) == bool(r['up']) else '✗'}"
         L.append(s)
-    if not L: return
+    if not L: return None
     rec, line = wl_line(L_); since = _today(); w = [x for x in L_.wl if x[0] > since]
     per = " · ".join(f"{c} {sum(x[2] for x in w if x[1] == c)}-{sum(1 - x[2] for x in w if x[1] == c)}" for c in SHOW if any(x[1] == c for x in w))
-    tail = [line, tiers_txt(w), (f"🏁 Final calls (5 min left): {u5}" if (u5 := u5_txt(L_)) else ""), per,
-            f"🟢 Bets today: {bets_txt(L_)}" + (f" · 9-min updates {u}" if (u := u9_txt(L_)) else "")]
+    tail = [line, tiers_txt(w), (f"🏁 Final calls ({'3-4' if COMPACT else '5'} min left): {u5}" if (u5 := u5_txt(L_)) else ""), per,
+            f"🟢 Bets today: {bets_txt(L_)}" + (f" · {'10' if COMPACT else '9'}-min updates {u}" if (u := u9_txt(L_)) else "")]
+    if not send: return n, k, L, [x for x in tail if x]
     notify(f"{'✅' if n == k else '🎯'} {n}/{k} right · {et(t1 - 900)}–{et(t1)}" + (f" · today {rec}" if rec else ""),
            "\n".join(L + [""] + [x for x in tail if x]), 2)
 
@@ -1091,7 +1098,7 @@ def final_c(L_, R, fin, b):
     rec, line = wl_line(L_); u5 = u5_txt(L_)
     tail = [x for x in (f"Final calls today: {u5}" if u5 else "", line) if x]
     pick = ("⭐ " + ", ".join(strong)) if strong else "no strong picks"
-    notify(f"🏁 Final call {et(b)} · {pick} · 5 min left", "\n".join(rows + ([""] + tail if tail else [])), 3)
+    notify(f"🏁 Final call {et(b)} · {pick} · {'3-4' if COMPACT else '5'} min left", "\n".join(rows + ([""] + tail if tail else [])), 3)
 
 
 def u5_txt(L_):
@@ -1139,9 +1146,9 @@ def update9(L_, R, upd, b):
     notify(f"🔄 9-min update · closes {et(b)} ET · {nch} changed" + (f", {nflip} flipped" if nflip else ""), "\n".join(L), 2)
 
 
-def board(L_, R, preds, b, closed=()):
+def board(L_, R, preds, b, closed=(), res=None):
     if not on("board"): return
-    if COMPACT: return board_c(L_, R, preds, b, closed)
+    if COMPACT: return board_c(L_, R, preds, b, closed, res)
     pv = R.get("proven", {}); L = []
     for c in [x for x in SHOW if x in preds]:
         p, mid, q, flow = preds[c]
@@ -1250,9 +1257,9 @@ def live():
                         if on("waves", c): notify(f"⏱ {c} wave stalled · {sd_} at {cents(sb)}",
                                                   f"Didn't reach {cents(x['tgt'])} (bought ≤ {cents(x['entry'])}). Sell at {cents(sb)} now, or hold: "
                                                   f"model {ps_:.0%} vs Kalshi {(mid if x['up'] else 1 - mid):.0%} that it settles {sd_}.", 3, link)
-                if 8 <= tl <= 11: preds[c] = (p, mid, q, flow)
-                if 7.5 <= tl <= 9.5 and tk in L_.shown: upd[c] = (p, mid, q, flow)
-                if 4.5 <= tl <= 5.5 and tk in L_.shown: fin[c] = (p, mid, q, flow)
+                if (8 <= tl <= 14.6) if COMPACT else (8 <= tl <= 11): preds[c] = (p, mid, q, flow)
+                if ((9.5 <= tl <= 10.6) if COMPACT else (7.5 <= tl <= 9.5)) and tk in L_.shown: upd[c] = (p, mid, q, flow)
+                if ((3 <= tl <= 4.2) if COMPACT else (4.5 <= tl <= 5.5)) and tk in L_.shown: fin[c] = (p, mid, q, flow)
                 up = p >= 0.5; ps = p if up else 1 - p; ask = q["ask"] if up else 1 - q["bid"]; e = ps - ask - fee(min(max(ask, 0.01), 0.99))
                 lr = [x for x in L_.calls if x["c"] == c and x.get("won") is not None][-30:]
                 bad = len(lr) >= 20 and sum(x["pnl"] for x in lr) < -0.05 * sum(x["cost"] for x in lr)  # live results disproving it
@@ -1267,7 +1274,12 @@ def live():
             upd = {c: v for c, v in upd.items() if int(round(v[2]["t1"])) == b}
             fin = {c: v for c, v in fin.items() if int(round(v[2]["t1"])) == b}
             snap = lambda: save_json(f"{DATA}/state.json", {**L_.state(), "started": True, "digest_t": digest_t, "is_open": is_open})
-            if preds and b not in boarded: boarded.add(b); board(L_, R, preds, b, [c for c in SHOW if is_open.get(c) is False]); snap()
+            if COMPACT and preds and b not in boarded:   # opening push waits (≤ ~2 min) for the last window's results to bundle them
+                prev = b - 900; wait = any(int(S["t1"]) == prev for S in L_.snaps.values())
+                if wait and now < prev + 150: preds = {}
+            if preds and b not in boarded:
+                boarded.add(b); res = L_.res_pend.pop(str(b - 900), None) if COMPACT else None
+                board(L_, R, preds, b, [c for c in SHOW if is_open.get(c) is False], res); snap()
             if upd and b in boarded and b not in updated: updated.add(b); update9(L_, R, upd, b); snap()
             if fin and b in boarded and b not in finaled: finaled.add(b); final_c(L_, R, fin, b); snap()
             if now - settled_t > 60: settle(L_); settled_t = now; snap()   # a restart keeps what the board showed
@@ -1319,6 +1331,7 @@ def settle(L_):
         L_.snaps.pop(tk)
     for t1 in sorted(L_.res_pend):   # one results push per window, once every market in it is graded (or 10 min after close)
         if any(int(S["t1"]) == int(t1) for S in L_.snaps.values()) and now < int(t1) + 600: continue
+        if COMPACT and now < int(t1) + 300: continue     # normally bundled into the next window's opening push
         results(L_, int(t1), L_.res_pend.pop(t1))
     if log:
         os.makedirs(DATA, exist_ok=True); p = f"{DATA}/live_preds.csv.gz"
