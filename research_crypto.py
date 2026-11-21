@@ -162,3 +162,14 @@ for lo, hi in ((11, 12), (9, 10), (6, 7), (3, 4)):
     m = (D.tl >= lo) & (D.tl < hi)
     P(f"  {lo}-{hi} min left: Kalshi favourite wins {((D.mid[m] >= 0.5) == (D.up[m] == 1)).mean():.1%}  ({m.sum():,} rows)")
 P(f"\ndone in {(time.time() - t_start) / 60:.1f} min")
+
+P("\n==== how often the favourite wins, by how sure the price is (Kalshi price; all data) ====")
+for nm, (lo, hi) in (("board ~11 min left", (10, 11.5)), ("9-min update", (8, 9.5)), ("~5 min left", (4.5, 5.5))):
+    m = (D.tl >= lo) & (D.tl <= hi); d = D[m]; pf = np.maximum(d.mid, 1 - d.mid); ok = (d.mid >= 0.5) == (d.up == 1)
+    P(f"  {nm}:")
+    for a, b in ((0.5, 0.6), (0.6, 0.7), (0.7, 0.8), (0.8, 0.9), (0.9, 1.01)):
+        s = (pf >= a) & (pf < b)
+        if s.any(): P(f"    favourite {a:.0%}-{min(b, 1):.0%}: wins {ok[s].mean():.1%} · {s.mean():.0%} of windows")
+P("\n==== board-time accuracy by hour (ET) ====")
+m = (D.tl >= 10) & (D.tl <= 11.5); d = D[m].assign(h=pd.to_datetime(D[m].ts, unit="s", utc=True).dt.tz_convert("America/New_York").dt.hour)
+print(d.assign(ok=((d.mid >= 0.5) == (d.up == 1))).groupby(d.h // 3 * 3).ok.mean().map("{:.1%}".format).to_string())
