@@ -921,11 +921,33 @@ def _today():
     return datetime.now(ET).replace(hour=0, minute=0, second=0, microsecond=0).timestamp()
 
 
+SELECT = TIERS   # crypto: only ≥80%-sure picks are calls (backtest ~87% at the open, ~92% at the final); the rest show as "no call"
+
+
+def call_wl(x):
+    """A graded window's call: the final call if it was ≥80% sure, else the opening call if it was; None = no call."""
+    if len(x) > 9 and x[9] is not None and x[9] >= STRONG and x[8] is not None: return x[8]
+    if len(x) > 7 and x[7] is not None and x[7] >= STRONG: return x[2]
+    return None
+
+
+def call_r(r):
+    """Same for a results row: (right?, which checkpoint) or None."""
+    if "p5" in r and max(r["p5"], 1 - r["p5"]) >= STRONG: return int((r["p5"] >= 0.5) == bool(r["up"])), "final"
+    if max(r["p"], 1 - r["p"]) >= STRONG: return int((r["p"] >= 0.5) == bool(r["up"])), "open"
+    return None
+
+
 def wl_line(L_):
-    """Today's board leans W-L (and Kalshi's on the same windows)."""
+    """Today's record (and Kalshi's on the same windows). Selective mode: calls only, all leans alongside."""
     w = [x for x in L_.wl if x[0] > _today()]
     if not w: return "", ""
     m, k = sum(x[2] for x in w), sum(x[3] for x in w)
+    if SELECT:
+        cs = [c for c in map(call_wl, w) if c is not None]
+        cw = sum(cs); allp = f"all leans {m}-{len(w) - m} ({m / len(w):.0%}, Kalshi {k / len(w):.0%})"
+        if not cs: return "", f"⭐ Calls today: none yet · {allp}"
+        return f"{cw}-{len(cs) - cw}", f"⭐ Calls today: {cw}-{len(cs) - cw} ({cw / len(cs):.0%}) · {allp}"
     return f"{m}-{len(w) - m}", f"Today: {m}-{len(w) - m} ({m / len(w):.0%}) · Kalshi {k / len(w):.0%}"
 
 
@@ -936,6 +958,12 @@ def last_line(L_):
     if t1 < time.time() - 1800: return ""
     g = sorted([x for x in L_.wl if x[0] == t1], key=lambda x: SHOW.index(x[1]) if x[1] in SHOW else 99)
     n = sum(x[2] for x in g)
+    if SELECT:
+        cs = [(x[1], call_wl(x)) for x in g]; c1 = [z for z in cs if z[1] is not None]; nc = [c for c, z in cs if z is None]
+        if not c1: return f"Last {et(t1)}: no calls" + (f" (all under {STRONG:.0%} sure)" if nc else "")
+        r = sum(z for _, z in c1)
+        return (f"Last {et(t1)}: calls {r}/{len(c1)} right {'✅' if r == len(c1) else ''}  " + " ".join(f"{c}{'🟢' if z else '🔴'}" for c, z in c1)
+                + (f" · no call: {' '.join(nc)}" if nc else ""))
     return f"Last {et(t1)}: {n}/{len(g)} right {'✅' if n == len(g) else ''}  " + " ".join(f"{x[1]}{'🟢' if x[2] else '🔴'}" for x in g)
 
 
@@ -964,6 +992,8 @@ def board_c(L_, R, preds, b, closed=(), res=None):
             rows.append(f"🟢 BET {c} {d} ≤ {cents(ask)} · {ps:.0%} vs K {kp:.0%}" + (" ✅tested" if pv.get(c) else " ⚠️untested"))
         else:
             if ps >= STRONG: strong.append(f"{c} {d}")
+            if SELECT and ps < STRONG:
+                rows.append(f"⏸ {c} no call · leans {d} {ps:.0%}"); flow_of(L_, c, q.get("tk")); continue
             rows.append(f"{mark(ps)} {c} {d} {ps:.0%} · K {kp:.0%} {arrow(q, up)}" + (" · toss-up" if TIERS and ps < TOSS else "") + (f" · last {dot}" if dot != "⚪" else ""))
         if (fn := flow_note(flow_of(L_, c, q.get("tk")), up)): rows.append(fn)
         wv, lw = q.get("wave"), q.get("low")
@@ -974,13 +1004,14 @@ def board_c(L_, R, preds, b, closed=(), res=None):
     R_ = results_c(L_, b - 900, res, send=False) if res else None
     rec, line = wl_line(L_)
     head = [x for x in (last_line(L_), line) if x] if not R_ else \
-        [f"🎯 Last window {et(b - 1800)}–{et(b - 900)}: {R_[0]}/{R_[1]} right"] + R_[2] + [""] + R_[3] + ["", f"━━ 📈 Calls for the {et(b)} window ━━"]
+        [f"🎯 Last window {et(b - 1800)}–{et(b - 900)}: " + (f"{R_[0]}/{R_[1]} {'calls ' if SELECT else ''}right" if R_[1] else "no calls")] + R_[2] + [""] + R_[3] + ["", f"━━ 📈 Calls for the {et(b)} window ━━"]
     if early: rows.append("Early read: the window just opened, so odds start near 50/50. Watch the 10-min and final calls.")
     if closed: rows.append("Closed: " + ", ".join(closed))
-    tail = [(f"⭐ ≥{STRONG:.0%} sure (~87% right) · 🔹 {TOSS:.0%}-{STRONG:.0%} · ⚪ toss-up · " if TIERS else "% = chance it settles that way · ")
+    tail = [(f"⭐ CALL = ≥{STRONG:.0%} sure (backtest ~87% right, ~92% at the final call) · ⏸ = under {STRONG:.0%}, no call · " if SELECT else
+             f"⭐ ≥{STRONG:.0%} sure (~87% right) · 🔹 {TOSS:.0%}-{STRONG:.0%} · ⚪ toss-up · " if TIERS else "% = chance it settles that way · ")
             + f"↗ Kalshi moving its way · 🟢 BET = beats K's price by {EDGE * 100:.0f}+ after fees"]
-    pick = ("🟢 BET " + ", ".join(bets)) if bets else ("⭐ " + ", ".join(strong)) if strong else "no strong picks"
-    lead = f"{'✅' if R_[0] == R_[1] else '🎯'} {R_[0]}/{R_[1]} last · " if R_ else ""
+    pick = ("🟢 BET " + ", ".join(bets)) if bets else ("⭐ " + ", ".join(strong)) if strong else ("no calls yet" if SELECT else "no strong picks")
+    lead = ((f"{'✅' if R_[0] == R_[1] else '🎯'} {R_[0]}/{R_[1]} {'calls ' if SELECT else ''}last · " if R_[1] else "no calls last · ") if R_ else "")
     notify(f"{lead}📈 {et(b)} calls · {pick}" + (f" · today {rec}" if rec else ""), "\n".join(head + ([""] if head else []) + rows + [""] + tail), 2)
 
 
@@ -1009,6 +1040,13 @@ def results_c(L_, t1, rows, send=True):
     for r in sorted(rows, key=lambda r: SHOW.index(r["c"]) if r["c"] in SHOW else 99):
         if not on("pred_results", r["c"]): continue
         up = r["p"] >= 0.5; d = "UP" if up else "DOWN"; ok = up == bool(r["up"]); ps = max(r["p"], 1 - r["p"]); end = "UP" if r["up"] else "DOWN"
+        if SELECT:
+            cr = call_r(r)
+            if cr is None: L.append(f"➖ {r['c']} no call · went {end}"); continue
+            ok = bool(cr[0]); n += ok; k += 1; fp = r["p5"] if cr[1] == "final" else r["p"]; fd = "UP" if fp >= 0.5 else "DOWN"
+            L.append(f"{'✅' if ok else '❌'} {r['c']} {fd} {max(fp, 1 - fp):.0%} ⭐ ({cr[1]} call)" + ("" if ok else f" → went {end}")
+                     + (f" · BET ≤ {cents(r['ask'])} {'WON' if (r['p'] >= 0.5) == bool(r['up']) else 'LOST'}" if r.get("go") else ""))
+            continue
         n += ok; k += 1
         s = f"{'✅' if ok else '❌'} {r['c']} {d} {ps:.0%} {mark(ps)}" + ("" if ok else f" → went {end}")
         if r.get("go"): s += f" · BET ≤ {cents(r['ask'])} {'WON' if ok else 'LOST'}"
@@ -1017,11 +1055,15 @@ def results_c(L_, t1, rows, send=True):
         L.append(s)
     if not L: return None
     rec, line = wl_line(L_); since = _today(); w = [x for x in L_.wl if x[0] > since]
-    per = " · ".join(f"{c} {sum(x[2] for x in w if x[1] == c)}-{sum(1 - x[2] for x in w if x[1] == c)}" for c in SHOW if any(x[1] == c for x in w))
-    tail = [line, tiers_txt(w), (f"🏁 Final calls ({'3-4' if COMPACT else '5'} min left): {u5}" if (u5 := u5_txt(L_)) else ""), per,
+    if SELECT:
+        cw = [(x[1], call_wl(x)) for x in w]; cw = [(c, z) for c, z in cw if z is not None]
+        per = " · ".join(f"{c} {sum(z for cc, z in cw if cc == c)}-{sum(1 - z for cc, z in cw if cc == c)}" for c in SHOW if any(cc == c for cc, _ in cw))
+    else:
+        per = " · ".join(f"{c} {sum(x[2] for x in w if x[1] == c)}-{sum(1 - x[2] for x in w if x[1] == c)}" for c in SHOW if any(x[1] == c for x in w))
+    tail = [line, "" if SELECT else tiers_txt(w), (f"🏁 Final calls ({'3-4' if COMPACT else '5'} min left): {u5}" if (u5 := u5_txt(L_)) else ""), per,
             f"🟢 Bets today: {bets_txt(L_)}" + (f" · {'10' if COMPACT else '9'}-min updates {u}" if (u := u9_txt(L_)) else "")]
     if not send: return n, k, L, [x for x in tail if x]
-    notify(f"{'✅' if n == k else '🎯'} {n}/{k} right · {et(t1 - 900)}–{et(t1)}" + (f" · today {rec}" if rec else ""),
+    notify((f"{'✅' if n == k else '🎯'} {n}/{k} {'calls ' if SELECT else ''}right" if k else "no calls") + f" · {et(t1 - 900)}–{et(t1)}" + (f" · today {rec}" if rec else ""),
            "\n".join(L + [""] + [x for x in tail if x]), 2)
 
 
@@ -1092,12 +1134,13 @@ def final_c(L_, R, fin, b):
         L_.shown[tk].update(p5=round(p, 4), mid5=round(mid, 4))
         if ps >= STRONG and TIERS: strong.append(f"{c} {d} {ps:.0%}")
         ch = " · ⚡ changed from board" if (sh["p"] >= 0.5) != up else ""
+        if SELECT and ps < STRONG: rows.append(f"⏸ {c} no call · leans {d} {ps:.0%}" + ch); continue
         rows.append(f"{mark(ps)} {c} {d} {ps:.0%} · K {kp:.0%} {arrow(q, up)}" + (" · toss-up" if TIERS and ps < TOSS else "") + ch)
         if (fn := flow_note(flow_of(L_, c, tk), up)): rows.append(fn)
     if not rows: return
     rec, line = wl_line(L_); u5 = u5_txt(L_)
     tail = [x for x in (f"Final calls today: {u5}" if u5 else "", line) if x]
-    pick = ("⭐ " + ", ".join(strong)) if strong else "no strong picks"
+    pick = ("⭐ " + ", ".join(strong)) if strong else ("no calls (all under 80%)" if SELECT else "no strong picks")
     notify(f"🏁 Final call {et(b)} · {pick} · {'3-4' if COMPACT else '5'} min left", "\n".join(rows + ([""] + tail if tail else [])), 3)
 
 
