@@ -1015,24 +1015,45 @@ def board_c(L_, R, preds, b, closed=(), res=None):
     notify(f"{lead}📈 {et(b)} calls · {pick}" + (f" · today {rec}" if rec else ""), "\n".join(head + ([""] if head else []) + rows + [""] + tail), 2)
 
 
+CHECKS = ((11, 10.4, 11.6), (8, 7.4, 8.6), (5, 4.4, 5.6))   # compact mode: check-ins every 3 min (final call at ~3)
+
+
 def update9_c(L_, R, upd, b):
-    rows, same = [], []; nch = nflip = 0
+    """Check-in: what changed since the last push for this window (calls made, dropped, flipped)."""
+    rows, same, calls = [], [], []; nch = nflip = 0; left = None
     for c in [x for x in SHOW if x in upd]:
         p, mid, q, flow = upd[c]; sh = L_.shown.get(q.get("tk"))
         if not sh or not on("board_update", c): continue
+        left = q["tl"] if left is None else left
         up = p >= 0.5; d = "UP" if up else "DOWN"; ps = p if up else 1 - p; ask = q["ask"] if up else 1 - q["bid"]
         e = ps - ask - fee(min(max(ask, 0.01), 0.99)); go = e >= EDGE and 0.03 < ask <= KMAX
-        b_up = sh["p"] >= 0.5; ps0 = sh["p"] if b_up else 1 - sh["p"]; flip = b_up != up
+        p0, go0 = sh.get("p9", sh["p"]), sh.get("go9", sh["go"])           # vs the last push for this window
+        b_up = p0 >= 0.5; ps0 = p0 if b_up else 1 - p0; flip = b_up != up
         L_.shown[q["tk"]].update(p9=round(p, 4), mid9=round(mid, 4), go9=bool(go), ask9=round(ask, 3))
+        if SELECT:
+            was = ps0 >= STRONG and not flip; now_ = ps >= STRONG
+            if now_: calls.append(f"{c} {d}")
+            if now_ and (flip or not (ps0 >= STRONG)):
+                rows.append(f"⭐ {c} NEW CALL {d} {ps:.0%} · K {(mid if up else 1 - mid):.0%} {arrow(q, up)}"); nch += 1; nflip += int(flip and ps0 >= STRONG)
+            elif now_: rows.append(f"⭐ {c} {d} {ps0:.0%} → {ps:.0%} {arrow(q, up)} · holding")
+            elif ps0 >= STRONG: rows.append(f"⏸ {c} call dropped · now {d} {ps:.0%}" + (" (flipped)" if flip else "")); nch += 1; nflip += int(flip)
+            else: same.append(f"{c} {d} {ps:.0%}")
+            if go and not go0: rows.append(f"🟢 {c} now BET ≤ {cents(ask)}")
+            continue
         if flip:
             rows.append(f"⚡ {c} FLIPPED → {d} {ps:.0%} (was {'UP' if b_up else 'DOWN'} {ps0:.0%})"); nflip += 1; nch += 1
-        elif go != sh["go"] or abs(ps - ps0) >= 0.05 or mark(ps) != mark(ps0):
-            rows.append(f"{mark(ps)} {c} {d} {ps0:.0%} → {ps:.0%} {arrow(q, up)}" + (" · now 🟢 BET ≤ " + cents(ask) if go and not sh["go"] else " · BET off" if sh["go"] and not go else ""))
+        elif go != go0 or abs(ps - ps0) >= 0.05 or mark(ps) != mark(ps0):
+            rows.append(f"{mark(ps)} {c} {d} {ps0:.0%} → {ps:.0%} {arrow(q, up)}" + (" · now 🟢 BET ≤ " + cents(ask) if go and not go0 else " · BET off" if go0 and not go else ""))
             nch += 1
         else: same.append(f"{c} {d} {ps:.0%}")
     if not rows and not same: return
-    if same: rows.append("Same: " + " · ".join(same))
-    notify(f"🔄 {et(b)} window · " + (f"{nflip} flipped" if nflip else f"{nch} changed" if nch else "no changes") + (" (10 min left)" if COMPACT else " (9 min left)"), "\n".join(rows), 2)
+    if same: rows.append(("⏸ No call: " if SELECT else "Same: ") + " · ".join(same))
+    m = f"{round(left)} min left" if left is not None else ""
+    if SELECT:
+        head = ("⭐ " + ", ".join(calls)) if calls else "no calls"
+        notify(f"🔄 {et(b)} · {m} · {head}" + (f" · {nchn} changed" if (nchn := nch) else ""), "\n".join(rows), 2)
+    else:
+        notify(f"🔄 {et(b)} window · " + (f"{nflip} flipped" if nflip else f"{nch} changed" if nch else "no changes") + f" ({m})", "\n".join(rows), 2)
 
 
 def results_c(L_, t1, rows, send=True):
@@ -1050,7 +1071,7 @@ def results_c(L_, t1, rows, send=True):
         n += ok; k += 1
         s = f"{'✅' if ok else '❌'} {r['c']} {d} {ps:.0%} {mark(ps)}" + ("" if ok else f" → went {end}")
         if r.get("go"): s += f" · BET ≤ {cents(r['ask'])} {'WON' if ok else 'LOST'}"
-        if "p9" in r and (r["p9"] >= 0.5) != up: s += f" · {'10m' if COMPACT else '9m'} switched {'✓' if (r['p9'] >= 0.5) == bool(r['up']) else '✗'}"
+        if "p9" in r and (r["p9"] >= 0.5) != up: s += f" · {'check-in' if COMPACT else '9m'} switched {'✓' if (r['p9'] >= 0.5) == bool(r['up']) else '✗'}"
         if "p5" in r and (r["p5"] >= 0.5) != up: s += f" · final {'UP' if r['p5'] >= 0.5 else 'DOWN'} {'✓' if (r['p5'] >= 0.5) == bool(r['up']) else '✗'}"
         L.append(s)
     if not L: return None
@@ -1061,7 +1082,7 @@ def results_c(L_, t1, rows, send=True):
     else:
         per = " · ".join(f"{c} {sum(x[2] for x in w if x[1] == c)}-{sum(1 - x[2] for x in w if x[1] == c)}" for c in SHOW if any(x[1] == c for x in w))
     tail = [line, "" if SELECT else tiers_txt(w), (f"🏁 Final calls ({'3-4' if COMPACT else '5'} min left): {u5}" if (u5 := u5_txt(L_)) else ""), per,
-            f"🟢 Bets today: {bets_txt(L_)}" + (f" · {'10' if COMPACT else '9'}-min updates {u}" if (u := u9_txt(L_)) else "")]
+            f"🟢 Bets today: {bets_txt(L_)}" + (f" · {'last check-in' if COMPACT else '9-min updates'} {u}" if (u := u9_txt(L_)) else "")]
     if not send: return n, k, L, [x for x in tail if x]
     notify((f"{'✅' if n == k else '🎯'} {n}/{k} {'calls ' if SELECT else ''}right" if k else "no calls") + f" · {et(t1 - 900)}–{et(t1)}" + (f" · today {rec}" if rec else ""),
            "\n".join(L + [""] + [x for x in tail if x]), 2)
@@ -1301,7 +1322,8 @@ def live():
                                                   f"Didn't reach {cents(x['tgt'])} (bought ≤ {cents(x['entry'])}). Sell at {cents(sb)} now, or hold: "
                                                   f"model {ps_:.0%} vs Kalshi {(mid if x['up'] else 1 - mid):.0%} that it settles {sd_}.", 3, link)
                 if (8 <= tl <= 14.6) if COMPACT else (8 <= tl <= 11): preds[c] = (p, mid, q, flow)
-                if ((9.5 <= tl <= 10.6) if COMPACT else (7.5 <= tl <= 9.5)) and tk in L_.shown: upd[c] = (p, mid, q, flow)
+                for ck, lo, hi in (CHECKS if COMPACT else ((9, 7.5, 9.5),)):
+                    if lo <= tl <= hi and tk in L_.shown: upd.setdefault(ck, {})[c] = (p, mid, q, flow)
                 if ((3 <= tl <= 4.2) if COMPACT else (4.5 <= tl <= 5.5)) and tk in L_.shown: fin[c] = (p, mid, q, flow)
                 up = p >= 0.5; ps = p if up else 1 - p; ask = q["ask"] if up else 1 - q["bid"]; e = ps - ask - fee(min(max(ask, 0.01), 0.99))
                 lr = [x for x in L_.calls if x["c"] == c and x.get("won") is not None][-30:]
@@ -1314,7 +1336,7 @@ def live():
                            f"Closes {et(q['t1'])} ET · whales {flow}\nBacktest: {fmt_eval(R['weeks']['test_by'].get(c))}", 4, f"{WEB}/{K15[c].lower()}")
             b = int(now // 900 * 900) + 900
             preds = {c: v for c, v in preds.items() if int(round(v[2]["t1"])) == b}   # only the window closing at b (never a just-closed one)
-            upd = {c: v for c, v in upd.items() if int(round(v[2]["t1"])) == b}
+            upd = {ck: {c: v for c, v in u.items() if int(round(v[2]["t1"])) == b} for ck, u in upd.items()}
             fin = {c: v for c, v in fin.items() if int(round(v[2]["t1"])) == b}
             snap = lambda: save_json(f"{DATA}/state.json", {**L_.state(), "started": True, "digest_t": digest_t, "is_open": is_open})
             if COMPACT and preds and b not in boarded:   # opening push waits (≤ ~2 min) for the last window's results to bundle them
@@ -1323,7 +1345,8 @@ def live():
             if preds and b not in boarded:
                 boarded.add(b); res = L_.res_pend.pop(str(b - 900), None) if COMPACT else None
                 board(L_, R, preds, b, [c for c in SHOW if is_open.get(c) is False], res); snap()
-            if upd and b in boarded and b not in updated: updated.add(b); update9(L_, R, upd, b); snap()
+            for ck, u in sorted(upd.items(), reverse=True):
+                if u and b in boarded and (b, ck) not in updated: updated.add((b, ck)); update9(L_, R, u, b); snap()
             if fin and b in boarded and b not in finaled: finaled.add(b); final_c(L_, R, fin, b); snap()
             if now - settled_t > 60: settle(L_); settled_t = now; snap()   # a restart keeps what the board showed
             if now - trained > 6 * 3600:
