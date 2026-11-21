@@ -1,0 +1,21 @@
+name: kcrypto-research
+on:
+  workflow_dispatch:
+    inputs:
+      script: {description: "research script to run", default: "research_crypto.py"}
+permissions: {contents: read}
+concurrency: {group: kcrypto-research, cancel-in-progress: true}
+jobs:
+  run:
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with: {python-version: "3.12", cache: pip}
+      - run: pip install -q -r requirements.txt scikit-learn
+      - name: restore crypto scanner data (read-only; never saved back)
+        uses: actions/cache/restore@v4
+        with: {path: kcrypto/data, key: "kcrypto-data-none", restore-keys: "kcrypto-data-"}
+      - run: python "${{ inputs.script || 'research_crypto.py' }}"
+        env: {KW_PROFILE: crypto, PYTHONUNBUFFERED: "1"}
