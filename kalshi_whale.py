@@ -430,7 +430,24 @@ def spot_feats(kd):
     kd["sgap"] = np.where(ok, (logit(fair.fillna(0.5)) - logit(kd.mid)).clip(-4, 4), 0.0)
     for n in (1, 3, 5): kd[f"sr{n}"] = np.where(ok, (kd[f"r{n}"] / (sv * math.sqrt(n))).clip(-6, 6), 0.0)
     kd["svz"] = np.where(ok, np.log(sv * 1e4), 0.0); kd["sok"] = ok.astype(float)
-    return kd.drop(columns=["mk_", "px", "sv", "r1", "r3", "r5"]).sort_values(["ticker", "ts"]).reset_index(drop=True)
+    kd = kd.rename(columns={"px": "spx", "sv": "ssv"})       # kept for the scalp spike simulation (not model features)
+    return kd.drop(columns=["mk_", "r1", "r3", "r5"]).sort_values(["ticker", "ts"]).reset_index(drop=True)
+
+
+def spike_sim(S, K, sv, tl, up, target, n=4000, seed=None):
+    """Simulate the coin's spot price (random walk at its recent 1-min volatility, fat-tailed) every 15 s until the
+    close; the side's fair price at each step = N(ln(S/K) / (σ√(t_left-0.5))). Returns (chance the side's price reaches
+    `target` before the close, median minutes until it does, chance the side settles a winner)."""
+    rng = np.random.default_rng(seed); dt = 0.25; steps = max(int((tl - 0.5) / dt), 1)
+    z = rng.standard_t(4, size=(n, steps)) / math.sqrt(2.0)            # t(4) scaled to unit variance: crypto's fat tails
+    lp = math.log(S) + np.cumsum(z * sv * math.sqrt(dt), axis=1)
+    h = np.maximum(tl - dt * np.arange(1, steps + 1) - 0.5, 0.25)
+    fu = ncdf((lp - math.log(K)) / (sv * np.sqrt(h)))
+    side = fu if up else 1 - fu; hit = side >= target; anyh = hit.any(1)
+    first = np.where(anyh, hit.argmax(1), -1)
+    eta = float(np.median(first[anyh] + 1) * dt) if anyh.any() else None
+    win = (lp[:, -1] >= math.log(K)) if up else (lp[:, -1] < math.log(K))
+    return float(anyh.mean()), eta, float(win.mean())
 
 
 def kframe(kd, tlmax=12, live=False):
@@ -854,7 +871,10 @@ def live_pred(R, c, w):
     r = D.iloc[[-1]]; p = float(p_of(R["model"], r)[0]) if R.get("model") else float(r.mid.iloc[0])
     return p, float(r.mid.iloc[0]), dict(bid=float(r.bid.iloc[0]), ask=float(r.ask.iloc[0]), tl=float(r.tl.iloc[0]), t1=ts_of(w["close_time"]),
                                                   dmid3=float(r.dmid3.iloc[0]), dmid1=float(r.dmid1.iloc[0]), spot3=spot_move(c, float(r.ts.iloc[0])),
-                                                  sgap=float(r.sgap.iloc[0]) if "sgap" in r and float(r.sok.iloc[0]) > 0 else None)
+                                                  sgap=float(r.sgap.iloc[0]) if "sgap" in r and float(r.sok.iloc[0]) > 0 else None,
+                                                  spx=float(r.spx.iloc[0]) if "spx" in r and r.spx.notna().iloc[0] else None,
+                                                  ssv=float(r.ssv.iloc[0]) if "ssv" in r and r.ssv.notna().iloc[0] else None,
+                                                  strike=float(pd.to_numeric(r.strike, errors="coerce").iloc[0]))
 
 
 def kmoney(x):
