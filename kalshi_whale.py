@@ -970,7 +970,8 @@ def call_r(r):
     return None
 
 
-CALL_T = E("KW_CALL_T", 0.85)   # a ⭐ call needs ≥85% for 2 minutes in a row, same side (backtest: first call right 94.8%)
+CALL_T = E("KW_CALL_T", 0.80)   # a ⭐ call needs ≥80% at a check-in (backtest: first call right ~88%, earlier and cheaper than 85%×2 min)
+CALL_STABLE = E("KW_CALL_STABLE", 0) == 1   # 1 = also require ≥ CALL_T a minute earlier (≈95% right but calls come at ~90¢)
 
 
 def note_call(sh, p, tl, mid=None, dm1=0.0):
@@ -985,8 +986,8 @@ def note_call(sh, p, tl, mid=None, dm1=0.0):
             return "flip" if new else "against"
         return "locked"
     m = p if mid is None else mid; pm = m - (dm1 or 0.0)
-    if (max(p, 1 - p) >= CALL_T and max(m, 1 - m) >= CALL_T and max(pm, 1 - pm) >= CALL_T
-            and (m >= 0.5) == bool(up) and (pm >= 0.5) == bool(up)):
+    if (max(p, 1 - p) >= CALL_T and max(m, 1 - m) >= CALL_T and (m >= 0.5) == bool(up)
+            and (not CALL_STABLE or (max(pm, 1 - pm) >= CALL_T and (pm >= 0.5) == bool(up)))):
         sh["first"] = dict(up=bool(up), ps=round(max(p, 1 - p), 3), tl=round(tl)); return "new"
     return None
 
@@ -1003,7 +1004,7 @@ def sel_row(c, ev_, sh, p, mid, q):
     return f"🔒 {c} {fd} holding · {fs:.0%} now (made {f['ps']:.0%} at {f['tl']}m) {arrow(q, f['up'])}", "call"
 
 
-LEGEND = ("Key: 🔒⭐ new call, locked in (needs ≥85% two minutes in a row; backtest ~95% right) · 🔒 call holding · "
+LEGEND = ("Key: 🔒⭐ new call, locked in (needs ≥80% at a check-in; backtest ~88% right) · 🔒 call holding · "
           "⚠️ call weakening or model now leans the other way (call does NOT change; still graded on it) · ⏸ no call yet · "
           "✅/❌ the locked call right/wrong (only that call counts) · 🔄 a later lean the other way (logged, never counted) · ➖ no call made · 💸 scalp: bounce trade, buy ≤15¢ and sell at +12¢ · K = Kalshi's price · ↗ Kalshi moving toward the pick, "
           "↘ against, → flat, ⚡ fast · 🔊 unusual volume/flow · 🟢 BET = beats Kalshi's price by 4+ pts after fees · last 🟢/🔴 = last window's call")
