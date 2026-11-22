@@ -87,7 +87,7 @@ def load_json(p, d):
 def save_json(p, o):
     os.makedirs(os.path.dirname(p) or ".", exist_ok=True); tmp = p + ".tmp"; json.dump(o, open(tmp, "w"), indent=1, default=float); os.replace(tmp, p)
 SW_DEFAULT = {"pause_all": False, "markets": {c: True for c in COMMS},
-              "alerts": {"board": True, "edge_calls": True, "results": True, "whales": True, "spikes": True, "digest": True, "open_close": True, "low_spikes": True, "pred_results": True, "board_update": True, "waves": True}}
+              "alerts": {"board": True, "edge_calls": True, "results": True, "whales": True, "spikes": True, "digest": True, "open_close": True, "low_spikes": True, "pred_results": True, "board_update": True, "waves": True, "scalps": True}}
 _SW = {"sw": None, "t": 0}
 
 
@@ -723,6 +723,7 @@ class Live:
         self.wl = [w for w in st.get("wl", []) if len(w) > 4 and w[1] in COMMS]  # graded board leans: [t1, comm, lean right, kalshi right, bet?, bet won]
         self.res_pend = st.get("res_pend", {})    # window close -> graded rows waiting to be sent together
         self.shown = st.get("shown", {})          # ticker -> exactly what the board showed (graded at settlement)
+        self.scalps = st.get("scalps", [])        # scalp alerts: entry, best price traded since, outcome at the close
         self.waves = st.get("waves", [])          # wave alerts: buy pushed, waiting for the cash-out / settlement
         self.stats = st.get("stats", dict(trades=0, whales=0, vol=0.0)); self.quiet = 0; self.cool = {}; self.sent_h = defaultdict(int)
 
@@ -816,7 +817,8 @@ class Live:
                     snaps=self.snaps, missed=self.missed[-500:], stats=self.stats, last_ts=self.quiet,
                     wl=[w for w in self.wl if w[0] > time.time() - 7 * 86400], res_pend=self.res_pend,
                     shown={k: v for k, v in self.shown.items() if v["t1"] > time.time() - 7200},
-                    waves=[w for w in self.waves if w["t1"] > time.time() - 3 * 86400])
+                    waves=[w for w in self.waves if w["t1"] > time.time() - 3 * 86400],
+                    scalps=[x for x in self.scalps if x["t1"] > time.time() - 3 * 86400])
 
 
 # ---------------- live: 15-min predictions ----------------
@@ -851,7 +853,8 @@ def live_pred(R, c, w):
     if not len(D): return None
     r = D.iloc[[-1]]; p = float(p_of(R["model"], r)[0]) if R.get("model") else float(r.mid.iloc[0])
     return p, float(r.mid.iloc[0]), dict(bid=float(r.bid.iloc[0]), ask=float(r.ask.iloc[0]), tl=float(r.tl.iloc[0]), t1=ts_of(w["close_time"]),
-                                                  dmid3=float(r.dmid3.iloc[0]), dmid1=float(r.dmid1.iloc[0]), spot3=spot_move(c, float(r.ts.iloc[0])))
+                                                  dmid3=float(r.dmid3.iloc[0]), dmid1=float(r.dmid1.iloc[0]), spot3=spot_move(c, float(r.ts.iloc[0])),
+                                                  sgap=float(r.sgap.iloc[0]) if "sgap" in r and float(r.sok.iloc[0]) > 0 else None)
 
 
 def kmoney(x):
@@ -981,7 +984,7 @@ def sel_row(c, ev_, sh, p, mid, q):
 
 LEGEND = ("Key: 🔒⭐ new call, locked in (needs ≥85% two minutes in a row; backtest ~95% right) · 🔒 call holding · "
           "⚠️ call weakening or model now leans the other way (call does NOT change; still graded on it) · ⏸ no call yet · "
-          "✅/❌ the locked call right/wrong (only that call counts) · 🔄 a later lean the other way (logged, never counted) · ➖ no call made · K = Kalshi's price · ↗ Kalshi moving toward the pick, "
+          "✅/❌ the locked call right/wrong (only that call counts) · 🔄 a later lean the other way (logged, never counted) · ➖ no call made · 💸 scalp: side ≤15¢ that live spot says is underpriced · K = Kalshi's price · ↗ Kalshi moving toward the pick, "
           "↘ against, → flat, ⚡ fast · 🔊 unusual volume/flow · 🟢 BET = beats Kalshi's price by 4+ pts after fees · last 🟢/🔴 = last window's call")
 
 
@@ -1078,6 +1081,28 @@ def board_c(L_, R, preds, b, closed=(), res=None):
     notify(f"{lead}📈 {et(b)} calls · {pick}" + (f" · today {rec}" if rec else ""), "\n".join(head + ([""] if head else []) + rows + [""] + tail), 2)
 
 
+SCALP_MAX, SCALP_EDGE = E("KW_SCALP_MAX", 0.15), E("KW_SCALP_EDGE", 0.05)   # side at ≤15¢ that live spot says is worth 5¢+ more
+
+
+def scalp_check(L_, c, q, live=None):
+    """A side trading ≤15¢ with 4-13 min left that the live spot price says is underpriced → primed to bounce.
+    Fair value from the last complete minute (spot vs target); entry at the live Kalshi quote when there is one."""
+    if not CRYPTO or q.get("sgap") is None or not (4 <= q["tl"] <= 13): return None
+    fair = float(sig(q["sgap"] + logit((q["bid"] + q["ask"]) / 2))); bid, ask_ = live or (q["bid"], q["ask"])
+    for up, ask, sf in ((True, ask_, fair), (False, 1 - bid, 1 - fair)):
+        if 0.02 <= ask <= SCALP_MAX and sf - ask >= SCALP_EDGE and not any(x["tk"] == q["tk"] and x["up"] == up for x in L_.scalps):
+            return dict(t=time.time(), c=c, tk=q["tk"], up=up, entry=round(ask, 2), fair=round(sf, 3), t1=q["t1"], tl=round(q["tl"]), best=round(ask, 2), open=True)
+    return None
+
+
+def scalp_txt(L_):
+    s_ = [x for x in L_.scalps if x["t"] > _today() and not x.get("open")]
+    if not s_: return ""
+    h5 = sum(x["best"] >= x["entry"] + 0.05 for x in s_); h10 = sum(x["best"] >= x["entry"] + 0.10 for x in s_)
+    return (f"💸 Scalps today: {len(s_)} · bounced +5¢ {h5} ({h5 / len(s_):.0%}) · +10¢ {h10} · avg best bounce "
+            f"{np.mean([x['best'] - x['entry'] for x in s_]) * 100:+.0f}¢ · settled their way {sum(x.get('won', 0) for x in s_)}")
+
+
 CHECKS = ((11, 10.4, 11.6), (8, 7.4, 8.6), (5, 4.4, 5.6))   # compact mode: check-ins every 3 min (final call at ~3)
 
 
@@ -1155,7 +1180,10 @@ def results_c(L_, t1, rows, send=True):
     else:
         per = " · ".join(f"{c} {sum(x[2] for x in w if x[1] == c)}-{sum(1 - x[2] for x in w if x[1] == c)}" for c in SHOW if any(x[1] == c for x in w))
     if SELECT:
-        tail = [line, switch_txt(w), (f"Per coin: {per}" if per else ""), f"🟢 Bets today: {bets_txt(L_)}"] + ["", LEGEND]
+        sw_ = [x for x in L_.scalps if not x.get("open") and int(round(x["t1"])) == int(t1)]
+        L += [f"💸 Scalp {x['c']} {'YES' if x['up'] else 'NO'} @ {cents(x['entry'])} → best {cents(x['best'])} ({(x['best'] - x['entry']) * 100:+.0f}¢)"
+              + (" ✅ +5¢ hit" if x["best"] >= x["entry"] + 0.05 else " ❌ no bounce") + (" · settled its way" if x.get("won") else "") for x in sw_]
+        tail = [line, switch_txt(w), scalp_txt(L_), (f"Per coin: {per}" if per else ""), f"🟢 Bets today: {bets_txt(L_)}"] + ["", LEGEND]
         if not send: return n, k, L, [x for x in tail if x]
         notify((f"{'✅' if n == k else '🎯'} {n}/{k} calls right" if k else "no calls") + f" · {et(t1 - 900)}–{et(t1)}" + (f" · today {rec}" if rec else ""),
                "\n".join(L + [""] + [x for x in tail if x]), 2)
@@ -1354,6 +1382,9 @@ def live():
                 seen.add(r[1]); last_ts = max(last_ts, r[0]); L_.ingest(r[0], *r[2:])
             if len(seen) > 200000: seen = set(list(seen)[-50000:])
             L_.tick(time.time()); now = time.time(); minute = int(now // 60); preds, upd, fin = {}, {}, {}
+            for x in L_.scalps:   # best price each open scalp's side has been sellable at (its bid), checked every poll
+                kk = L_.T.get(x["tk"]) if x.get("open") else None
+                if kk and kk.fresh(now) and now < x["t1"]: x["best"] = round(max(x["best"], kk.bid if x["up"] else 1 - kk.ask), 2)
             for c in COMMS:  # 15-min windows: one prediction per completed minute
                 if c not in win or ts_of(win[c]["close_time"]) <= now:
                     w = open_window(c); win[c] = w if w else {"close_time": datetime.fromtimestamp(now + 60, timezone.utc).isoformat()}
@@ -1383,6 +1414,15 @@ def live():
                            f"Buy ≤ {cents(lw['ask'])}, sell into the spike at {cents(lw['tgt'])}. No spike → likely expires at 0¢.\n"
                            f"Expected +{lw['ev'] * 100:.0f}¢/contract after fees · backtest: {fmt_low(lb)}", 4, f"{WEB}/{K15[c].lower()}")
                 q["tk"] = tk
+                kk = L_.T.get(tk)
+                if on("scalps", c) and (sc := scalp_check(L_, c, q, (kk.bid, kk.ask) if kk and kk.fresh(now) else None)):
+                    L_.scalps.append(sc); s_side = "YES (UP)" if sc["up"] else "NO (DOWN)"; st_ = scalp_txt(L_)
+                    notify(f"💸 SCALP {c} {s_side} @ {cents(sc['entry'])} · {sc['tl']} min left",
+                           f"Live spot price says this side is worth ~{sc['fair'] * 100:.0f}¢; Kalshi has it at {cents(sc['entry'])} → primed to bounce.\n"
+                           f"Buy ≤ {cents(sc['entry'])} · take profit at {cents(sc['entry'] + 0.05)} (+5¢) or {cents(min(sc['entry'] + 0.10, 0.99))} (+10¢). "
+                           f"No bounce → it most likely expires at 0¢; size small.\n"
+                           f"⚠️ Unproven: the 1-min history can't see quick bounces, so every alert is tracked live and graded in the results."
+                           + (f"\n{st_}" if st_ else ""), 4, f"{WEB}/{K15[c].lower()}")
                 wv = low_live(R, c, "wave") if R.get("wave") else None
                 if wv: q["wave"] = wv
                 link = f"{WEB}/{K15[c].lower()}"
@@ -1462,6 +1502,8 @@ def settle(L_):
         if res not in ("yes", "no"): continue
         up = res == "yes"
         for b, (p, mid) in S["cp"].items(): log.append(dict(t=S["t1"], c=S["c"], left=int(b), p=p, mid=mid, up=int(up)))
+        for x in L_.scalps:
+            if x.get("open") and x["tk"] == tk: x.update(open=False, won=int(x["up"] == up))
         sh = L_.shown.pop(tk, None)
         if sh:   # grade exactly what the board showed: its lean, and whether it said BET
             ok = int((sh["p"] >= 0.5) == up)
