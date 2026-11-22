@@ -17,6 +17,7 @@ Commands: build | live | train | report | doctor | testnotify | selftest
 """
 import glob, json, math, os, re, subprocess, sys, threading, time
 from collections import defaultdict, deque
+from statistics import NormalDist
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timezone
 from zoneinfo import ZoneInfo
@@ -321,7 +322,7 @@ def harvest():
     out = pd.concat([read_gz(f"{DATA}/c_whales.csv.gz")] + wh, ignore_index=True) if wh else read_gz(f"{DATA}/c_whales.csv.gz")
     if len(out): out.drop_duplicates(["t", "tk", "sd"]).to_csv(f"{DATA}/c_whales.csv.gz", index=False, compression="gzip")
     for p in glob.glob(f"{DATA}/*"):
-        if not os.path.basename(p).startswith(("k15_", "c_whales", "meta", "state", "live_preds", "spot_", "flow_log")): os.remove(p)
+        if not os.path.basename(p).startswith(("k15_", "c_whales", "meta", "state", "live_preds", "spot_", "flow_log", "scalp_log")): os.remove(p)
     print(f"HARVEST: {len(out)} commodity whale events kept · {n_marks} commodity snapshots seen", flush=True)
     return out
 
@@ -1004,7 +1005,7 @@ def sel_row(c, ev_, sh, p, mid, q):
 
 LEGEND = ("Key: 🔒⭐ new call, locked in (needs ≥85% two minutes in a row; backtest ~95% right) · 🔒 call holding · "
           "⚠️ call weakening or model now leans the other way (call does NOT change; still graded on it) · ⏸ no call yet · "
-          "✅/❌ the locked call right/wrong (only that call counts) · 🔄 a later lean the other way (logged, never counted) · ➖ no call made · 💸 scalp: side ≤15¢ that live spot says is underpriced · K = Kalshi's price · ↗ Kalshi moving toward the pick, "
+          "✅/❌ the locked call right/wrong (only that call counts) · 🔄 a later lean the other way (logged, never counted) · ➖ no call made · 💸 scalp: bounce trade, buy ≤15¢ and sell at +12¢ · K = Kalshi's price · ↗ Kalshi moving toward the pick, "
           "↘ against, → flat, ⚡ fast · 🔊 unusual volume/flow · 🟢 BET = beats Kalshi's price by 4+ pts after fees · last 🟢/🔴 = last window's call")
 
 
@@ -1104,23 +1105,57 @@ def board_c(L_, R, preds, b, closed=(), res=None):
 SCALP_MAX, SCALP_EDGE = E("KW_SCALP_MAX", 0.15), E("KW_SCALP_EDGE", 0.05)   # side at ≤15¢ that live spot says is worth 5¢+ more
 
 
+SCALP_JUMP, SCALP_TLMIN, SCALP_SIM = E("KW_SCALP_JUMP", 0.12), E("KW_SCALP_TLMIN", 6), E("KW_SCALP_SIM", 0.40)
+SCALP_SHADOW = E("KW_SCALP_SHADOW", 1) == 1   # shadow test: record every ≤15¢ setup live, push nothing, until proven
+SCALP_HIST = 0.29   # history: ≤15¢ sides with 6-13 min left reached entry+12¢ at a minute close ~29% of the time (lower bound)
+
+
 def scalp_check(L_, c, q, live=None):
-    """A side trading ≤15¢ with 4-13 min left that the live spot price says is underpriced → primed to bounce.
-    Fair value from the last complete minute (spot vs target); entry at the live Kalshi quote when there is one."""
-    if not CRYPTO or q.get("sgap") is None or not (4 <= q["tl"] <= 13): return None
-    fair = float(sig(q["sgap"] + logit((q["bid"] + q["ask"]) / 2))); bid, ask_ = live or (q["bid"], q["ask"])
-    for up, ask, sf in ((True, ask_, fair), (False, 1 - bid, 1 - fair)):
-        if 0.02 <= ask <= SCALP_MAX and sf - ask >= SCALP_EDGE and not any(x["tk"] == q["tk"] and x["up"] == up for x in L_.scalps):
-            return dict(t=time.time(), c=c, tk=q["tk"], up=up, entry=round(ask, 2), fair=round(sf, 3), t1=q["t1"], tl=round(q["tl"]), best=round(ask, 2), open=True)
-    return None
+    """Bounce trade: a side at ≤15¢ with 6+ min left whose spike to entry+12¢ the spot simulation rates ≥50% likely.
+    One per window per coin. Against a locked ⭐ call it is still allowed (locks can slip) but flagged bounce-only."""
+    if not CRYPTO or None in (q.get("spx"), q.get("ssv"), q.get("strike")) or not (SCALP_TLMIN <= q["tl"] <= 13): return None
+    if any(x["tk"] == q["tk"] for x in L_.scalps): return None
+    bid, ask_ = live or (q["bid"], q["ask"]); sh = L_.shown.get(q["tk"]) or {}; f = sh.get("first")
+    best = None
+    for up, ask in ((True, ask_), (False, 1 - bid)):
+        if not (0.02 <= ask <= SCALP_MAX): continue
+        tg = round(min(ask + SCALP_JUMP, 0.99), 2); sv = max(q["ssv"], 1e-5); h0 = math.sqrt(max(q["tl"] - 0.5, 0.25))
+        mu = min(max((bid + ask_) / 2, 0.005), 0.995)                       # start the walk where Kalshi's price is
+        s0 = q["strike"] * math.exp(NormalDist().inv_cdf(mu) * sv * h0)
+        sp_fair = float(ncdf(math.log(q["spx"] / q["strike"]) / (sv * h0)))   # spot's own view of the side
+        spside = sp_fair if up else 1 - sp_fair
+        if not SCALP_SHADOW and spside < ask - 0.02: continue               # live spot is against the bounce: skip
+        p, eta, pw = spike_sim(s0, q["strike"], sv, q["tl"], up, tg, n=3000, seed=int(q["t1"]) % 9973)
+        if not SCALP_SHADOW and (p < SCALP_SIM or eta is None): continue
+        hist = SCALP_HIST; cost = ask + fee(ask); be = cost / (tg - fee(tg))
+        cand = dict(t=time.time(), c=c, tk=q["tk"], up=up, entry=round(ask, 2), tgt=tg, sim=round(p, 3), hist=hist, be=round(be, 3),
+                    eta=round(eta, 1) if eta is not None else None, t1=q["t1"], tl=round(q["tl"], 1), best=round(ask, 2), open=True,
+                    spot=round(spside, 3), hr=datetime.now(ET).hour, t_hit=None,
+                    against=bool(f and f["up"] != up), call=("UP" if f["up"] else "DOWN") if f else None)
+        if best is None or p > best["sim"]: best = cand
+    return best
+
+
+def scalp_shadow_txt():
+    """Shadow test so far: how often ≤15¢ sides reached +12¢ (sellable bid, checked every 4 s) and what it would have paid."""
+    d = read_gz(f"{DATA}/scalp_log.csv.gz")
+    if not len(d) or "tgt" not in d: return "💸 Scalp shadow test: no setups recorded yet"
+    hit = d.best >= d.tgt - 1e-9; cost = d.entry + d.entry.map(lambda a: fee(min(max(a, .01), .99)))
+    pnl = np.where(hit, d.tgt - d.tgt.map(lambda a: fee(min(max(a, .01), .99))), d.won) - cost
+    s = f"💸 Scalp shadow test ({len(d)} setups, no pushes): reached +12¢ {hit.mean():.0%} · would have paid {pnl.sum() / cost.sum():+.0%}"
+    if "sim" in d and len(d) >= 40:
+        hi = d.sim >= 0.40; s += f" · when sim ≥40%: reached {hit[hi].mean():.0%} of {hi.sum()}"
+    return s
 
 
 def scalp_txt(L_):
     s_ = [x for x in L_.scalps if x["t"] > _today() and not x.get("open")]
     if not s_: return ""
-    h5 = sum(x["best"] >= x["entry"] + 0.05 for x in s_); h10 = sum(x["best"] >= x["entry"] + 0.10 for x in s_)
-    return (f"💸 Scalps today: {len(s_)} · bounced +5¢ {h5} ({h5 / len(s_):.0%}) · +10¢ {h10} · avg best bounce "
-            f"{np.mean([x['best'] - x['entry'] for x in s_]) * 100:+.0f}¢ · settled their way {sum(x.get('won', 0) for x in s_)}")
+    ht = sum(x["best"] >= x.get("tgt", x["entry"] + 0.12) - 1e-9 for x in s_)
+    pnl = sum((x.get("tgt", x["entry"] + .12) - fee(x.get("tgt", x["entry"] + .12)) if x["best"] >= x.get("tgt", x["entry"] + .12) - 1e-9 else x.get("won", 0))
+              - x["entry"] - fee(x["entry"]) for x in s_)
+    return (f"💸 Scalps today: {len(s_)} · hit the sell target {ht} ({ht / len(s_):.0%}) · avg best bounce "
+            f"{np.mean([x['best'] - x['entry'] for x in s_]) * 100:+.0f}¢ · result if you sold at target / else held: {pnl * 100:+.0f}¢ per contract total")
 
 
 def buy_px(L_, tk, up, q):
@@ -1214,10 +1249,11 @@ def results_c(L_, t1, rows, send=True):
     else:
         per = " · ".join(f"{c} {sum(x[2] for x in w if x[1] == c)}-{sum(1 - x[2] for x in w if x[1] == c)}" for c in SHOW if any(x[1] == c for x in w))
     if SELECT:
-        sw_ = [x for x in L_.scalps if not x.get("open") and int(round(x["t1"])) == int(t1)]
+        sw_ = [] if SCALP_SHADOW else [x for x in L_.scalps if not x.get("open") and int(round(x["t1"])) == int(t1)]
         L += [f"💸 Scalp {x['c']} {'YES' if x['up'] else 'NO'} @ {cents(x['entry'])} → best {cents(x['best'])} ({(x['best'] - x['entry']) * 100:+.0f}¢)"
-              + (" ✅ +5¢ hit" if x["best"] >= x["entry"] + 0.05 else " ❌ no bounce") + (" · settled its way" if x.get("won") else "") for x in sw_]
-        tail = [line, switch_txt(w), scalp_txt(L_), (f"Per coin: {per}" if per else ""), f"🟢 Bets today: {bets_txt(L_)}"] + ["", LEGEND]
+              + (f" ✅ hit the {cents(x.get('tgt', x['entry'] + .12))} target" if x["best"] >= x.get("tgt", x["entry"] + .12) - 1e-9 else f" ❌ missed the {cents(x.get('tgt', x['entry'] + .12))} target")
+              + (" · settled its way" if x.get("won") else "") for x in sw_]
+        tail = [line, switch_txt(w), "" if SCALP_SHADOW else scalp_txt(L_), (f"Per coin: {per}" if per else ""), f"🟢 Bets today: {bets_txt(L_)}"] + ["", LEGEND]
         if not send: return n, k, L, [x for x in tail if x]
         notify((f"{'✅' if n == k else '🎯'} {n}/{k} calls right" if k else "no calls") + f" · {et(t1 - 900)}–{et(t1)}" + (f" · today {rec}" if rec else ""),
                "\n".join(L + [""] + [x for x in tail if x]), 2)
@@ -1421,7 +1457,9 @@ def live():
             L_.tick(time.time()); now = time.time(); minute = int(now // 60); preds, upd, fin = {}, {}, {}
             for x in L_.scalps:   # best price each open scalp's side has been sellable at (its bid), checked every poll
                 kk = L_.T.get(x["tk"]) if x.get("open") else None
-                if kk and kk.fresh(now) and now < x["t1"]: x["best"] = round(max(x["best"], kk.bid if x["up"] else 1 - kk.ask), 2)
+                if kk and kk.fresh(now) and now < x["t1"]:
+                    x["best"] = round(max(x["best"], kk.bid if x["up"] else 1 - kk.ask), 2)
+                    if x.get("t_hit") is None and x["best"] >= x.get("tgt", 9) - 1e-9: x["t_hit"] = round(now - x["t"], 1)
             for c in COMMS:  # 15-min windows: one prediction per completed minute
                 if c not in win or ts_of(win[c]["close_time"]) <= now:
                     w = open_window(c); win[c] = w if w else {"close_time": datetime.fromtimestamp(now + 60, timezone.utc).isoformat()}
@@ -1453,12 +1491,19 @@ def live():
                 q["tk"] = tk
                 kk = L_.T.get(tk)
                 if on("scalps", c) and (sc := scalp_check(L_, c, q, (kk.bid, kk.ask) if kk and kk.fresh(now) else None)):
-                    L_.scalps.append(sc); s_side = "YES (UP)" if sc["up"] else "NO (DOWN)"; st_ = scalp_txt(L_)
-                    notify(f"💸 SCALP {c} {s_side} @ {cents(sc['entry'])} · {sc['tl']} min left",
-                           f"Live spot price says this side is worth ~{sc['fair'] * 100:.0f}¢; Kalshi has it at {cents(sc['entry'])} → primed to bounce.\n"
-                           f"Buy limit ≤ {cents(sc['entry'])} · set the sell limit right away at {cents(sc['entry'] + 0.05)} (+5¢) or {cents(min(sc['entry'] + 0.10, 0.99))} (+10¢). "
-                           f"No bounce → it most likely expires at 0¢; size small.\n"
-                           f"⚠️ Unproven: the 1-min history can't see quick bounces, so every alert is tracked live and graded in the results."
+                    L_.scalps.append(sc)
+                if on("scalps", c) and sc and not SCALP_SHADOW:
+                    sd_ = "YES/UP" if sc["up"] else "NO/DOWN"; st_ = scalp_txt(L_)
+                    by = et(min(now + 60 * sc["eta"], sc["t1"] - 120)); quit_ = et(sc["t1"] - 120)
+                    notify(f"💸 SCALP {c} {sd_} ≤{cents(sc['entry'])} → sell {cents(sc['tgt'])} · {sc['tl']}m left",
+                           f"1) Buy {sd_} limit ≤ {cents(sc['entry'])} now.\n2) Right after the fill, place a sell limit at {cents(sc['tgt'])} (+{(sc['tgt'] - sc['entry']) * 100:.0f}¢).\n"
+                           f"3) If it hasn't filled by {quit_} (2 min before the close), cancel and sell for what it's worth, or accept it may expire at 0¢.\n"
+                           f"Spike timing: if it comes, the simulation has it by ~{by}.\n"
+                           f"Odds: simulation {sc['sim']:.0%} · history ~{sc['hist']:.0%} reached +12¢ at minute closes (quick spikes are missed there) · "
+                           f"you need ≥{sc['be']:.0%} to profit after fees.\n"
+                           + (f"⚠️ Against the locked ⭐ {sc['call']} call: bounce trade only. Sell into the spike, don't hold it to the close.\n" if sc["against"] else
+                              f"Bounce trade, not a direction call.\n")
+                           + "Unproven: every scalp is tracked live (best sellable price every 4 s) and graded in the results."
                            + (f"\n{st_}" if st_ else ""), 5, f"{WEB}/{K15[c].lower()}")
                 wv = low_live(R, c, "wave") if R.get("wave") else None
                 if wv: q["wave"] = wv
@@ -1540,7 +1585,9 @@ def settle(L_):
         up = res == "yes"
         for b, (p, mid) in S["cp"].items(): log.append(dict(t=S["t1"], c=S["c"], left=int(b), p=p, mid=mid, up=int(up)))
         for x in L_.scalps:
-            if x.get("open") and x["tk"] == tk: x.update(open=False, won=int(x["up"] == up))
+            if x.get("open") and x["tk"] == tk:
+                x.update(open=False, won=int(x["up"] == up)); fl = f"{DATA}/scalp_log.csv.gz"; os.makedirs(DATA, exist_ok=True)
+                pd.DataFrame([{k_: v for k_, v in x.items() if k_ != "open"}]).to_csv(fl, mode="ab", index=False, header=not os.path.exists(fl), compression="gzip")
         sh = L_.shown.pop(tk, None)
         if sh:   # grade exactly what the board showed: its lean, and whether it said BET
             ok = int((sh["p"] >= 0.5) == up)
@@ -1641,6 +1688,7 @@ def digest(L_, R):
     if rec: L.append(f"Edge calls (14d): {sum(x['won'] for x in rec)}/{len(rec)} won, ROI {sum(x['pnl'] for x in rec) / sum(x['cost'] for x in rec):+.0%}")
     L += [f"{c}: whales {L_.flow_txt(c)}" for c in SHOW if L_.flow.get(c)]
     if (fc := flow_check()): L.append(fc)
+    if CRYPTO and SCALP_SHADOW and (ss := scalp_shadow_txt()): L.append(ss)
     if R.get("model"): L += ["", summary(R)]
     notify(f"📊 Kalshi {LBL.lower()} digest", "\n".join(L), 2); L_.stats = dict(trades=0, whales=0, vol=0.0)
 
