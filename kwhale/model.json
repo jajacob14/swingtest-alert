@@ -1,7 +1,7 @@
 {
- "trained": 1795292307,
+ "trained": 1795333781,
  "flow_coverage": 0.996,
- "whale_events": 22883,
+ "whale_events": 22887,
  "weeks": {
   "windows": 11169,
   "test": {
@@ -374,7 +374,7 @@
  "low": {
   "weeks": {
    "test": {
-    "rows": 14876,
+    "rows": 14873,
     "base": 0.194,
     "trades": 0
    },
@@ -390,7 +390,7 @@
      "trades": 0
     },
     "GOLD": {
-     "rows": 1685,
+     "rows": 1681,
      "base": 0.198,
      "trades": 0
     },
@@ -410,7 +410,7 @@
      "trades": 0
     },
     "SILVER": {
-     "rows": 1714,
+     "rows": 1715,
      "base": 0.223,
      "trades": 0
     },

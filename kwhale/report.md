@@ -1,9 +1,9 @@
 # Kalshi commodity 15-min model report
-Trained 2026-11-21 15:18 ET
+Trained 2026-11-22 02:49 ET
 
 Model = Kalshi's own price + what it misses (quote changes, spread, volume, order flow, big-money flow, time left, session, market).
 **Weeks** = trained on the older 70% of the last 3 weeks, tested on the newest 30%. **Months** = trained on the 3 weeks, tested on older months it never saw. Edge bets buy at the ask + fee when the model beats it by 4+ pts (≤70¢), held to settlement.
-Order-flow coverage: 100% of rows · commodity whale events on file: 22883
+Order-flow coverage: 100% of rows · commodity whale events on file: 22887
 
 | Market | Weeks test | Months test | Proven |
 |---|---|---|---|
@@ -33,8 +33,8 @@ Contracts at 20¢ or less, 2-13 min left. Buy at the ask + fee, sell at 2x (at l
 
 | Market | Weeks test | Months test | Proven |
 |---|---|---|---|
-| GOLD | setups 1,685, target reached normally 20% | setups 14,397, target reached normally 20% | — |
-| SILVER | setups 1,714, target reached normally 22% | setups 14,435, target reached normally 21% | — |
+| GOLD | setups 1,681, target reached normally 20% | setups 14,397, target reached normally 20% | — |
+| SILVER | setups 1,715, target reached normally 22% | setups 14,435, target reached normally 21% | — |
 | WTI | setups 1,830, target reached normally 21% | setups 15,403, target reached normally 20% | — |
 | BRENT | setups 2,126, target reached normally 20% | setups 2,959, target reached normally 14% | — |
 | COPPER | setups 2,016, target reached normally 19% | setups 13,081, target reached normally 16% | — |
@@ -42,6 +42,6 @@ Contracts at 20¢ or less, 2-13 min left. Buy at the ask + fee, sell at 2x (at l
 | PALLADIUM | setups 1,768, target reached normally 17% | setups 6,673, target reached normally 14% | — |
 | PLATINUM | setups 2,016, target reached normally 20% | setups 8,309, target reached normally 15% | — |
 
-**All weeks:** setups 14,876, target reached normally 19%
+**All weeks:** setups 14,873, target reached normally 19%
 
 **All months:** setups 89,263, target reached normally 18%
