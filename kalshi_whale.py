@@ -927,7 +927,7 @@ SELECT = TIERS   # crypto: only ≥80%-sure picks are calls (backtest ~87% at th
 
 def call_wl(x):
     """A graded window's call: its FIRST ≥80% call (right?); None = no call. Older entries: final, else opening call."""
-    if len(x) > 10 and FIRST_ONLY: return x[10]
+    if SELECT and FIRST_ONLY: return x[10] if len(x) > 12 and x[12] == 3 else None   # only locked-rule calls count
     if len(x) > 9 and x[9] is not None and x[9] >= STRONG and x[8] is not None: return x[8]
     if len(x) > 10: return x[10]
     if len(x) > 9 and x[9] is not None and x[9] >= STRONG and x[8] is not None: return x[8]
@@ -937,7 +937,7 @@ def call_wl(x):
 
 def call_r(r):
     """Same for a results row: (right?, minutes left when the first call was made) or None."""
-    if SELECT and FIRST_ONLY and "first" in r: return int(r["first"]["up"] == bool(r["up"])), r["first"]["tl"]
+    if SELECT and FIRST_ONLY: return (int(r["first"]["up"] == bool(r["up"])), r["first"]["tl"]) if r.get("v") == 3 and "first" in r else None
     if SELECT and "p5" in r and max(r["p5"], 1 - r["p5"]) >= STRONG: return int((r["p5"] >= 0.5) == bool(r["up"])), "final"
     if SELECT and "first" in r: return int(r["first"]["up"] == bool(r["up"])), r["first"]["tl"]
     if SELECT and "p" in r and "first" not in r and r.get("v", 0) >= 2: return None
@@ -990,7 +990,7 @@ def switch_txt(w):
     g = [x for x in w if len(x) > 11 and x[10] is not None and x[11] is not None]
     if not g: return ""
     saved = sum(1 for x in g if not x[10] and x[11]); broke = sum(1 for x in g if x[10] and not x[11])
-    return f"🔄 Switches today: {len(g)} · switching fixed a wrong first call {saved}× · turned a right first call wrong {broke}×"
+    return f"🔄 Calls the model later leaned against: {len(g)} · the call was right anyway {sum(1 for x in g if x[10])} · the later lean would have been right {saved} (not counted)"
 
 
 def wl_line(L_):
@@ -999,10 +999,11 @@ def wl_line(L_):
     if not w: return "", ""
     m, k = sum(x[2] for x in w), sum(x[3] for x in w)
     if SELECT:
-        cs = [c for c in map(call_wl, w) if c is not None]
-        cw = sum(cs); allp = f"all leans {m}-{len(w) - m} ({m / len(w):.0%}, Kalshi {k / len(w):.0%})"
-        if not cs: return "", f"⭐ Calls today: none yet · {allp}"
-        return f"{cw}-{len(cs) - cw}", f"⭐ Calls today: {cw}-{len(cs) - cw} ({cw / len(cs):.0%}) · {allp}"
+        cs = [c for c in map(call_wl, w) if c is not None]; cw = sum(cs)
+        v3 = [x[0] for x in w if len(x) > 12 and x[12] == 3]
+        lab = "🔒 Calls today" if not v3 or min(v3) - 900 <= _today() + 60 else f"🔒 Calls since {et(min(v3) - 900)}"
+        if not cs: return "", f"{lab}: none graded yet"
+        return f"{cw}-{len(cs) - cw}", f"{lab}: {cw}-{len(cs) - cw} ({cw / len(cs):.0%})"
     return f"{m}-{len(w) - m}", f"Today: {m}-{len(w) - m} ({m / len(w):.0%}) · Kalshi {k / len(w):.0%}"
 
 
@@ -1040,7 +1041,7 @@ def board_c(L_, R, preds, b, closed=(), res=None):
         if not on("board", c): continue
         up = p >= 0.5; ps = p if up else 1 - p; ask = q["ask"] if up else 1 - q["bid"]; e = ps - ask - fee(min(max(ask, 0.01), 0.99))
         go = e >= EDGE and 0.03 < ask <= KMAX; d = "UP" if up else "DOWN"; kp = mid if up else 1 - mid
-        if q.get("tk"): L_.shown[q["tk"]] = dict(c=c, t1=q["t1"], p=round(p, 4), mid=round(mid, 4), go=bool(go), ask=round(ask, 3), left=round(q["tl"]), v=2)
+        if q.get("tk"): L_.shown[q["tk"]] = dict(c=c, t1=q["t1"], p=round(p, 4), mid=round(mid, 4), go=bool(go), ask=round(ask, 3), left=round(q["tl"]), v=3)
         ev0 = note_call(L_.shown[q["tk"]], p, q["tl"], mid, q.get("dmid1", 0.0)) if q.get("tk") else None
         dot = last_dot(L_, c); early |= q["tl"] > 12.5
         if go:
@@ -1123,6 +1124,8 @@ def results_c(L_, t1, rows, send=True):
         up = r["p"] >= 0.5; d = "UP" if up else "DOWN"; ok = up == bool(r["up"]); ps = max(r["p"], 1 - r["p"]); end = "UP" if r["up"] else "DOWN"
         if SELECT:
             f = r.get("first"); sw = r.get("sw")
+            if FIRST_ONLY and r.get("v") != 3:
+                L.append(f"➖ {r['c']} went {end} (window started before the locked-call rule: not counted)"); continue
             if not f:
                 if r.get("v", 0) < 2 and (cr := call_r(r)) is not None:   # pushed before first-call tracking: old rule
                     ok = bool(cr[0]); n += ok; k += 1; L.append(f"{'✅' if ok else '❌'} {r['c']} ⭐ ({cr[1]} call)" + ("" if ok else f" → went {end}")); continue
@@ -1151,6 +1154,12 @@ def results_c(L_, t1, rows, send=True):
         per = " · ".join(f"{c} {sum(z for cc, z in cw if cc == c)}-{sum(1 - z for cc, z in cw if cc == c)}" for c in SHOW if any(cc == c for cc, _ in cw))
     else:
         per = " · ".join(f"{c} {sum(x[2] for x in w if x[1] == c)}-{sum(1 - x[2] for x in w if x[1] == c)}" for c in SHOW if any(x[1] == c for x in w))
+    if SELECT:
+        tail = [line, switch_txt(w), (f"Per coin: {per}" if per else ""), f"🟢 Bets today: {bets_txt(L_)}"] + ["", LEGEND]
+        if not send: return n, k, L, [x for x in tail if x]
+        notify((f"{'✅' if n == k else '🎯'} {n}/{k} calls right" if k else "no calls") + f" · {et(t1 - 900)}–{et(t1)}" + (f" · today {rec}" if rec else ""),
+               "\n".join(L + [""] + [x for x in tail if x]), 2)
+        return None
     tail = [line, switch_txt(w) if SELECT else tiers_txt(w), (f"🏁 Final calls ({'3-4' if COMPACT else '5'} min left): {u5}" if (u5 := u5_txt(L_)) else ""), per,
             f"🟢 Bets today: {bets_txt(L_)}" + (f" · {'last check-in' if COMPACT else '9-min updates'} {u}" if (u := u9_txt(L_)) else "")]
     if SELECT: tail = tail + ["", LEGEND]
@@ -1236,7 +1245,7 @@ def final_c(L_, R, fin, b):
         if (fn := flow_note(flow_of(L_, c, tk), up)): rows.append(fn)
     if not rows: return
     rec, line = wl_line(L_); u5 = u5_txt(L_)
-    tail = [x for x in (f"Final calls today: {u5}" if u5 else "", line) if x]
+    tail = [x for x in ("" if SELECT else (f"Final calls today: {u5}" if u5 else ""), line) if x]
     pick = (("🔒 " if SELECT else "⭐ ") + ", ".join(strong)) if strong else ("no calls" if SELECT else "no strong picks")
     if SELECT: tail = tail + ["", LEGEND]
     notify(f"🏁 Final call {et(b)} · {pick} · {'3-4' if COMPACT else '5'} min left", "\n".join(rows + ([""] + tail if tail else [])), 3)
@@ -1461,7 +1470,7 @@ def settle(L_):
             L_.wl.append([S["t1"], S["c"], ok, int((sh["mid"] >= 0.5) == up), int(bet), int(bside == up) if bet else None,
                           int((sh["p9"] >= 0.5) == up) if "p9" in sh else None, round(max(sh["p"], 1 - sh["p"]), 3),
                           int((sh["p5"] >= 0.5) == up) if "p5" in sh else None, round(max(sh["p5"], 1 - sh["p5"]), 3) if "p5" in sh else None,
-                          ] + ([int(sh["first"]["up"] == up) if sh.get("first") else None, int(sh["sw"]["up"] == up) if sh.get("sw") else None]
+                          ] + ([int(sh["first"]["up"] == up) if sh.get("first") else None, int(sh["sw"]["up"] == up) if sh.get("sw") else None, sh.get("v")]
                                if sh.get("v", 0) >= 2 else []))   # v2: graded on the first call; older boards keep the old rule
             if sh.get("flow"):
                 fl = f"{DATA}/flow_log.csv.gz"; os.makedirs(DATA, exist_ok=True)
