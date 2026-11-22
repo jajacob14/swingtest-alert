@@ -50,3 +50,20 @@ P("\nprofitable on BOTH train and test (ROI > 0, ≥30 test alerts):")
 good = [r for r in R if r[2][3] > 0 and r[3][3] > 0 and r[3][0] >= 30]
 for nm, tg, a, b in sorted(good, key=lambda r: -r[3][3]): P(f"  ✅ {nm} · sell at {tg} · test {b[0]} alerts, hit {b[1]:.0%}, {b[2] * 100:+.1f}¢/contract, ROI {b[3]:+.0%}")
 if not good: P("  none")
+
+
+P("\n==== MAKER variant: buy with a limit at the side's BID, sell with a limit at the target (no taker fee, fills assumed when the bid reaches it) ====")
+for X in (TR, TE): pass
+def simm(X, cond, tg, fee_on=False):
+    x = X[cond(X)].sort_values("ts").groupby(["ticker", "side"]).head(1).copy()
+    if len(x) < 15: return None
+    x["lbid"] = np.where(x.side > 0, x.bid, 1 - x.ask); x = x[x.lbid >= 0.01]
+    t = np.minimum(TG[tg](x.lbid), 0.99); hit = x.fb >= t - 1e-9; cost = x.lbid + (K.feev(x.lbid) if fee_on else 0)
+    pnl = np.where(hit, t - (K.feev(t) if fee_on else 0), x.win) - cost
+    return len(x), hit.mean(), pnl.mean(), pnl.sum() / cost.sum()
+for nm in ("any ≤15¢", "8-13 min left", "underpriced ≥5¢ + 4-13 min left", "underpriced ≥10¢ + 4-13 min left", "5-15¢ + underpriced ≥5¢ + 4-13 min"):
+    for tg in TG:
+        a, b = simm(TR, C[nm], tg), simm(TE, C[nm], tg)
+        if a and b: P(f"{nm:46s} {tg:5s} | TRAIN {a[0]:6,} hit {a[1]:4.0%} {a[2] * 100:+5.1f}¢ ROI {a[3]:+5.0%} | TEST {b[0]:6,} hit {b[1]:4.0%} {b[2] * 100:+5.1f}¢ ROI {b[3]:+5.0%}")
+P("\nspread on cheap sides (ask − bid): median " + f"{np.median(np.where(D.side > 0, D.ask - D.bid, D.ask - D.bid)) * 100:.0f}¢")
+P("how often a ≤15¢ side wins at settlement: " + f"{D.groupby(['ticker', 'side']).win.first().mean():.1%} (avg price paid {D.groupby(['ticker', 'side']).lask.first().mean() * 100:.0f}¢)")
