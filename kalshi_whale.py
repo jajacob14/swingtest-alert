@@ -54,7 +54,7 @@ ALERT_WHALE = E("KW_ALERT_WHALE", 10000.0 if CRYPTO else 2000.0)
 BIG = 100.0                               # single trade ≥ $100 counts toward big-money flow in 15-min windows
 EDGE = E("KW_EDGE", 0.04)                 # model must beat Kalshi's ask by 4 pts after fees
 KMAX = 0.70                               # never suggest paying over 70¢ (call it before Kalshi prices it in)
-POLL, RPS = E("KW_POLL", 8), E("KW_RPS", 10.0)
+POLL, RPS = E("KW_POLL", 4 if CRYPTO else 8), E("KW_RPS", 10.0)   # crypto: poll Kalshi trades every 4 s
 WEEKS_D, MONTHS_D, SAMPLE = E("KW_WEEKS_DAYS", 21), E("KW_MONTHS_DAYS", 90), E("KW_MONTHS_SAMPLE", 3)
 CLUSTER_GAP, CK = 30, (12, 9, 6, 3)
 # crypto 15-min books trade several times a second, so a 30-s gap would merge a whole window of strangers into one
@@ -1103,12 +1103,22 @@ def scalp_txt(L_):
             f"{np.mean([x['best'] - x['entry'] for x in s_]) * 100:+.0f}¢ · settled their way {sum(x.get('won', 0) for x in s_)}")
 
 
+def buy_px(L_, tk, up, q):
+    """Price to pay right now for a side: the live Kalshi quote from the trade feed if fresh, else the last minute's."""
+    kk = L_.T.get(tk)
+    bid, ask = (kk.bid, kk.ask) if kk and kk.fresh(time.time()) else (q["bid"], q["ask"])
+    return min(max(ask if up else 1 - bid, 0.01), 0.99)
+
+
+def side_name(up): return "YES/UP" if up else "NO/DOWN"
+
+
 CHECKS = ((11, 10.4, 11.6), (8, 7.4, 8.6), (5, 4.4, 5.6))   # compact mode: check-ins every 3 min (final call at ~3)
 
 
 def update9_c(L_, R, upd, b):
     """Check-in: what changed since the last push for this window (calls made, dropped, flipped)."""
-    rows, same, calls = [], [], []; nch = nflip = 0; left = None
+    rows, same, calls, newc = [], [], [], []; nch = nflip = 0; left = None; link = None
     for c in [x for x in SHOW if x in upd]:
         p, mid, q, flow = upd[c]; sh = L_.shown.get(q.get("tk"))
         if not sh or not on("board_update", c): continue
@@ -1122,6 +1132,9 @@ def update9_c(L_, R, upd, b):
             sh = L_.shown[q["tk"]]; ev_ = note_call(sh, p, q["tl"], mid, q.get("dmid1", 0.0)); f = sh.get("first")
             txt, kind = sel_row(c, ev_, sh, p, mid, q)
             if f: calls.append(f"{c} {'UP' if f['up'] else 'DOWN'}")
+            if ev_ == "new":
+                bp = buy_px(L_, q["tk"], up, q); txt += f"\n   → buy {side_name(up)} limit ≤ {cents(bp)} (don't chase above it)"
+                newc.append(f"{c} {d} ≤{cents(bp)}"); link = link or f"{WEB}/{K15[c].lower()}"
             if txt: rows.append(txt); nch += int(ev_ == "new"); nflip += int(kind == "warn")
             else: same.append(f"{c} {d} {ps:.0%}")
             if go and not go0: rows.append(f"🟢 {c} now BET ≤ {cents(ask)}")
@@ -1137,7 +1150,8 @@ def update9_c(L_, R, upd, b):
     m = f"{round(left)} min left" if left is not None else ""
     if SELECT:
         head = ("🔒 " + ", ".join(calls)) if calls else "no calls yet"
-        notify(f"🔄 {et(b)} · {m} · {head}" + (f" · {nch} new" if nch else "") + (f" · ⚠️ {nflip}" if nflip else ""), "\n".join(rows + ["", LEGEND]), 2)
+        if newc: notify(f"⭐ NEW CALL {', '.join(newc)} · {m} · {et(b)}", "\n".join(rows + ["", LEGEND]), 5, link)   # lock-screen first: urgent
+        else: notify(f"🔄 {et(b)} · {m} · {head}" + (f" · ⚠️ {nflip}" if nflip else ""), "\n".join(rows + ["", LEGEND]), 4 if nflip else 2)
     else:
         notify(f"🔄 {et(b)} window · " + (f"{nflip} flipped" if nflip else f"{nch} changed" if nch else "no changes") + f" ({m})", "\n".join(rows), 2)
 
@@ -1255,7 +1269,7 @@ def flow_of(L_, c, tk):
 def final_c(L_, R, fin, b):
     """~5 min before the close: the last call (the most accurate checkpoint the scanner posts)."""
     if not on("board_update"): return
-    rows, strong = [], []
+    rows, strong, newf = [], [], []
     for c in [x for x in SHOW if x in fin]:
         p, mid, q, flow = fin[c]; tk = q.get("tk"); sh = L_.shown.get(tk)
         if not sh or not on("board_update", c): continue
@@ -1265,6 +1279,8 @@ def final_c(L_, R, fin, b):
         ch = " · ⚡ changed from board" if (sh["p"] >= 0.5) != up else ""
         if SELECT:
             txt, kind = sel_row(c, ev_, L_.shown[tk], p, mid, q); f = L_.shown[tk].get("first")
+            if ev_ == "new":
+                bp = buy_px(L_, tk, up, q); txt += f"\n   → buy {side_name(up)} limit ≤ {cents(bp)} (don't chase above it)"; newf.append(f"{c} {d} ≤{cents(bp)}")
             if f: strong.append(f"{c} {'UP' if f['up'] else 'DOWN'}" + (" ⚠️" if kind == "warn" else ""))
             rows.append(txt or f"⏸ {c} no call · leans {d} {ps:.0%}")
             if (fn := flow_note(flow_of(L_, c, tk), up)): rows.append(fn)
@@ -1276,7 +1292,8 @@ def final_c(L_, R, fin, b):
     tail = [x for x in ("" if SELECT else (f"Final calls today: {u5}" if u5 else ""), line) if x]
     pick = (("🔒 " if SELECT else "⭐ ") + ", ".join(strong)) if strong else ("no calls" if SELECT else "no strong picks")
     if SELECT: tail = tail + ["", LEGEND]
-    notify(f"🏁 Final call {et(b)} · {pick} · {'3-4' if COMPACT else '5'} min left", "\n".join(rows + ([""] + tail if tail else [])), 3)
+    notify((f"⭐ NEW CALL {', '.join(newf)} · " if newf else "") + f"🏁 Final {et(b)} · {pick} · {'3-4' if COMPACT else '5'} min left",
+           "\n".join(rows + ([""] + tail if tail else [])), 5 if newf else 3, f"{WEB}/{K15[list(fin)[0]].lower()}" if fin else None)
 
 
 def u5_txt(L_):
@@ -1419,10 +1436,10 @@ def live():
                     L_.scalps.append(sc); s_side = "YES (UP)" if sc["up"] else "NO (DOWN)"; st_ = scalp_txt(L_)
                     notify(f"💸 SCALP {c} {s_side} @ {cents(sc['entry'])} · {sc['tl']} min left",
                            f"Live spot price says this side is worth ~{sc['fair'] * 100:.0f}¢; Kalshi has it at {cents(sc['entry'])} → primed to bounce.\n"
-                           f"Buy ≤ {cents(sc['entry'])} · take profit at {cents(sc['entry'] + 0.05)} (+5¢) or {cents(min(sc['entry'] + 0.10, 0.99))} (+10¢). "
+                           f"Buy limit ≤ {cents(sc['entry'])} · set the sell limit right away at {cents(sc['entry'] + 0.05)} (+5¢) or {cents(min(sc['entry'] + 0.10, 0.99))} (+10¢). "
                            f"No bounce → it most likely expires at 0¢; size small.\n"
                            f"⚠️ Unproven: the 1-min history can't see quick bounces, so every alert is tracked live and graded in the results."
-                           + (f"\n{st_}" if st_ else ""), 4, f"{WEB}/{K15[c].lower()}")
+                           + (f"\n{st_}" if st_ else ""), 5, f"{WEB}/{K15[c].lower()}")
                 wv = low_live(R, c, "wave") if R.get("wave") else None
                 if wv: q["wave"] = wv
                 link = f"{WEB}/{K15[c].lower()}"
