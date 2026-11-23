@@ -981,7 +981,23 @@ CALL_T = E("KW_CALL_T", 0.80)   # a ⭐ call needs ≥80% at a check-in (backtes
 CALL_STABLE = E("KW_CALL_STABLE", 0) == 1   # 1 = also require ≥ CALL_T a minute earlier (≈95% right but calls come at ~90¢)
 
 
-CALL_MAXP = E("KW_CALL_MAXP", 0.90)   # never make a call that costs more than 90¢ (too late to be worth it)
+CALL_MAXP = E("KW_CALL_MAXP", 0.99)   # price cap on a call (0.90 = skip calls that are already too expensive)
+MINUTE_CALLS = E("KW_MINUTE_CALLS", 0) == 1   # 1 = call the minute a side crosses (earlier, ~85% right); 0 = at the 3-min check-ins (~88-95%)
+# after a ⭐ call: how often the side's bid reached a take-profit before the close, and typical minutes to get there
+# (research_sellplan.py, 12k past crypto calls, minute closes = lower bound). key (min left bucket, price bucket)
+SELL = {(14, 0): (.67, 7, .62, 8), (14, 1): (.64, 6, .61, 7), (11, 0): (.64, 5, .55, 6), (11, 1): (.77, 4, .69, 5), (11, 2): (.87, 2, .81, 4),
+        (8, 0): (.60, 3, .48, 4), (8, 1): (.72, 3, .61, 4), (8, 2): (.85, 2, .77, 3)}
+
+
+def sell_plan(px, tl, t1):
+    """Take-profit line for a new call: target, how often it got there, and by when."""
+    if px >= 0.95: return f"\n   💰 Sell plan: already {cents(px)}; little left to take — hold to the close ($1 if right) or skip"
+    tb = 14 if tl >= 12.5 else 11 if tl >= 9.5 else 8; pb = 0 if px <= 0.85 else 1 if px <= 0.90 else 2
+    r95, m95, r97, m97 = SELL.get((tb, pb)) or SELL.get((tb, 1)) or SELL[(8, 1)]
+    tg, r, m = (0.95, r95, m95) if px < 0.92 else (0.97, r97, m97)
+    m = min(m, max(tl - 1, 1))
+    return (f"\n   💰 Sell plan: limit sell at {cents(tg)} (+{(tg - px) * 100:.0f}¢) · got there in ~{r:.0%} of past calls like this, "
+            f"usually within ~{m:.0f} min (by {et(min(time.time() + 60 * m, t1 - 60))}). If it doesn't fill, holding pays $1 if the call is right.")
 
 
 def note_call(sh, p, tl, mid=None, dm1=0.0, px=None):
@@ -1021,7 +1037,7 @@ def sel_row(c, ev_, sh, p, mid, q):
     return f"🔒 {c} {fd} holding · {fs:.0%} now (made {f['ps']:.0%} at {f['tl']}m) {arrow(q, f['up'])}", "call"
 
 
-LEGEND = ("Key: 🔒⭐ new call, locked in (sent the minute a side first reaches 80%, never above 90¢; backtest ~85% right at ~85¢) · 🔒 call holding · "
+LEGEND = ("Key: 🔒⭐ new call, locked in (≥80% at a check-in; backtest ~88% right) · 💰 sell plan: take-profit price, how often past calls got there, and by when · 🔒 call holding · "
           "🚨 big reversal: the other side is now ≥80% (the only time to consider cutting; never flip on ordinary swings) · ⏸ no call yet · "
           "✅/❌ the locked call right/wrong (only that call counts) · 🔄 a later lean the other way (logged, never counted) · ➖ no call made · "
           + ("💸 scalp: bounce trade, buy ≤15¢ and sell at +12¢ · " if CRYPTO else "↔ wide spread: use a limit order · ") + "K = Kalshi's price · 'last 3m' = how Kalshi's price moved over the past 3 min (history only: fast moves don't predict "
@@ -1094,6 +1110,9 @@ def board_c(L_, R, preds, b, closed=(), res=None):
             if SELECT:
                 txt, kind = sel_row(c, ev0, L_.shown[q["tk"]], p, mid, q) if q.get("tk") else (None, "none")
                 if kind == "call": strong.append(f"{c} {d}")
+                if ev0 == "new":
+                    bp = buy_px(L_, q["tk"], up, q)
+                    txt += f"\n   → buy {side_name(up)} limit ≤ {cents(bp)} (don't chase above it)" + spread_note(q) + sell_plan(bp, q["tl"], q["t1"])
                 rows.append(txt or f"⏸ {c} no call yet · leans {d} {ps:.0%}")
                 if txt and (fn := flow_note(flow_of(L_, c, q.get("tk")), up)): rows.append(fn)
                 elif not txt: flow_of(L_, c, q.get("tk"))
@@ -1275,7 +1294,7 @@ def update9_c(L_, R, upd, b):
             txt, kind = sel_row(c, ev_, sh, p, mid, q)
             if f: calls.append(f"{c} {'UP' if f['up'] else 'DOWN'}")
             if ev_ == "new":
-                bp = buy_px(L_, q["tk"], up, q); txt += f"\n   → buy {side_name(up)} limit ≤ {cents(bp)} (don't chase above it)" + spread_note(q)
+                bp = buy_px(L_, q["tk"], up, q); txt += f"\n   → buy {side_name(up)} limit ≤ {cents(bp)} (don't chase above it)" + spread_note(q) + sell_plan(bp, q["tl"], q["t1"])
                 newc.append(f"{c} {d} ≤{cents(bp)}"); link = link or f"{WEB}/{K15[c].lower()}"
             if txt: rows.append(txt); nch += int(ev_ == "new"); nflip += int(kind == "warn")
             else: same.append(f"{c} {d} {ps:.0%}")
@@ -1423,7 +1442,7 @@ def final_c(L_, R, fin, b):
         if SELECT:
             txt, kind = sel_row(c, ev_, L_.shown[tk], p, mid, q); f = L_.shown[tk].get("first")
             if ev_ == "new":
-                bp = buy_px(L_, tk, up, q); txt += f"\n   → buy {side_name(up)} limit ≤ {cents(bp)} (don't chase above it)" + spread_note(q); newf.append(f"{c} {d} ≤{cents(bp)}")
+                bp = buy_px(L_, tk, up, q); txt += f"\n   → buy {side_name(up)} limit ≤ {cents(bp)} (don't chase above it)" + spread_note(q) + sell_plan(bp, q["tl"], q["t1"]); newf.append(f"{c} {d} ≤{cents(bp)}")
             if f: strong.append(f"{c} {'UP' if f['up'] else 'DOWN'}" + (" 🚨" if kind == "warn" else ""))
             rows.append(txt or f"⏸ {c} no call · leans {d} {ps:.0%}")
             if (fn := flow_note(flow_of(L_, c, tk), up)): rows.append(fn)
@@ -1602,12 +1621,12 @@ def live():
                            f"Expected +{lw['ev'] * 100:.0f}¢/contract after fees · backtest: {fmt_low(lb)}", 4, f"{WEB}/{K15[c].lower()}")
                 q["tk"] = tk
                 sh_ = L_.shown.get(tk)    # call the minute a side first reaches ≥80% (≤90¢), not at the next 3-min check-in
-                if SELECT and sh_ and not sh_.get("first") and tl >= 3 and on("board_update", c):
+                if MINUTE_CALLS and SELECT and sh_ and not sh_.get("first") and tl >= 3 and on("board_update", c):
                     up_ = p >= 0.5; bp = buy_px(L_, tk, up_, q)
                     if note_call(sh_, p, tl, mid, q.get("dmid1", 0.0), bp) == "new":
                         txt, _ = sel_row(c, "new", sh_, p, mid, q); sh_["called_t"] = now
                         notify(f"⭐ NEW CALL {c} {'UP' if up_ else 'DOWN'} ≤{cents(bp)} · {round(tl)}m left · {et(q['t1'])}",
-                               txt + f"\n   → buy {side_name(up_)} limit ≤ {cents(bp)} (don't chase above it)" + spread_note(q) + "\n\n" + LEGEND,
+                               txt + f"\n   → buy {side_name(up_)} limit ≤ {cents(bp)} (don't chase above it)" + spread_note(q) + sell_plan(bp, tl, q["t1"]) + "\n\n" + LEGEND,
                                5, f"{WEB}/{K15[c].lower()}")
                         save_json(f"{DATA}/state.json", {**L_.state(), "started": True, "digest_t": digest_t, "is_open": is_open})
                 kk = L_.T.get(tk)
