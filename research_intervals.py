@@ -13,7 +13,7 @@ D["tlr"] = D.tl.round().astype(int); D["conf"] = np.maximum(D.mid, 1 - D.mid); D
 vs = {m: (float(x.kvol.median()), float(x.kvol.std() or 1.0)) for m, x in D.groupby("mkt")}
 s_ = np.where(D.side, 1, -1)
 D = D.assign(kt=D.dmid3 * s_, st=D.sr3.fillna(0) * s_, sg=D.sgap.fillna(0) * s_, vz=[(v - vs[m][0]) / (vs[m][1] + 1e-9) for v, m in zip(D.kvol, D.mkt)])
-D["px"] = np.where(D.side, D.ask, 1 - D.bid); D["won"] = (D.side == (D.up == 1)).astype(float); D["tp95"] = np.where(D.side, D.fyb, D.fnb) >= 0.95
+D["px"] = np.where(D.side, D.ask, 1 - D.bid); D["won"] = (D.side == (D.up == 1)).astype(float); D["tp95"] = pd.to_numeric(pd.Series(np.where(D.side, D.fyb, D.fnb)), errors="coerce").fillna(0).to_numpy() >= 0.95
 D["day"] = pd.to_datetime(D.cl, unit="s", utc=True).dt.tz_convert("America/New_York").dt.normalize()
 C0 = D[D.tlr.isin([14, 11, 8, 5, 3]) & (D.conf >= 0.80)].copy()
 C0["key"] = ["|".join(K.setup_cols(r)) for r in C0[["px", "tl", "kt", "st", "vz", "sg"]].to_dict("records")]
