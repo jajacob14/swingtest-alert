@@ -987,16 +987,21 @@ def note_call(sh, p, tl, mid=None, dm1=0.0):
     if not SELECT or not sh: return None
     up = p >= 0.5; f = sh.get("first")
     if f:
-        if bool(up) != f["up"]:
+        m = p if mid is None else mid
+        rev = bool(up) != f["up"] and max(p, 1 - p) >= REV_T and max(m, 1 - m) >= REV_T and (m >= 0.5) == bool(up)
+        if rev:            # a real reversal: the OTHER side is now ≥80% on the model AND Kalshi's price
             new = not sh.get("sw") or sh["sw"]["up"] != bool(up)
             if new: sh["sw"] = dict(up=bool(up), ps=round(max(p, 1 - p), 3), tl=round(tl))
             return "flip" if new else "against"
-        return "locked"
+        return "locked"    # ordinary swings (even past 50/50) are not announced as trouble
     m = p if mid is None else mid; pm = m - (dm1 or 0.0)
     if (max(p, 1 - p) >= CALL_T and max(m, 1 - m) >= CALL_T and (m >= 0.5) == bool(up)
             and (not CALL_STABLE or (max(pm, 1 - pm) >= CALL_T and (pm >= 0.5) == bool(up)))):
         sh["first"] = dict(up=bool(up), ps=round(max(p, 1 - p), 3), tl=round(tl)); return "new"
     return None
+
+
+REV_T = E("KW_REV_T", 0.80)   # only call out a reversal when the other side is this sure (Kalshi's price is calibrated: it wins ~85%)
 
 
 def sel_row(c, ev_, sh, p, mid, q):
@@ -1006,13 +1011,14 @@ def sel_row(c, ev_, sh, p, mid, q):
     if not f: return None, "none"
     fd = "UP" if f["up"] else "DOWN"; fs = p if f["up"] else 1 - p
     if ev_ in ("flip", "against"):
-        return f"⚠️ {c} call {fd} in trouble · model now leans {d} {ps:.0%} · call stays {fd} (made {f['ps']:.0%} at {f['tl']}m)", "warn"
-    if fs < 0.70: return f"⚠️ {c} call {fd} weakening · {fs:.0%} now (made {f['ps']:.0%} at {f['tl']}m) {arrow(q, f['up'])}", "warn"
+        return (f"🚨 {c} BIG REVERSAL · the other side ({d}) is now {ps:.0%} on the model and Kalshi · call {fd} likely lost "
+                f"(still graded as {fd}). If you cut, sell your {fd} position; buying {d} now costs ~{ps * 100:.0f}¢ for {ps:.0%} odds."), "warn"
+    if fs < 0.5: return f"🔒 {c} {fd} · call stays · {fs:.0%} now (made {f['ps']:.0%} at {f['tl']}m) · a swing, not a confirmed reversal; flipping here is roughly a coin flip plus fees", "call"
     return f"🔒 {c} {fd} holding · {fs:.0%} now (made {f['ps']:.0%} at {f['tl']}m) {arrow(q, f['up'])}", "call"
 
 
 LEGEND = ("Key: 🔒⭐ new call, locked in (needs ≥80% at a check-in; backtest ~88% right) · 🔒 call holding · "
-          "⚠️ call weakening or model now leans the other way (call does NOT change; still graded on it) · ⏸ no call yet · "
+          "🚨 big reversal: the other side is now ≥80% (the only time to consider cutting; never flip on ordinary swings) · ⏸ no call yet · "
           "✅/❌ the locked call right/wrong (only that call counts) · 🔄 a later lean the other way (logged, never counted) · ➖ no call made · "
           + ("💸 scalp: bounce trade, buy ≤15¢ and sell at +12¢ · " if CRYPTO else "↔ wide spread: use a limit order · ") + "K = Kalshi's price · ↗ Kalshi moving toward the pick, "
           "↘ against, → flat, ⚡ fast · 🔊 unusual volume/flow · 🟢 BET = beats Kalshi's price by 4+ pts after fees · last 🟢/🔴 = last window's call")
@@ -1221,7 +1227,7 @@ def update9_c(L_, R, upd, b):
     if SELECT:
         head = ("🔒 " + ", ".join(calls)) if calls else "no calls yet"
         if newc: notify(f"⭐ NEW CALL {', '.join(newc)} · {m} · {et(b)}", "\n".join(rows + ["", LEGEND]), 5, link)   # lock-screen first: urgent
-        else: notify(f"🔄 {et(b)} · {m} · {head}" + (f" · ⚠️ {nflip}" if nflip else ""), "\n".join(rows + ["", LEGEND]), 4 if nflip else 2)
+        else: notify(f"🔄 {et(b)} · {m} · {head}" + (f" · 🚨 {nflip} reversal" if nflip else ""), "\n".join(rows + ["", LEGEND]), 4 if nflip else 2)
     else:
         notify(f"🔄 {et(b)} window · " + (f"{nflip} flipped" if nflip else f"{nch} changed" if nch else "no changes") + f" ({m})", "\n".join(rows), 2)
 
@@ -1352,7 +1358,7 @@ def final_c(L_, R, fin, b):
             txt, kind = sel_row(c, ev_, L_.shown[tk], p, mid, q); f = L_.shown[tk].get("first")
             if ev_ == "new":
                 bp = buy_px(L_, tk, up, q); txt += f"\n   → buy {side_name(up)} limit ≤ {cents(bp)} (don't chase above it)" + spread_note(q); newf.append(f"{c} {d} ≤{cents(bp)}")
-            if f: strong.append(f"{c} {'UP' if f['up'] else 'DOWN'}" + (" ⚠️" if kind == "warn" else ""))
+            if f: strong.append(f"{c} {'UP' if f['up'] else 'DOWN'}" + (" 🚨" if kind == "warn" else ""))
             rows.append(txt or f"⏸ {c} no call · leans {d} {ps:.0%}")
             if (fn := flow_note(flow_of(L_, c, tk), up)): rows.append(fn)
             continue
