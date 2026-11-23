@@ -896,7 +896,7 @@ def trend_txt(q, d_up):
     return t
 
 
-TIERS = CRYPTO      # crypto: grade leans by how sure they are (backtest: ≥80% sure → right ~87%, <65% → ~55-65%)
+TIERS = E("KW_TIERS", 1) == 1   # both scanners (commodity backtest: ≥80% first call right 88.6%, every market 88-89%); grade leans by how sure they are (backtest: ≥80% sure → right ~87%, <65% → ~55-65%)
 STRONG, TOSS = 0.80, 0.65
 
 
@@ -1006,7 +1006,8 @@ def sel_row(c, ev_, sh, p, mid, q):
 
 LEGEND = ("Key: 🔒⭐ new call, locked in (needs ≥80% at a check-in; backtest ~88% right) · 🔒 call holding · "
           "⚠️ call weakening or model now leans the other way (call does NOT change; still graded on it) · ⏸ no call yet · "
-          "✅/❌ the locked call right/wrong (only that call counts) · 🔄 a later lean the other way (logged, never counted) · ➖ no call made · 💸 scalp: bounce trade, buy ≤15¢ and sell at +12¢ · K = Kalshi's price · ↗ Kalshi moving toward the pick, "
+          "✅/❌ the locked call right/wrong (only that call counts) · 🔄 a later lean the other way (logged, never counted) · ➖ no call made · "
+          + ("💸 scalp: bounce trade, buy ≤15¢ and sell at +12¢ · " if CRYPTO else "↔ wide spread: use a limit order · ") + "K = Kalshi's price · ↗ Kalshi moving toward the pick, "
           "↘ against, → flat, ⚡ fast · 🔊 unusual volume/flow · 🟢 BET = beats Kalshi's price by 4+ pts after fees · last 🟢/🔴 = last window's call")
 
 
@@ -1169,6 +1170,12 @@ def buy_px(L_, tk, up, q):
 def side_name(up): return "YES/UP" if up else "NO/DOWN"
 
 
+def spread_note(q):
+    """Commodity books are thinner (palladium/platinum median spread 3¢ vs crypto 1¢): flag a wide one."""
+    sp = q["ask"] - q["bid"]
+    return f"\n   ↔ wide spread {sp * 100:.0f}¢: place the limit at or under the price above, don't take the ask" if sp >= 0.03 else ""
+
+
 CHECKS = ((11, 10.4, 11.6), (8, 7.4, 8.6), (5, 4.4, 5.6))   # compact mode: check-ins every 3 min (final call at ~3)
 
 
@@ -1189,7 +1196,7 @@ def update9_c(L_, R, upd, b):
             txt, kind = sel_row(c, ev_, sh, p, mid, q)
             if f: calls.append(f"{c} {'UP' if f['up'] else 'DOWN'}")
             if ev_ == "new":
-                bp = buy_px(L_, q["tk"], up, q); txt += f"\n   → buy {side_name(up)} limit ≤ {cents(bp)} (don't chase above it)"
+                bp = buy_px(L_, q["tk"], up, q); txt += f"\n   → buy {side_name(up)} limit ≤ {cents(bp)} (don't chase above it)" + spread_note(q)
                 newc.append(f"{c} {d} ≤{cents(bp)}"); link = link or f"{WEB}/{K15[c].lower()}"
             if txt: rows.append(txt); nch += int(ev_ == "new"); nflip += int(kind == "warn")
             else: same.append(f"{c} {d} {ps:.0%}")
@@ -1254,7 +1261,7 @@ def results_c(L_, t1, rows, send=True):
         L += [f"💸 Scalp {x['c']} {'YES' if x['up'] else 'NO'} @ {cents(x['entry'])} → best {cents(x['best'])} ({(x['best'] - x['entry']) * 100:+.0f}¢)"
               + (f" ✅ hit the {cents(x.get('tgt', x['entry'] + .12))} target" if x["best"] >= x.get("tgt", x["entry"] + .12) - 1e-9 else f" ❌ missed the {cents(x.get('tgt', x['entry'] + .12))} target")
               + (" · settled its way" if x.get("won") else "") for x in sw_]
-        tail = [line, switch_txt(w), "" if SCALP_SHADOW else scalp_txt(L_), (f"Per coin: {per}" if per else ""), f"🟢 Bets today: {bets_txt(L_)}"] + ["", LEGEND]
+        tail = [line, switch_txt(w), "" if SCALP_SHADOW else scalp_txt(L_), (f"Per {'coin' if CRYPTO else 'market'}: {per}" if per else ""), f"🟢 Bets today: {bets_txt(L_)}"] + ["", LEGEND]
         if not send: return n, k, L, [x for x in tail if x and x != LEGEND]   # bundled push adds the key once, at the bottom
         notify((f"{'✅' if n == k else '🎯'} {n}/{k} calls right" if k else "no calls") + f" · {et(t1 - 900)}–{et(t1)}" + (f" · today {rec}" if rec else ""),
                "\n".join(L + [""] + [x for x in tail if x]), 2)
@@ -1337,7 +1344,7 @@ def final_c(L_, R, fin, b):
         if SELECT:
             txt, kind = sel_row(c, ev_, L_.shown[tk], p, mid, q); f = L_.shown[tk].get("first")
             if ev_ == "new":
-                bp = buy_px(L_, tk, up, q); txt += f"\n   → buy {side_name(up)} limit ≤ {cents(bp)} (don't chase above it)"; newf.append(f"{c} {d} ≤{cents(bp)}")
+                bp = buy_px(L_, tk, up, q); txt += f"\n   → buy {side_name(up)} limit ≤ {cents(bp)} (don't chase above it)" + spread_note(q); newf.append(f"{c} {d} ≤{cents(bp)}")
             if f: strong.append(f"{c} {'UP' if f['up'] else 'DOWN'}" + (" ⚠️" if kind == "warn" else ""))
             rows.append(txt or f"⏸ {c} no call · leans {d} {ps:.0%}")
             if (fn := flow_note(flow_of(L_, c, tk), up)): rows.append(fn)
