@@ -989,6 +989,24 @@ SELL = {(14, 0): (.67, 7, .62, 8), (14, 1): (.64, 6, .61, 7), (11, 0): (.64, 5, 
         (8, 0): (.60, 3, .48, 4), (8, 1): (.72, 3, .61, 4), (8, 2): (.85, 2, .77, 3)}
 
 
+_SWING = load_json(f"{DIR}/swing.json", {})   # research_swing.py: next-5-min highs by price and minutes left (crypto)
+
+
+def swing_line(c, q, tk):
+    """Scalper's view of the cheap side: how far it usually runs in the next 5 min and how often it still dies."""
+    if not _SWING: return ""
+    bk = live_book(tk) or (q["bid"], q["ask"]); yb, ya = bk
+    up, ask = (True, ya) if ya <= 1 - yb else (False, 1 - yb)          # the cheaper side
+    if not (0.03 <= ask <= 0.35): return ""
+    tl = q["tl"]; tb = 13 if tl >= 11.5 else 10 if tl >= 8.5 else 7 if tl >= 5.5 else 4
+    r = _SWING.get(f"{tb}|{int(min(ask, .99) * 20) * 5}")
+    if not r: return ""
+    t5, t10, t15, med, q75, mins, win = r[:7]
+    return (f"   📈 {c} {'YES' if up else 'NO'} {cents(ask)} swing, next 5 min: touches {cents(min(ask + .10, .99))} in {t10:.0%} · "
+            f"{cents(min(ask + .15, .99))} in {t15:.0%} · 1 in 4 runs to {cents(q75)}+ · peak usually within ~{mins} min · "
+            f"then settles a winner only {win:.0%}")
+
+
 def sell_plan(px, tl, t1):
     """Take-profit line for a new call: target, how often it got there, and by when."""
     if px >= 0.95: return f"\n   💰 Sell plan: already {cents(px)}; little left to take — hold to the close ($1 if right) or skip"
@@ -1027,7 +1045,10 @@ REV_T = E("KW_REV_T", 0.80)   # only call out a reversal when the other side is 
 def sel_row(c, ev_, sh, p, mid, q):
     """One line per coin in selective mode -> (text or None, kind: call / warn / none)."""
     up = p >= 0.5; d = "UP" if up else "DOWN"; ps = max(p, 1 - p); kp = mid if up else 1 - mid; f = sh.get("first")
-    if ev_ == "new": return f"🔒⭐ {c} CALL {d} {ps:.0%} · K {kp:.0%} {arrow(q, up)} · locked in (graded on this)", "call"
+    if ev_ == "new":
+        lose = max(1 - kp, 0.01)
+        return (f"🔒⭐ {c} CALL {d} · Kalshi {kp:.0%} (model {ps:.0%}) · about 1 in {max(round(1 / lose), 2)} of these lose "
+                f"{arrow(q, up)} · locked in (graded on this)"), "call"
     if not f: return None, "none"
     fd = "UP" if f["up"] else "DOWN"; fs = p if f["up"] else 1 - p
     if ev_ in ("flip", "against"):
@@ -1037,7 +1058,9 @@ def sel_row(c, ev_, sh, p, mid, q):
     return f"🔒 {c} {fd} holding · {fs:.0%} now (made {f['ps']:.0%} at {f['tl']}m) {arrow(q, f['up'])}", "call"
 
 
-LEGEND = ("Key: 🔒⭐ new call, locked in (≥80% at a check-in; backtest ~88% right) · 💰 sell plan: take-profit price, how often past calls got there, and by when · 🔒 call holding · "
+LEGEND = ("Key: 🔒⭐ new call, locked in (≥80% at a check-in; backtest ~88% right, so about 1 in 8 still lose — size for that) · "
+          "📈 scalp swing: the cheap side's usual next-5-min run (how often it touches +10¢/+15¢, how high 1 in 4 go, how soon) "
+          "and how often it still settles a winner; history, not a call · 💰 sell plan: take-profit price, how often past calls got there, and by when · 🔒 call holding · "
           "🚨 big reversal: the other side is now ≥80% (the only time to consider cutting; never flip on ordinary swings) · ⏸ no call yet · "
           "✅/❌ the locked call right/wrong (only that call counts) · 🔄 a later lean the other way (logged, never counted) · ➖ no call made · "
           + ("💸 scalp: bounce trade, buy ≤15¢ and sell at +12¢ · " if CRYPTO else "↔ wide spread: use a limit order · ") + "K = Kalshi's price · 'last 3m' = how Kalshi's price moved over the past 3 min (history only: fast moves don't predict "
@@ -1114,6 +1137,7 @@ def board_c(L_, R, preds, b, closed=(), res=None):
                     bp = buy_px(L_, q["tk"], up, q)
                     txt += f"\n   → buy {side_name(up)} limit ≤ {cents(bp)} (don't chase above it)" + spread_note(q) + sell_plan(bp, q["tl"], q["t1"])
                 rows.append(txt or f"⏸ {c} no call yet · leans {d} {ps:.0%}")
+                if CRYPTO and q.get("tk") and (sl := swing_line(c, q, q["tk"])): rows.append(sl)
                 if txt and (fn := flow_note(flow_of(L_, c, q.get("tk")), up)): rows.append(fn)
                 elif not txt: flow_of(L_, c, q.get("tk"))
                 continue
@@ -1279,7 +1303,7 @@ CHECKS = ((11, 10.4, 11.6), (8, 7.4, 8.6), (5, 4.4, 5.6))   # compact mode: chec
 
 def update9_c(L_, R, upd, b):
     """Check-in: what changed since the last push for this window (calls made, dropped, flipped)."""
-    rows, same, calls, newc = [], [], [], []; nch = nflip = 0; left = None; link = None
+    rows, same, calls, newc, swl = [], [], [], [], []; nch = nflip = 0; left = None; link = None
     for c in [x for x in SHOW if x in upd]:
         p, mid, q, flow = upd[c]; sh = L_.shown.get(q.get("tk"))
         if not sh or not on("board_update", c): continue
@@ -1297,6 +1321,7 @@ def update9_c(L_, R, upd, b):
                 bp = buy_px(L_, q["tk"], up, q); txt += f"\n   → buy {side_name(up)} limit ≤ {cents(bp)} (don't chase above it)" + spread_note(q) + sell_plan(bp, q["tl"], q["t1"])
                 newc.append(f"{c} {d} ≤{cents(bp)}"); link = link or f"{WEB}/{K15[c].lower()}"
             if txt: rows.append(txt); nch += int(ev_ == "new"); nflip += int(kind == "warn")
+            if CRYPTO and (sl := swing_line(c, q, q["tk"])): swl.append(sl)
             else: same.append(f"{c} {d} {ps:.0%}")
             if go and not go0: rows.append(f"🟢 {c} now BET ≤ {cents(ask)}")
             continue
@@ -1308,6 +1333,7 @@ def update9_c(L_, R, upd, b):
         else: same.append(f"{c} {d} {ps:.0%}")
     if not rows and not same: return
     if same: rows.append(("⏸ No call yet: " if SELECT else "Same: ") + " · ".join(same))
+    if swl: rows += ["", "📈 Scalp swings (cheap side · how it usually moves from here · not a call):"] + swl
     m = f"{round(left)} min left" if left is not None else ""
     if SELECT:
         head = ("🔒 " + ", ".join(calls)) if calls else "no calls yet"
@@ -1431,7 +1457,7 @@ def flow_of(L_, c, tk):
 def final_c(L_, R, fin, b):
     """~5 min before the close: the last call (the most accurate checkpoint the scanner posts)."""
     if not on("board_update"): return
-    rows, strong, newf = [], [], []
+    rows, strong, newf, swf = [], [], [], []
     for c in [x for x in SHOW if x in fin]:
         p, mid, q, flow = fin[c]; tk = q.get("tk"); sh = L_.shown.get(tk)
         if not sh or not on("board_update", c): continue
@@ -1445,11 +1471,13 @@ def final_c(L_, R, fin, b):
                 bp = buy_px(L_, tk, up, q); txt += f"\n   → buy {side_name(up)} limit ≤ {cents(bp)} (don't chase above it)" + spread_note(q) + sell_plan(bp, q["tl"], q["t1"]); newf.append(f"{c} {d} ≤{cents(bp)}")
             if f: strong.append(f"{c} {'UP' if f['up'] else 'DOWN'}" + (" 🚨" if kind == "warn" else ""))
             rows.append(txt or f"⏸ {c} no call · leans {d} {ps:.0%}")
+            if CRYPTO and (sl := swing_line(c, q, tk)): swf.append(sl)
             if (fn := flow_note(flow_of(L_, c, tk), up)): rows.append(fn)
             continue
         rows.append(f"{mark(ps)} {c} {d} {ps:.0%} · K {kp:.0%} {arrow(q, up)}" + (" · toss-up" if TIERS and ps < TOSS else "") + ch)
         if (fn := flow_note(flow_of(L_, c, tk), up)): rows.append(fn)
     if not rows: return
+    if swf: rows += ["", "📈 Scalp swings (cheap side · how it usually moves from here · not a call):"] + swf
     rec, line = wl_line(L_); u5 = u5_txt(L_)
     tail = [x for x in ("" if SELECT else (f"Final calls today: {u5}" if u5 else ""), line) if x]
     pick = (("🔒 " if SELECT else "⭐ ") + ", ".join(strong)) if strong else ("no calls" if SELECT else "no strong picks")
