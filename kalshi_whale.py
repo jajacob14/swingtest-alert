@@ -1024,8 +1024,8 @@ def sel_row(c, ev_, sh, p, mid, q):
 LEGEND = ("Key: 🔒⭐ new call, locked in (sent the minute a side first reaches 80%, never above 90¢; backtest ~85% right at ~85¢) · 🔒 call holding · "
           "🚨 big reversal: the other side is now ≥80% (the only time to consider cutting; never flip on ordinary swings) · ⏸ no call yet · "
           "✅/❌ the locked call right/wrong (only that call counts) · 🔄 a later lean the other way (logged, never counted) · ➖ no call made · "
-          + ("💸 scalp: bounce trade, buy ≤15¢ and sell at +12¢ · " if CRYPTO else "↔ wide spread: use a limit order · ") + "K = Kalshi's price · ↗ Kalshi moving toward the pick, "
-          "↘ against, → flat, ⚡ fast · 🔊 unusual volume/flow · 🟢 BET = beats Kalshi's price by 4+ pts after fees · last 🟢/🔴 = last window's call")
+          + ("💸 scalp: bounce trade, buy ≤15¢ and sell at +12¢ · " if CRYPTO else "↔ wide spread: use a limit order · ") + "K = Kalshi's price · 'last 3m' = how Kalshi's price moved over the past 3 min (history only: fast moves don't predict "
+          "the next move; calls after a spike win ~85%, same as after a slow climb) · 🔊 unusual volume/flow · 🟢 BET = beats Kalshi's price by 4+ pts after fees · last 🟢/🔴 = last window's call")
 
 
 def switch_txt(w):
@@ -1072,9 +1072,9 @@ def mark(ps):
 
 
 def arrow(q, up):
+    """Where Kalshi's price came FROM over the last 3 min (backtest: says nothing about what happens next)."""
     k = q.get("dmid3", 0.0) * 100
-    a = "→" if abs(k) < 2 else ("↗" if (k > 0) == up else "↘")
-    return a + ("⚡" if abs(k) >= 8 else "")
+    return "· last 3m flat" if abs(k) < 2 else f"· last 3m {'+' if (k > 0) == up else '−'}{abs(k):.0f} pts {'its way' if (k > 0) == up else 'against'}"
 
 
 def board_c(L_, R, preds, b, closed=(), res=None):
