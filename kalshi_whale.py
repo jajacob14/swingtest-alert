@@ -1871,6 +1871,9 @@ def feedcheck():
         w = open_window(c)
         if w: _CUR[c] = w["ticker"]
     print("open windows:", _CUR, flush=True)
+    for tk in list(_CUR.values())[:1]:
+        r = requests.get(f"{API}/markets/{tk}/orderbook", timeout=5); print("raw orderbook", r.status_code, r.text[:700], flush=True)
+        r = requests.get(f"{API}/markets/{tk}/orderbook", params={"depth": 5}, timeout=5); print("raw depth5", r.status_code, r.text[:400], flush=True)
     threading.Thread(target=book_loop, daemon=True).start()
     if CRYPTO: threading.Thread(target=spot_stream, daemon=True).start()
     for i in range(4):
