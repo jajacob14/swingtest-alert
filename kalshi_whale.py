@@ -371,7 +371,14 @@ def spot_get(c, a, b):
     except (requests.RequestException, ValueError, IndexError, TypeError): return None
 
 
+_SPOTLOCK = threading.RLock()
+
+
 def ensure_spot(c, t0, t1):
+    with _SPOTLOCK: return _ensure_spot(c, t0, t1)
+
+
+def _ensure_spot(c, t0, t1):
     """Spot minute closes covering [t0, t1], cached in DATA/spot_<c>.csv.gz; minutes with no trades are kept as gaps."""
     if c not in SPOT: return pd.DataFrame(columns=["ts", "px"])
     if c not in _SPOT:
@@ -1437,14 +1444,33 @@ def board(L_, R, preds, b, closed=(), res=None):
     if L: notify(f"📈 {LBL} 15-min · closes {et(b)} ET", "\n".join(L), 2)
 
 
+_TR = {"R": None, "busy": False}
+
+
+def bg_train(days=None):
+    """Retrain in a background thread so the live loop never goes quiet; the new model is swapped in when ready."""
+    if _TR["busy"]: return
+    _TR["busy"] = True
+    def run():
+        try:
+            for c in COMMS: kfetch(c, days or WEEKS_D, 1)
+            r = train(push=False)
+            if r and r.get("model"): _TR["R"] = r
+        except Exception as e: print("background train failed:", e, flush=True)
+        finally: _TR["busy"] = False
+    threading.Thread(target=run, daemon=True).start()
+
+
 def live():
     t0, maxmin = time.time(), float(os.getenv("LIVE_MAX_MIN") or 1e9)
     meta = Meta(); st = load_json(f"{DATA}/state.json", {}); R = load_json(f"{DIR}/model.json", {})
-    if (not R.get("model") or time.time() - R.get("trained", 0) > 6 * 3600 or (WAVES_ON and not R.get("wave"))
-            or R.get("kf", list(KF)) != list(KF) or set(R.get("proven", {})) - set(COMMS)):   # market list changed
+    must = not R.get("model") or R.get("kf", list(KF)) != list(KF) or set(R.get("proven", {})) - set(COMMS)   # unusable: block
+    if must:
         harvest()
         for c in COMMS: kfetch(c, WEEKS_D if R.get("model") else MONTHS_D, 1 if R.get("model") else SAMPLE)
         R = train(push=False) or R
+    elif time.time() - R.get("trained", 0) > 6 * 3600 or (WAVES_ON and not R.get("wave")):
+        bg_train()          # stale but usable: keep pushing while it retrains in the background
     L_ = Live(meta, st)
     warm = trades_since(t0 - 3900, 200)
     for r in warm: L_.tick(r[0], False); L_.ingest(r[0], *r[2:], alert=False)
@@ -1569,10 +1595,8 @@ def live():
                     if now - board_t.get(b, 0) > 120: update9(L_, R, u, b); snap()   # no check-in right on top of the opening push
             if fin and b in boarded and b not in finaled: finaled.add(b); final_c(L_, R, fin, b); snap()
             if now - settled_t > 60: settle(L_); settled_t = now; snap()   # a restart keeps what the board showed
-            if now - trained > 6 * 3600:
-                L_.flush()
-                for c in COMMS: kfetch(c, 3)
-                R = train() or R; trained = now
+            if _TR["R"] is not None: R = _TR["R"]; _TR["R"] = None; trained = now; print("live: retrained model swapped in", flush=True)
+            if now - trained > 6 * 3600 and not _TR["busy"]: L_.flush(); bg_train(days=3); trained = now
             if now - digest_t > 6 * 3600: digest(L_, R); digest_t = now
             if now - saved > 1800:
                 L_.flush(); meta.save(); save_json(f"{DATA}/state.json", {**L_.state(), "started": True, "digest_t": digest_t, "is_open": is_open}); persist(); saved = now
