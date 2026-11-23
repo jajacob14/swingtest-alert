@@ -1255,14 +1255,14 @@ def results_c(L_, t1, rows, send=True):
               + (f" ✅ hit the {cents(x.get('tgt', x['entry'] + .12))} target" if x["best"] >= x.get("tgt", x["entry"] + .12) - 1e-9 else f" ❌ missed the {cents(x.get('tgt', x['entry'] + .12))} target")
               + (" · settled its way" if x.get("won") else "") for x in sw_]
         tail = [line, switch_txt(w), "" if SCALP_SHADOW else scalp_txt(L_), (f"Per coin: {per}" if per else ""), f"🟢 Bets today: {bets_txt(L_)}"] + ["", LEGEND]
-        if not send: return n, k, L, [x for x in tail if x]
+        if not send: return n, k, L, [x for x in tail if x and x != LEGEND]   # bundled push adds the key once, at the bottom
         notify((f"{'✅' if n == k else '🎯'} {n}/{k} calls right" if k else "no calls") + f" · {et(t1 - 900)}–{et(t1)}" + (f" · today {rec}" if rec else ""),
                "\n".join(L + [""] + [x for x in tail if x]), 2)
         return None
     tail = [line, switch_txt(w) if SELECT else tiers_txt(w), (f"🏁 Final calls ({'3-4' if COMPACT else '5'} min left): {u5}" if (u5 := u5_txt(L_)) else ""), per,
             f"🟢 Bets today: {bets_txt(L_)}" + (f" · {'last check-in' if COMPACT else '9-min updates'} {u}" if (u := u9_txt(L_)) else "")]
     if SELECT: tail = tail + ["", LEGEND]
-    if not send: return n, k, L, [x for x in tail if x]
+    if not send: return n, k, L, [x for x in tail if x and x != LEGEND]
     notify((f"{'✅' if n == k else '🎯'} {n}/{k} {'calls ' if SELECT else ''}right" if k else "no calls") + f" · {et(t1 - 900)}–{et(t1)}" + (f" · today {rec}" if rec else ""),
            "\n".join(L + [""] + [x for x in tail if x]), 2)
 

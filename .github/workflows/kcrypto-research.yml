@@ -3,6 +3,7 @@ on:
   workflow_dispatch:
     inputs:
       script: {description: "research script to run", default: "research_crypto.py"}
+      profile: {description: "crypto | commodity", default: "crypto"}
 permissions: {contents: read}
 concurrency: {group: kcrypto-research, cancel-in-progress: true}
 jobs:
@@ -16,6 +17,6 @@ jobs:
       - run: pip install -q -r requirements.txt scikit-learn
       - name: restore crypto scanner data (read-only; never saved back)
         uses: actions/cache/restore@v4
-        with: {path: kcrypto/data, key: "kcrypto-data-none", restore-keys: "kcrypto-data-"}
+        with: {path: "${{ inputs.profile == 'commodity' && 'kwhale/data' || 'kcrypto/data' }}", key: "research-none", restore-keys: "${{ inputs.profile == 'commodity' && 'kwhale-data-' || 'kcrypto-data-' }}"}
       - run: python "${{ inputs.script || 'research_crypto.py' }}"
-        env: {KW_PROFILE: crypto, PYTHONUNBUFFERED: "1"}
+        env: {KW_PROFILE: "${{ inputs.profile || 'crypto' }}", PYTHONUNBUFFERED: "1"}
