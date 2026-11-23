@@ -1184,7 +1184,7 @@ BOOK_EVERY = E("KW_BOOK_S", 2.0 if CRYPTO else 3.0)
 
 def parse_book(j):
     """Kalshi order book -> (best YES bid, best YES ask, sizes). YES ask = 1 − best NO bid."""
-    ob = (j or {}).get("orderbook") or {}
+    ob = (j or {}).get("orderbook_fp") or (j or {}).get("orderbook") or {}
     def lv(k):
         if ob.get(f"{k}_dollars"): return [(float(p), float(q)) for p, q in ob[f"{k}_dollars"]]
         return [(float(p) / 100, float(q)) for p, q in (ob.get(k) or [])]
@@ -1203,7 +1203,7 @@ def book_loop():
                     w = 1 / RPS - (time.time() - _LAST[0])
                     if w > 0: time.sleep(w)
                     _LAST[0] = time.time()
-                r = requests.get(f"{API}/markets/{tk}/orderbook", timeout=5)
+                r = requests.get(f"{API}/markets/{tk}/orderbook", params={"depth": 3}, timeout=5)
                 b = parse_book(r.json()) if r.status_code == 200 else None
                 if b and b[0] is not None and b[1] is not None:
                     now = time.time(); _BOOK[tk] = (now, *b)
@@ -1871,9 +1871,6 @@ def feedcheck():
         w = open_window(c)
         if w: _CUR[c] = w["ticker"]
     print("open windows:", _CUR, flush=True)
-    for tk in list(_CUR.values())[:1]:
-        r = requests.get(f"{API}/markets/{tk}/orderbook", timeout=5); print("raw orderbook", r.status_code, r.text[:700], flush=True)
-        r = requests.get(f"{API}/markets/{tk}/orderbook", params={"depth": 5}, timeout=5); print("raw depth5", r.status_code, r.text[:400], flush=True)
     threading.Thread(target=book_loop, daemon=True).start()
     if CRYPTO: threading.Thread(target=spot_stream, daemon=True).start()
     for i in range(4):
