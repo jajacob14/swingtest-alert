@@ -322,7 +322,7 @@ def harvest():
     out = pd.concat([read_gz(f"{DATA}/c_whales.csv.gz")] + wh, ignore_index=True) if wh else read_gz(f"{DATA}/c_whales.csv.gz")
     if len(out): out.drop_duplicates(["t", "tk", "sd"]).to_csv(f"{DATA}/c_whales.csv.gz", index=False, compression="gzip")
     for p in glob.glob(f"{DATA}/*"):
-        if not os.path.basename(p).startswith(("k15_", "c_whales", "meta", "state", "live_preds", "spot_", "flow_log", "scalp_log")): os.remove(p)
+        if not os.path.basename(p).startswith(("k15_", "c_whales", "meta", "state", "live_preds", "spot_", "flow_log", "scalp_log", "ticks")): os.remove(p)
     print(f"HARVEST: {len(out)} commodity whale events kept · {n_marks} commodity snapshots seen", flush=True)
     return out
 
@@ -1177,10 +1177,72 @@ def scalp_txt(L_):
             f"{np.mean([x['best'] - x['entry'] for x in s_]) * 100:+.0f}¢ · result if you sold at target / else held: {pnl * 100:+.0f}¢ per contract total")
 
 
+# ---------------- live feeds: Kalshi order book every ~2 s + Coinbase spot stream (both public, no account) ----------------
+_BOOK, _LSPOT, _CUR, _TICKS = {}, {}, {}, []   # tk -> (ts, yes bid, yes ask, bid qty, ask qty) · coin -> (ts, px) · coin -> ticker
+BOOK_EVERY = E("KW_BOOK_S", 2.0 if CRYPTO else 3.0)
+
+
+def parse_book(j):
+    """Kalshi order book -> (best YES bid, best YES ask, sizes). YES ask = 1 − best NO bid."""
+    ob = (j or {}).get("orderbook") or {}
+    def lv(k):
+        if ob.get(f"{k}_dollars"): return [(float(p), float(q)) for p, q in ob[f"{k}_dollars"]]
+        return [(float(p) / 100, float(q)) for p, q in (ob.get(k) or [])]
+    y, n = lv("yes"), lv("no")
+    if not y and not n: return None
+    yb = max(y) if y else (None, 0.0); nb = max(n) if n else (None, 0.0)
+    return yb[0], (round(1 - nb[0], 4) if nb[0] is not None else None), yb[1], nb[1]
+
+
+def book_loop():
+    while True:
+        t0 = time.time()
+        for c, tk in list(_CUR.items()):
+            try:
+                with _LOCK:
+                    w = 1 / RPS - (time.time() - _LAST[0])
+                    if w > 0: time.sleep(w)
+                    _LAST[0] = time.time()
+                r = requests.get(f"{API}/markets/{tk}/orderbook", timeout=5)
+                b = parse_book(r.json()) if r.status_code == 200 else None
+                if b and b[0] is not None and b[1] is not None:
+                    now = time.time(); _BOOK[tk] = (now, *b)
+                    if CRYPTO: sp = _LSPOT.get(c); _TICKS.append((round(now, 1), c, tk, b[0], b[1], int(b[2]), int(b[3]),
+                                                             sp[1] if sp and now - sp[0] < 10 else None))
+            except Exception as e: print("book:", tk, e, flush=True); time.sleep(1)
+        time.sleep(max(0.2, BOOK_EVERY - (time.time() - t0)))
+
+
+def spot_stream():
+    """Coinbase public ticker stream: the coin's price to the second (Kalshi settles on an index Coinbase is part of)."""
+    import websocket
+    rev = {v: k for k, v in SPOT.items() if v}
+    while True:
+        try:
+            ws = websocket.create_connection("wss://ws-feed.exchange.coinbase.com", timeout=30)
+            ws.send(json.dumps({"type": "subscribe", "product_ids": list(rev), "channels": ["ticker"]}))
+            while True:
+                m = json.loads(ws.recv())
+                if m.get("type") == "ticker" and m.get("product_id") in rev: _LSPOT[rev[m["product_id"]]] = (time.time(), float(m["price"]))
+        except Exception as e: print("spot stream:", e, flush=True); time.sleep(5)
+
+
+def flush_ticks():
+    if not _TICKS: return
+    rows, _TICKS[:] = list(_TICKS), []
+    p = f"{DATA}/ticks.csv.gz"; os.makedirs(DATA, exist_ok=True)
+    pd.DataFrame(rows, columns=["ts", "c", "tk", "yb", "ya", "qb", "qa", "spot"]).to_csv(p, mode="ab", index=False, header=not os.path.exists(p), compression="gzip")
+
+
+def live_book(tk, maxage=6):
+    b = _BOOK.get(tk)
+    return (b[1], b[2]) if b and time.time() - b[0] < maxage else None
+
+
 def buy_px(L_, tk, up, q):
-    """Price to pay right now for a side: the live Kalshi quote from the trade feed if fresh, else the last minute's."""
-    kk = L_.T.get(tk)
-    bid, ask = (kk.bid, kk.ask) if kk and kk.fresh(time.time()) else (q["bid"], q["ask"])
+    """Price to pay right now for a side: the live order book (≤6 s old), else the trade feed, else the last minute's."""
+    bk = live_book(tk); kk = L_.T.get(tk)
+    bid, ask = bk if bk else (kk.bid, kk.ask) if kk and kk.fresh(time.time()) else (q["bid"], q["ask"])
     return min(max(ask if up else 1 - bid, 0.01), 0.99)
 
 
@@ -1490,7 +1552,9 @@ def live():
     if not st.get("started"): notify(f"Kalshi {lbl} scanner online", "Reports only (no trading).\n" + (summary(R) if R.get("model") else "Model not built yet."), 3)
     low_sent, updated, wave_sent, finaled, board_t = set(), set(), set(), set(), {}
     win, done_min, boarded, saved, trained, settled_t, digest_t = {}, {}, set(), time.time(), time.time(), 0, st.get("digest_t", 0)
-    is_open = dict(st.get("is_open", {})); shut_t = {}; switches(force=True)
+    is_open = dict(st.get("is_open", {})); shut_t = {}; switches(force=True); ticks_t = time.time()
+    threading.Thread(target=book_loop, daemon=True).start()            # live order book for the open windows
+    if CRYPTO: threading.Thread(target=spot_stream, daemon=True).start()   # live coin prices
     while time.time() - t0 < maxmin * 60:
         loop0 = time.time()
         try:
@@ -1499,14 +1563,18 @@ def live():
                 seen.add(r[1]); last_ts = max(last_ts, r[0]); L_.ingest(r[0], *r[2:])
             if len(seen) > 200000: seen = set(list(seen)[-50000:])
             L_.tick(time.time()); now = time.time(); minute = int(now // 60); preds, upd, fin = {}, {}, {}
-            for x in L_.scalps:   # best price each open scalp's side has been sellable at (its bid), checked every poll
-                kk = L_.T.get(x["tk"]) if x.get("open") else None
-                if kk and kk.fresh(now) and now < x["t1"]:
-                    x["best"] = round(max(x["best"], kk.bid if x["up"] else 1 - kk.ask), 2)
+            for x in L_.scalps:   # best price each open scalp's side has been sellable at (its bid): order book, else trades
+                if not x.get("open") or now >= x["t1"]: continue
+                bk = live_book(x["tk"]); kk = L_.T.get(x["tk"])
+                yb, ya = bk if bk else (kk.bid, kk.ask) if kk and kk.fresh(now) else (None, None)
+                if yb is not None:
+                    x["best"] = round(max(x["best"], yb if x["up"] else 1 - ya), 2)
                     if x.get("t_hit") is None and x["best"] >= x.get("tgt", 9) - 1e-9: x["t_hit"] = round(now - x["t"], 1)
             for c in COMMS:  # 15-min windows: one prediction per completed minute
                 if c not in win or ts_of(win[c]["close_time"]) <= now:
                     w = open_window(c); win[c] = w if w else {"close_time": datetime.fromtimestamp(now + 60, timezone.utc).isoformat()}
+                    if w: _CUR[c] = w["ticker"]
+                    else: _CUR.pop(c, None)
                     op = "ticker" in win[c]
                     if op: shut_t.pop(c, None)
                     else: shut_t.setdefault(c, now)
@@ -1543,7 +1611,7 @@ def live():
                                5, f"{WEB}/{K15[c].lower()}")
                         save_json(f"{DATA}/state.json", {**L_.state(), "started": True, "digest_t": digest_t, "is_open": is_open})
                 kk = L_.T.get(tk)
-                if on("scalps", c) and (sc := scalp_check(L_, c, q, (kk.bid, kk.ask) if kk and kk.fresh(now) else None)):
+                if on("scalps", c) and (sc := scalp_check(L_, c, q, live_book(tk) or ((kk.bid, kk.ask) if kk and kk.fresh(now) else None))):
                     L_.scalps.append(sc)
                 if on("scalps", c) and sc and not SCALP_SHADOW:
                     sd_ = "YES/UP" if sc["up"] else "NO/DOWN"; st_ = scalp_txt(L_)
@@ -1617,6 +1685,7 @@ def live():
             if _TR["R"] is not None: R = _TR["R"]; _TR["R"] = None; trained = now; print("live: retrained model swapped in", flush=True)
             if now - trained > 6 * 3600 and not _TR["busy"]: L_.flush(); bg_train(days=3); trained = now
             if now - digest_t > 6 * 3600: digest(L_, R); digest_t = now
+            if CRYPTO and now - ticks_t > 60: flush_ticks(); ticks_t = now
             if now - saved > 1800:
                 L_.flush(); meta.save(); save_json(f"{DATA}/state.json", {**L_.state(), "started": True, "digest_t": digest_t, "is_open": is_open}); persist(); saved = now
         except Exception as ex:
@@ -1796,6 +1865,20 @@ def doctor():
         print(f"  messages on topic (12h): {len(msgs)} · this check found: {any(tag in (m.get('message') or '') for m in msgs)}")
 
 
+def feedcheck():
+    """Read-only: run the live feeds for ~40 s and print what they see (order book, spot stream). Sends nothing."""
+    for c in COMMS:
+        w = open_window(c)
+        if w: _CUR[c] = w["ticker"]
+    print("open windows:", _CUR, flush=True)
+    threading.Thread(target=book_loop, daemon=True).start()
+    if CRYPTO: threading.Thread(target=spot_stream, daemon=True).start()
+    for i in range(4):
+        time.sleep(10)
+        print(f"t+{(i + 1) * 10}s book:", {tk: tuple(round(x, 3) if isinstance(x, float) else x for x in v[1:]) for tk, v in _BOOK.items()},
+              "· spot:", {c: round(v[1], 4) for c, v in _LSPOT.items()}, "· ticks", len(_TICKS), flush=True)
+
+
 def recent():
     """Last pushes on the scanner topic (read-only: sends nothing)."""
     t = os.getenv(TOPIC_ENV) or ""; srv = os.getenv("KW_NTFY_SERVER", "https://ntfy.sh").rstrip("/")
@@ -1879,7 +1962,7 @@ def selftest():
 
 if __name__ == "__main__":
     a = sys.argv[1:] or ["live"]
-    cmds = dict(live=live, build=build, train=lambda: (train(), persist("kwhale: retrain")), selftest=selftest, doctor=doctor, recent=recent,
+    cmds = dict(feedcheck=feedcheck, live=live, build=build, train=lambda: (train(), persist("kwhale: retrain")), selftest=selftest, doctor=doctor, recent=recent,
                 report=lambda: print(open(f"{DIR}/report.md").read() if os.path.exists(f"{DIR}/report.md") else "no report yet"),
                 testnotify=lambda: notify(f"Kalshi {lbl} scanner test", f"{TOPIC_ENV} works. Separate from your other alerts.", 4))
     cmds.get(a[0], lambda: print(__doc__))()
