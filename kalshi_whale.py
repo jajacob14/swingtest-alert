@@ -981,7 +981,10 @@ CALL_T = E("KW_CALL_T", 0.80)   # a ⭐ call needs ≥80% at a check-in (backtes
 CALL_STABLE = E("KW_CALL_STABLE", 0) == 1   # 1 = also require ≥ CALL_T a minute earlier (≈95% right but calls come at ~90¢)
 
 
-def note_call(sh, p, tl, mid=None, dm1=0.0):
+CALL_MAXP = E("KW_CALL_MAXP", 0.90)   # never make a call that costs more than 90¢ (too late to be worth it)
+
+
+def note_call(sh, p, tl, mid=None, dm1=0.0, px=None):
     """Lock the window's first call once it is ≥85% now AND a minute ago (same side, model agrees). After that the call
     never changes: a later lean the other way is a warning, logged as a switch, never graded."""
     if not SELECT or not sh: return None
@@ -995,6 +998,7 @@ def note_call(sh, p, tl, mid=None, dm1=0.0):
             return "flip" if new else "against"
         return "locked"    # ordinary swings (even past 50/50) are not announced as trouble
     m = p if mid is None else mid; pm = m - (dm1 or 0.0)
+    if px is not None and px > CALL_MAXP: return None
     if (max(p, 1 - p) >= CALL_T and max(m, 1 - m) >= CALL_T and (m >= 0.5) == bool(up)
             and (not CALL_STABLE or (max(pm, 1 - pm) >= CALL_T and (pm >= 0.5) == bool(up)))):
         sh["first"] = dict(up=bool(up), ps=round(max(p, 1 - p), 3), tl=round(tl)); return "new"
@@ -1017,7 +1021,7 @@ def sel_row(c, ev_, sh, p, mid, q):
     return f"🔒 {c} {fd} holding · {fs:.0%} now (made {f['ps']:.0%} at {f['tl']}m) {arrow(q, f['up'])}", "call"
 
 
-LEGEND = ("Key: 🔒⭐ new call, locked in (needs ≥80% at a check-in; backtest ~88% right) · 🔒 call holding · "
+LEGEND = ("Key: 🔒⭐ new call, locked in (sent the minute a side first reaches 80%, never above 90¢; backtest ~85% right at ~85¢) · 🔒 call holding · "
           "🚨 big reversal: the other side is now ≥80% (the only time to consider cutting; never flip on ordinary swings) · ⏸ no call yet · "
           "✅/❌ the locked call right/wrong (only that call counts) · 🔄 a later lean the other way (logged, never counted) · ➖ no call made · "
           + ("💸 scalp: bounce trade, buy ≤15¢ and sell at +12¢ · " if CRYPTO else "↔ wide spread: use a limit order · ") + "K = Kalshi's price · ↗ Kalshi moving toward the pick, "
@@ -1081,7 +1085,7 @@ def board_c(L_, R, preds, b, closed=(), res=None):
         up = p >= 0.5; ps = p if up else 1 - p; ask = q["ask"] if up else 1 - q["bid"]; e = ps - ask - fee(min(max(ask, 0.01), 0.99))
         go = e >= EDGE and 0.03 < ask <= KMAX; d = "UP" if up else "DOWN"; kp = mid if up else 1 - mid
         if q.get("tk"): L_.shown[q["tk"]] = dict(c=c, t1=q["t1"], p=round(p, 4), mid=round(mid, 4), go=bool(go), ask=round(ask, 3), left=round(q["tl"]), v=3)
-        ev0 = note_call(L_.shown[q["tk"]], p, q["tl"], mid, q.get("dmid1", 0.0)) if q.get("tk") else None
+        ev0 = note_call(L_.shown[q["tk"]], p, q["tl"], mid, q.get("dmid1", 0.0), buy_px(L_, q["tk"], up, q)) if q.get("tk") else None
         dot = last_dot(L_, c); early |= q["tl"] > 12.5
         if go:
             bets.append(f"{c} {d}")
@@ -1205,7 +1209,7 @@ def update9_c(L_, R, upd, b):
         b_up = p0 >= 0.5; ps0 = p0 if b_up else 1 - p0; flip = b_up != up
         L_.shown[q["tk"]].update(p9=round(p, 4), mid9=round(mid, 4), go9=bool(go), ask9=round(ask, 3))
         if SELECT:
-            sh = L_.shown[q["tk"]]; ev_ = note_call(sh, p, q["tl"], mid, q.get("dmid1", 0.0)); f = sh.get("first")
+            sh = L_.shown[q["tk"]]; ev_ = note_call(sh, p, q["tl"], mid, q.get("dmid1", 0.0), buy_px(L_, q["tk"], up, q)); f = sh.get("first")
             txt, kind = sel_row(c, ev_, sh, p, mid, q)
             if f: calls.append(f"{c} {'UP' if f['up'] else 'DOWN'}")
             if ev_ == "new":
@@ -1351,7 +1355,7 @@ def final_c(L_, R, fin, b):
         p, mid, q, flow = fin[c]; tk = q.get("tk"); sh = L_.shown.get(tk)
         if not sh or not on("board_update", c): continue
         up = p >= 0.5; d = "UP" if up else "DOWN"; ps = p if up else 1 - p; kp = mid if up else 1 - mid
-        L_.shown[tk].update(p5=round(p, 4), mid5=round(mid, 4)); ev_ = note_call(L_.shown[tk], p, q["tl"], mid, q.get("dmid1", 0.0)); f = L_.shown[tk].get("first")
+        L_.shown[tk].update(p5=round(p, 4), mid5=round(mid, 4)); ev_ = note_call(L_.shown[tk], p, q["tl"], mid, q.get("dmid1", 0.0), buy_px(L_, tk, up, q)); f = L_.shown[tk].get("first")
         if ps >= STRONG and TIERS and not SELECT: strong.append(f"{c} {d} {ps:.0%}")
         ch = " · ⚡ changed from board" if (sh["p"] >= 0.5) != up else ""
         if SELECT:
@@ -1529,6 +1533,15 @@ def live():
                            f"Buy ≤ {cents(lw['ask'])}, sell into the spike at {cents(lw['tgt'])}. No spike → likely expires at 0¢.\n"
                            f"Expected +{lw['ev'] * 100:.0f}¢/contract after fees · backtest: {fmt_low(lb)}", 4, f"{WEB}/{K15[c].lower()}")
                 q["tk"] = tk
+                sh_ = L_.shown.get(tk)    # call the minute a side first reaches ≥80% (≤90¢), not at the next 3-min check-in
+                if SELECT and sh_ and not sh_.get("first") and tl >= 3 and on("board_update", c):
+                    up_ = p >= 0.5; bp = buy_px(L_, tk, up_, q)
+                    if note_call(sh_, p, tl, mid, q.get("dmid1", 0.0), bp) == "new":
+                        txt, _ = sel_row(c, "new", sh_, p, mid, q); sh_["called_t"] = now
+                        notify(f"⭐ NEW CALL {c} {'UP' if up_ else 'DOWN'} ≤{cents(bp)} · {round(tl)}m left · {et(q['t1'])}",
+                               txt + f"\n   → buy {side_name(up_)} limit ≤ {cents(bp)} (don't chase above it)" + spread_note(q) + "\n\n" + LEGEND,
+                               5, f"{WEB}/{K15[c].lower()}")
+                        save_json(f"{DATA}/state.json", {**L_.state(), "started": True, "digest_t": digest_t, "is_open": is_open})
                 kk = L_.T.get(tk)
                 if on("scalps", c) and (sc := scalp_check(L_, c, q, (kk.bid, kk.ask) if kk and kk.fresh(now) else None)):
                     L_.scalps.append(sc)
