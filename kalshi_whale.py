@@ -567,7 +567,11 @@ def train_low(now, kind="low"):
 
 
 # ---------------- setup backtest: how often past ≥80% check-in calls with the same setup were right ----------------
-SETUP_GATE = E("KW_SETUP_GATE", 0.85)   # send a ⭐ call only if its setup backtests ≥ this (research_setups.py: 88% → ~91% right)
+# research_intervals.py (28-day walk-forward): 14-day history + 88% gate + ≥5 min left → 92% right, calls on ~61% of
+# coin-windows, 95¢ take-profit reached ~72%, worst day ~85%; the table is rebuilt at every retrain (6 h)
+SETUP_GATE = E("KW_SETUP_GATE", 0.88)    # send a ⭐ call only if its setup backtests ≥ this
+SETUP_DAYS = E("KW_SETUP_DAYS", 14)      # setup history: the last 14 days
+CALL_MINLEFT = E("KW_CALL_MINLEFT", 4.5) # no new calls with under ~5 min left (time to buy and take profit)
 
 
 def setup_cols(x):
@@ -592,7 +596,8 @@ def setup_table():
     s_ = np.where(D.side, 1, -1)
     D = D.assign(kt=D.dmid3 * s_, st=D.sr3.fillna(0) * s_, sg=D.sgap.fillna(0) * s_,
                  vz=[(v - vs[m][0]) / (vs[m][1] + 1e-9) for v, m in zip(D.kvol, D.mkt)])
-    C = D[D.tlr.isin([14, 11, 8, 5, 3]) & (D.conf >= 0.80)].sort_values("tl", ascending=False).groupby("ticker").head(1)
+    C = D[D.tlr.isin([14, 11, 8, 5, 3]) & (D.conf >= 0.80) & (D.cl >= time.time() - SETUP_DAYS * 86400)]
+    C = C.sort_values("tl", ascending=False).groupby("ticker").head(1)
     C = C.assign(px=np.where(C.side, C.ask, 1 - C.bid), won=(C.side == (C.up == 1)).astype(float))
     keys = ["|".join(setup_cols(r)) for r in C[["px", "tl", "kt", "st", "vz", "sg"]].to_dict("records")]
     g = pd.DataFrame(dict(k=keys, won=C.won.to_numpy())).groupby("k").won.agg(["sum", "size"])
@@ -1082,6 +1087,7 @@ def note_call(sh, p, tl, mid=None, dm1=0.0, px=None, sr=None):
         return "locked"    # ordinary swings (even past 50/50) are not announced as trouble
     m = p if mid is None else mid; pm = m - (dm1 or 0.0)
     if px is not None and px > CALL_MAXP: return None
+    if SELECT and tl < CALL_MINLEFT: return None                           # too late to buy and take profit
     if sr is not None and max(p, 1 - p) >= CALL_T and max(m, 1 - m) >= CALL_T:
         sh["setup"] = [round(sr[0], 3), sr[1], sr[2]]
         if sr[0] < SETUP_GATE: sh["gated"] = sh["setup"]; return None       # setup backtests under the gate: don't send
@@ -1115,9 +1121,9 @@ def sel_row(c, ev_, sh, p, mid, q):
     return f"🔒 {c} {fd} holding · {fs:.0%} now (made {f['ps']:.0%} at {f['tl']}m) {arrow(q, f['up'])}", "call"
 
 
-LEGEND = ("Key: 🔒⭐ new call, locked in (≥80% at a check-in; backtest ~88% right, so about 1 in 8 still lose — size for that) · "
+LEGEND = (f"Key: 🔒⭐ new call, locked in (≥80% and its setup backtests ≥{SETUP_GATE:.0%}; about 1 in 12 still lose — size for that) · "
           f"🟢 setup backtest: how often past calls with the same setup (price, time left, Kalshi trend, spot trend, volume, spot vs Kalshi) were right; "
-          f"calls are only sent at ≥{SETUP_GATE:.0%}, re-tested every 6 h · "
+          f"calls are only sent at ≥{SETUP_GATE:.0%} with ≥5 min left (last {SETUP_DAYS:.0f} days, re-tested every 6 h; walk-forward ~92% right) · "
           "📈 scalp swing: the cheap side's usual next-5-min run (how often it touches +10¢/+15¢, how high 1 in 4 go, how soon) "
           "and how often it still settles a winner; history, not a call · 💰 sell plan: take-profit price, how often past calls got there, and by when · 🔒 call holding · "
           "🚨 big reversal: the other side is now ≥80% (the only time to consider cutting; never flip on ordinary swings) · ⏸ no call yet · "
