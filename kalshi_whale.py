@@ -566,6 +566,52 @@ def train_low(now, kind="low"):
     return L
 
 
+# ---------------- setup backtest: how often past ≥80% check-in calls with the same setup were right ----------------
+SETUP_GATE = E("KW_SETUP_GATE", 0.85)   # send a ⭐ call only if its setup backtests ≥ this (research_setups.py: 88% → ~91% right)
+
+
+def setup_cols(x):
+    """Setup buckets: price paid, minutes left, Kalshi 3-min trend, spot 3-min trend, volume influx, spot vs Kalshi."""
+    return [("≤85" if x["px"] <= .85 else "85-90" if x["px"] <= .90 else "90-95" if x["px"] <= .95 else "95+"),
+            ("9+" if x["tl"] >= 9.5 else "6-9" if x["tl"] >= 5.5 else "3-5"),
+            ("K↑" if x["kt"] >= .05 else "K↓" if x["kt"] <= -.05 else "K→"),
+            ("S↑" if x["st"] >= 1 else "S↓" if x["st"] <= -1 else "S→"),
+            ("vol↑" if x["vz"] >= 1 else "vol↓" if x["vz"] <= -.5 else "vol~"),
+            ("ahead" if x["sg"] >= .3 else "behind" if x["sg"] <= -.3 else "even")]
+
+
+def setup_table():
+    """From every stored window: first ≥80% call per window at the check-ins, its setup, right or wrong. Rates are
+    shrunk toward the overall average (k=50) so thin setups can't look perfect. Rebuilt at every retrain."""
+    D = pd.concat([kframe(load_k(m), 14.6, True) for m in COMMS], ignore_index=True)
+    if not len(D): return {}
+    for c_ in ("sr3", "sgap"):
+        if c_ not in D: D[c_] = 0.0
+    D["tlr"] = D.tl.round().astype(int); D["conf"] = np.maximum(D.mid, 1 - D.mid); D["side"] = D.mid >= 0.5
+    vs = {m: (float(g.kvol.median()), float(g.kvol.std() or 1.0)) for m, g in D.groupby("mkt")}
+    s_ = np.where(D.side, 1, -1)
+    D = D.assign(kt=D.dmid3 * s_, st=D.sr3.fillna(0) * s_, sg=D.sgap.fillna(0) * s_,
+                 vz=[(v - vs[m][0]) / (vs[m][1] + 1e-9) for v, m in zip(D.kvol, D.mkt)])
+    C = D[D.tlr.isin([14, 11, 8, 5, 3]) & (D.conf >= 0.80)].sort_values("tl", ascending=False).groupby("ticker").head(1)
+    C = C.assign(px=np.where(C.side, C.ask, 1 - C.bid), won=(C.side == (C.up == 1)).astype(float))
+    keys = ["|".join(setup_cols(r)) for r in C[["px", "tl", "kt", "st", "vz", "sg"]].to_dict("records")]
+    g = pd.DataFrame(dict(k=keys, won=C.won.to_numpy())).groupby("k").won.agg(["sum", "size"])
+    prior = float(C.won.mean())
+    return dict(prior=round(prior, 4), n=int(len(C)), vol=vs,
+                t={k: [round(float((r["sum"] + prior * 50) / (r["size"] + 50)), 4), int(r["size"])] for k, r in g.iterrows()})
+
+
+def setup_rate(R, c, p, mid, q, px):
+    """(backtest hit rate, past calls with this setup, setup text) for a call right now; None if no table yet."""
+    T = (R or {}).get("setups") or {}
+    if not T.get("t"): return None
+    up = mid >= 0.5; s_ = 1 if up else -1; vm, vsd = (T.get("vol") or {}).get(c, (0.0, 1.0))
+    x = dict(px=px, tl=q["tl"], kt=q.get("dmid3", 0.0) * s_, st=(q.get("sr3") or 0.0) * s_, sg=(q.get("sgap") or 0.0) * s_,
+             vz=((q.get("kvol") or vm) - vm) / (vsd + 1e-9))
+    cols = setup_cols(x); r, n = T["t"].get("|".join(cols), [T["prior"], 0])
+    return r, n, " ".join(cols[2:])
+
+
 def fit_offset(X, y, off, w8=None, lam=0.02, iters=900):
     """Logistic regression with Kalshi's log-odds as a fixed offset: learns only what Kalshi's price misses."""
     w = np.zeros(X.shape[1]); w8 = np.ones(len(y)) if w8 is None else w8 / w8.mean()
@@ -627,6 +673,8 @@ def train(push=True):
              months=dict(windows=int(Mo.ticker.nunique()), test=evaluate(Mwk, Mo), test_by=eval_by(Mwk, Mo, "mkt"),
                          by_month=eval_by(Mwk, Mo.assign(mon=pd.to_datetime(Mo.cl, unit="s").dt.strftime("%Y-%m")), "mon")))
     R["proven"] = {c: proven(R["weeks"]["test_by"].get(c), R["months"]["test_by"].get(c)) for c in COMMS}
+    try: R["setups"] = setup_table()
+    except Exception as e: print("setup table:", e, flush=True); R["setups"] = old.get("setups", {})
     R["model"] = Mdep; R["kf"] = list(KF); R["feats"] = sorted(((KF[i], Mdep["w"][i]) for i in range(len(KF))), key=lambda z: -abs(z[1]))[:5]
     try: R["low"] = train_low(now)
     except Exception as e: print("low-spike model:", e, flush=True); R["low"] = old.get("low", {})
@@ -880,6 +928,7 @@ def live_pred(R, c, w):
     return p, float(r.mid.iloc[0]), dict(bid=float(r.bid.iloc[0]), ask=float(r.ask.iloc[0]), tl=float(r.tl.iloc[0]), t1=ts_of(w["close_time"]),
                                                   dmid3=float(r.dmid3.iloc[0]), dmid1=float(r.dmid1.iloc[0]), spot3=spot_move(c, float(r.ts.iloc[0])),
                                                   sgap=float(r.sgap.iloc[0]) if "sgap" in r and float(r.sok.iloc[0]) > 0 else None,
+                                                  sr3=float(r.sr3.iloc[0]) if "sr3" in r else None, kvol=float(r.kvol.iloc[0]),
                                                   spx=float(r.spx.iloc[0]) if "spx" in r and r.spx.notna().iloc[0] else None,
                                                   ssv=float(r.ssv.iloc[0]) if "ssv" in r and r.ssv.notna().iloc[0] else None,
                                                   strike=float(pd.to_numeric(r.strike, errors="coerce").iloc[0]))
@@ -1018,7 +1067,7 @@ def sell_plan(px, tl, t1):
             f"usually within ~{m:.0f} min (by {et(min(time.time() + 60 * m, t1 - 60))}). If it doesn't fill, holding pays $1 if the call is right.")
 
 
-def note_call(sh, p, tl, mid=None, dm1=0.0, px=None):
+def note_call(sh, p, tl, mid=None, dm1=0.0, px=None, sr=None):
     """Lock the window's first call once it is ≥85% now AND a minute ago (same side, model agrees). After that the call
     never changes: a later lean the other way is a warning, logged as a switch, never graded."""
     if not SELECT or not sh: return None
@@ -1033,9 +1082,12 @@ def note_call(sh, p, tl, mid=None, dm1=0.0, px=None):
         return "locked"    # ordinary swings (even past 50/50) are not announced as trouble
     m = p if mid is None else mid; pm = m - (dm1 or 0.0)
     if px is not None and px > CALL_MAXP: return None
+    if sr is not None and max(p, 1 - p) >= CALL_T and max(m, 1 - m) >= CALL_T:
+        sh["setup"] = [round(sr[0], 3), sr[1], sr[2]]
+        if sr[0] < SETUP_GATE: sh["gated"] = sh["setup"]; return None       # setup backtests under the gate: don't send
     if (max(p, 1 - p) >= CALL_T and max(m, 1 - m) >= CALL_T and (m >= 0.5) == bool(up)
             and (not CALL_STABLE or (max(pm, 1 - pm) >= CALL_T and (pm >= 0.5) == bool(up)))):
-        sh["first"] = dict(up=bool(up), ps=round(max(p, 1 - p), 3), tl=round(tl)); return "new"
+        sh["first"] = dict(up=bool(up), ps=round(max(p, 1 - p), 3), tl=round(tl), setup=sh.get("setup")); sh.pop("gated", None); return "new"
     return None
 
 
@@ -1047,9 +1099,14 @@ def sel_row(c, ev_, sh, p, mid, q):
     up = p >= 0.5; d = "UP" if up else "DOWN"; ps = max(p, 1 - p); kp = mid if up else 1 - mid; f = sh.get("first")
     if ev_ == "new":
         lose = max(1 - kp, 0.01)
-        return (f"🔒⭐ {c} CALL {d} · Kalshi {kp:.0%} (model {ps:.0%}) · about 1 in {max(round(1 / lose), 2)} of these lose "
-                f"{arrow(q, up)} · locked in (graded on this)"), "call"
-    if not f: return None, "none"
+        st = sh.get("setup")
+        return (f"🔒⭐ {c} CALL {d} · Kalshi {kp:.0%} (model {ps:.0%})"
+                + (f" · 🟢 setup backtest {st[0]:.0%} over {st[1]:,} past calls ({st[2]})" if st else f" · about 1 in {max(round(1 / lose), 2)} of these lose")
+                + f" {arrow(q, up)} · locked in (graded on this)"), "call"
+    if not f:
+        g_ = sh.get("gated")
+        if g_: return f"⏸ {c} {d} {ps:.0%} · not sent: setup backtest only {g_[0]:.0%} (needs {SETUP_GATE:.0%}) · {g_[2]}", "none"
+        return None, "none"
     fd = "UP" if f["up"] else "DOWN"; fs = p if f["up"] else 1 - p
     if ev_ in ("flip", "against"):
         return (f"🚨 {c} BIG REVERSAL · the other side ({d}) is now {ps:.0%} on the model and Kalshi · call {fd} likely lost "
@@ -1059,6 +1116,8 @@ def sel_row(c, ev_, sh, p, mid, q):
 
 
 LEGEND = ("Key: 🔒⭐ new call, locked in (≥80% at a check-in; backtest ~88% right, so about 1 in 8 still lose — size for that) · "
+          f"🟢 setup backtest: how often past calls with the same setup (price, time left, Kalshi trend, spot trend, volume, spot vs Kalshi) were right; "
+          f"calls are only sent at ≥{SETUP_GATE:.0%}, re-tested every 6 h · "
           "📈 scalp swing: the cheap side's usual next-5-min run (how often it touches +10¢/+15¢, how high 1 in 4 go, how soon) "
           "and how often it still settles a winner; history, not a call · 💰 sell plan: take-profit price, how often past calls got there, and by when · 🔒 call holding · "
           "🚨 big reversal: the other side is now ≥80% (the only time to consider cutting; never flip on ordinary swings) · ⏸ no call yet · "
@@ -1124,7 +1183,8 @@ def board_c(L_, R, preds, b, closed=(), res=None):
         up = p >= 0.5; ps = p if up else 1 - p; ask = q["ask"] if up else 1 - q["bid"]; e = ps - ask - fee(min(max(ask, 0.01), 0.99))
         go = e >= EDGE and 0.03 < ask <= KMAX; d = "UP" if up else "DOWN"; kp = mid if up else 1 - mid
         if q.get("tk"): L_.shown[q["tk"]] = dict(c=c, t1=q["t1"], p=round(p, 4), mid=round(mid, 4), go=bool(go), ask=round(ask, 3), left=round(q["tl"]), v=3)
-        ev0 = note_call(L_.shown[q["tk"]], p, q["tl"], mid, q.get("dmid1", 0.0), buy_px(L_, q["tk"], up, q)) if q.get("tk") else None
+        ev0 = (note_call(L_.shown[q["tk"]], p, q["tl"], mid, q.get("dmid1", 0.0), buy_px(L_, q["tk"], up, q),
+                         setup_rate(R, c, p, mid, q, buy_px(L_, q["tk"], up, q))) if q.get("tk") else None)
         dot = last_dot(L_, c); early |= q["tl"] > 12.5
         if go:
             bets.append(f"{c} {d}")
@@ -1314,7 +1374,8 @@ def update9_c(L_, R, upd, b):
         b_up = p0 >= 0.5; ps0 = p0 if b_up else 1 - p0; flip = b_up != up
         L_.shown[q["tk"]].update(p9=round(p, 4), mid9=round(mid, 4), go9=bool(go), ask9=round(ask, 3))
         if SELECT:
-            sh = L_.shown[q["tk"]]; ev_ = note_call(sh, p, q["tl"], mid, q.get("dmid1", 0.0), buy_px(L_, q["tk"], up, q)); f = sh.get("first")
+            sh = L_.shown[q["tk"]]; bpx = buy_px(L_, q["tk"], up, q)
+            ev_ = note_call(sh, p, q["tl"], mid, q.get("dmid1", 0.0), bpx, setup_rate(R, c, p, mid, q, bpx)); f = sh.get("first")
             txt, kind = sel_row(c, ev_, sh, p, mid, q)
             if f: calls.append(f"{c} {'UP' if f['up'] else 'DOWN'}")
             if ev_ == "new":
@@ -1462,7 +1523,7 @@ def final_c(L_, R, fin, b):
         p, mid, q, flow = fin[c]; tk = q.get("tk"); sh = L_.shown.get(tk)
         if not sh or not on("board_update", c): continue
         up = p >= 0.5; d = "UP" if up else "DOWN"; ps = p if up else 1 - p; kp = mid if up else 1 - mid
-        L_.shown[tk].update(p5=round(p, 4), mid5=round(mid, 4)); ev_ = note_call(L_.shown[tk], p, q["tl"], mid, q.get("dmid1", 0.0), buy_px(L_, tk, up, q)); f = L_.shown[tk].get("first")
+        L_.shown[tk].update(p5=round(p, 4), mid5=round(mid, 4)); bpx = buy_px(L_, tk, up, q); ev_ = note_call(L_.shown[tk], p, q["tl"], mid, q.get("dmid1", 0.0), bpx, setup_rate(R, c, p, mid, q, bpx)); f = L_.shown[tk].get("first")
         if ps >= STRONG and TIERS and not SELECT: strong.append(f"{c} {d} {ps:.0%}")
         ch = " · ⚡ changed from board" if (sh["p"] >= 0.5) != up else ""
         if SELECT:
@@ -1588,7 +1649,7 @@ def live():
         harvest()
         for c in COMMS: kfetch(c, WEEKS_D if R.get("model") else MONTHS_D, 1 if R.get("model") else SAMPLE)
         R = train(push=False) or R
-    elif time.time() - R.get("trained", 0) > 6 * 3600 or (WAVES_ON and not R.get("wave")):
+    elif time.time() - R.get("trained", 0) > 6 * 3600 or (WAVES_ON and not R.get("wave")) or not R.get("setups"):
         bg_train()          # stale but usable: keep pushing while it retrains in the background
     L_ = Live(meta, st)
     warm = trades_since(t0 - 3900, 200)
@@ -1651,7 +1712,7 @@ def live():
                 sh_ = L_.shown.get(tk)    # call the minute a side first reaches ≥80% (≤90¢), not at the next 3-min check-in
                 if MINUTE_CALLS and SELECT and sh_ and not sh_.get("first") and tl >= 3 and on("board_update", c):
                     up_ = p >= 0.5; bp = buy_px(L_, tk, up_, q)
-                    if note_call(sh_, p, tl, mid, q.get("dmid1", 0.0), bp) == "new":
+                    if note_call(sh_, p, tl, mid, q.get("dmid1", 0.0), bp, setup_rate(R, c, p, mid, q, bp)) == "new":
                         txt, _ = sel_row(c, "new", sh_, p, mid, q); sh_["called_t"] = now
                         notify(f"⭐ NEW CALL {c} {'UP' if up_ else 'DOWN'} ≤{cents(bp)} · {round(tl)}m left · {et(q['t1'])}",
                                txt + f"\n   → buy {side_name(up_)} limit ≤ {cents(bp)} (don't chase above it)" + spread_note(q) + sell_plan(bp, tl, q["t1"]) + "\n\n" + LEGEND,
