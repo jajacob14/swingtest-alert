@@ -35,7 +35,9 @@ for L in (3, 7, 14, 30, 999):
                 f = first_calls(day[day.rate >= G], M)           # first check-in that passes the gate (time ≥ M)
                 out.append(f.assign(nwin=day.ticker.nunique()))
             if not out: continue
-            x = pd.concat(out); nw = sum(o.nwin.iloc[0] for o in out if len(o)); cost = x.px + K.fees(x.px)
+            x = pd.concat(out)
+            if (L, M, G) == (14, 5, 0.88): CUR = x.copy()
+            nw = sum(o.nwin.iloc[0] for o in out if len(o)); cost = x.px + K.fees(x.px)
             res.append(dict(L=L, M=M, G=G, calls=len(x), cov=len(x) / max(nw, 1), right=x.won.mean(), px=x.px.mean(), mins=x.tl.median(),
                             tp=x.tp95[x.px < .95].mean(), roi=(x.won - cost).sum() / cost.sum(),
                             worst=x.groupby("day").won.mean().min()))
@@ -45,3 +47,12 @@ P(R.round(3).to_string(index=False))
 P("\n== best accuracy with ≥5 min left and calls on ≥40% of coin-windows ==")
 ok = R[(R.M >= 5) & (R["cov"] >= 0.40)].sort_values(["right", "cov"], ascending=False).head(8)
 P(ok.round(3).to_string(index=False))
+
+P("\n== current rule (14 d · ≥5 min · gate 88%): does a max buy price help? (walk-forward, after fees) ==")
+x = CUR; cost = x.px + K.fees(x.px); x = x.assign(pl=x.won - cost, cost=cost)
+for lo, hi in ((0, .85), (.85, .88), (.88, .90), (.90, .92), (.92, .95), (.95, 1.0)):
+    y = x[(x.px > lo) & (x.px <= hi)]
+    if len(y): P(f"  buy {lo * 100:.0f}-{hi * 100:.0f}¢  n={len(y):5d} right {y.won.mean():.1%} · roi {y.pl.sum() / y.cost.sum():+.2%}")
+for cap in (.85, .88, .90, .92, .95, .99):
+    y = x[x.px <= cap]
+    P(f"  cap {cap * 100:.0f}¢: calls {len(y):5d} ({len(y) / len(x):.0%}) right {y.won.mean():.1%} · roi {y.pl.sum() / y.cost.sum():+.2%} · worst day {y.groupby('day').won.mean().min():.0%}")
