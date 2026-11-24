@@ -1057,8 +1057,11 @@ def swing_line(c, q, tk):
     r = _SWING.get(f"{tb}|{int(min(ask, .99) * 20) * 5}")
     if not r: return ""
     t5, t10, t15, med, q75, mins, win = r[:7]
-    return (f"📈 {c} {'UP' if up else 'DOWN'} at {cents(ask)} → {t10:.0%} chance hits {cents(min(ask + .10, .99))}, {t15:.0%} hits "
-            f"{cents(min(ask + .15, .99))} (in ~{mins}m) · only {win:.0%} win at close")
+    return (f"   {c} {'DOWN' if not up else 'UP'} costs {cents(ask)} → pops to {cents(min(ask + .10, .99))}: {t10:.0%} · "
+            f"{cents(min(ask + .15, .99))}: {t15:.0%} · peak ~{mins}m · wins at close {win:.0%}")
+
+
+SWING_HEAD = "📈 Scalp odds — cheap side, chance it pops within 5 min (from past windows, not a forecast; sell into the pop, most expire at 0):"
 
 
 def sell_plan(px, tl, t1):
@@ -1120,7 +1123,7 @@ def sel_row(c, ev_, sh, p, mid, q):
 LEGEND = (f"Key: 🔒⭐ BUY (≥80% + setup ≥{SETUP_GATE:.0%}, ≥5m left; ~1 in 12 lose) · 🔒 holding · 🚨 reversal (other side ≥80%) · "
           "🚫 don't buy · ✅/❌ buy right/wrong · ↗ your way / ↘ against / → steady = how the price moved the last 3 min (⚡fast; past, not a forecast) · "
           "🟢 setup = past calls like it that were right · 💵 buy · 💰 take-profit (hit rate, time) · "
-          + ("📈 scalp: the cheap side's chance to spike +10¢/+15¢ in the next 5 min, and how often it wins at the close · " if CRYPTO else "↔ wide spread: limit only · ")
+          + ("📈 scalp odds: how often the cheap side popped +10¢/+15¢ within 5 min in past windows · " if CRYPTO else "↔ wide spread: limit only · ")
           + "K = Kalshi")
 
 
@@ -1176,6 +1179,7 @@ def arrow(q, up):
 
 
 def board_c(L_, R, preds, b, closed=(), res=None):
+    swb = []
     pv = R.get("proven", {}); rows, bets, strong = [], [], []; early = False
     for c in [x for x in SHOW if x in preds]:
         p, mid, q, flow = preds[c]
@@ -1197,7 +1201,7 @@ def board_c(L_, R, preds, b, closed=(), res=None):
                     bp = buy_px(L_, q["tk"], up, q)
                     txt += f"\n   💵 pay ≤{cents(bp)}" + sell_plan(bp, q["tl"], q["t1"]) + spread_note(q)
                 rows.append(txt or f"🚫 {c} DON'T BUY yet · leans {d} {ps:.0%}")
-                if CRYPTO and q.get("tk") and (sl := swing_line(c, q, q["tk"])): rows.append(sl)
+                if CRYPTO and q.get("tk") and (sl := swing_line(c, q, q["tk"])): swb.append(sl)
                 if txt and (fn := flow_note(flow_of(L_, c, q.get("tk")), up)): rows.append(fn)
                 elif not txt: flow_of(L_, c, q.get("tk"))
                 continue
@@ -1214,6 +1218,7 @@ def board_c(L_, R, preds, b, closed=(), res=None):
     head = [x for x in (last_line(L_), line) if x] if not R_ else \
         [f"🎯 Last window {et(b - 1800)}–{et(b - 900)}: " + (f"{R_[0]}/{R_[1]} {'calls ' if SELECT else ''}right" if R_[1] else "no calls")] + R_[2] + [""] + R_[3] + ["", f"━━ 📈 Calls for the {et(b)} window ━━"]
     if early: rows.append("Early read: the window just opened, so odds start near 50/50. Watch the 10-min and final calls.")
+    if swb: rows += ["", SWING_HEAD] + swb
     if closed: rows.append("Closed: " + ", ".join(closed))
     tail = [(f"⭐ CALL = ≥{STRONG:.0%} sure (backtest ~87% right, ~92% at the final call) · ⏸ = under {STRONG:.0%}, no call · " if SELECT else
              f"⭐ ≥{STRONG:.0%} sure (~87% right) · 🔹 {TOSS:.0%}-{STRONG:.0%} · ⚪ toss-up · " if TIERS else "% = chance it settles that way · ")
@@ -1394,7 +1399,7 @@ def update9_c(L_, R, upd, b):
         else: same.append(f"{c} {d} {ps:.0%}")
     if not rows and not same: return
     if same: rows.append(("🚫 Don't buy: " if SELECT else "Same: ") + " · ".join(same))
-    if swl: rows += [""] + swl
+    if swl: rows += ["", SWING_HEAD] + swl
     m = f"{round(left)} min left" if left is not None else ""
     if SELECT:
         head = ("🔒 " + ", ".join(calls)) if calls else "don't buy yet"
@@ -1538,7 +1543,7 @@ def final_c(L_, R, fin, b):
         rows.append(f"{mark(ps)} {c} {d} {ps:.0%} · K {kp:.0%} {arrow(q, up)}" + (" · toss-up" if TIERS and ps < TOSS else "") + ch)
         if (fn := flow_note(flow_of(L_, c, tk), up)): rows.append(fn)
     if not rows: return
-    if swf: rows += [""] + swf
+    if swf: rows += ["", SWING_HEAD] + swf
     rec, line = wl_line(L_); u5 = u5_txt(L_)
     tail = [x for x in ("" if SELECT else (f"Final calls today: {u5}" if u5 else ""), line) if x]
     pick = (("🔒 " if SELECT else "⭐ ") + ", ".join(strong)) if strong else ("don't buy" if SELECT else "no strong picks")
