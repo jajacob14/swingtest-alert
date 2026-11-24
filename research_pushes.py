@@ -1,7 +1,7 @@
 """Read-only: the last 24 h of pushes on the scanners' ntfy topics (what actually reached the phone)."""
 import json, os, datetime as dt, requests
 ET = dt.timezone(dt.timedelta(hours=-5))
-for env in ("KC_NTFY_TOPIC", "KW_NTFY_TOPIC"):
+for env in [e for e in os.getenv("TOPICS", "KC_NTFY_TOPIC,KW_NTFY_TOPIC,NTFY_TOPIC").split(",")]:
     t = os.getenv(env)
     if not t: print(f"##### {env}: not set"); continue
     r = requests.get(f"https://ntfy.sh/{t}/json", params={"poll": 1, "since": os.getenv("SINCE", "24h")}, timeout=60)
