@@ -623,8 +623,9 @@ def setup_rate(R, c, p, mid, q, px):
     x = dict(px=px, tl=q["tl"], kt=q.get("dmid3", 0.0) * s_, st=(q.get("sr3") or 0.0) * s_, sg=(q.get("sgap") or 0.0) * s_,
              vz=((q.get("kvol") or vm) - vm) / (vsd + 1e-9))
     cols = setup_cols(x); r, n = T["t"].get("|".join(cols), [T["prior"], 0])
+    w = int(min(n, max(0, round(r * (n + 50) - T["prior"] * 50))))   # un-shrink: raw wins out of n
     if n < 30: r = min(r, T["prior"] - 0.02)          # too few past calls like it: needs evidence, never passes on the average alone
-    return r, n, " ".join(cols[2:])
+    return r, n, " ".join(cols[2:]), w
 
 
 def fit_offset(X, y, off, w8=None, lam=0.02, iters=900):
@@ -1174,6 +1175,17 @@ def path_brief(q, tk):
     return ("🔮 " + " · ".join(out)) if out else ""
 
 
+def tested(st, why=""):
+    """' · 🧪 46/50 won' = past calls with this same setup (last SETUP_DAYS days) and how many were right."""
+    if not st or len(st) < 4 or st[3] is None: return ""
+    return f" · 🧪 never tested{why}" if not st[1] else f" · 🧪 {st[3]}/{st[1]} won{why}"
+
+
+def gated_txt(sh, p):
+    """Don't-buy because the setup tested under the bar: show its record (only while a side is still ≥80%)."""
+    return tested(sh.get("gated"), " (under bar)") if sh.get("gated") and max(p, 1 - p) >= CALL_T and not sh.get("first") else ""
+
+
 def coin_block(L_, R, c, p, mid, q, ev_, sh):
     """Same line style as the commodity scanner: MARKET · decision · lean; buy plan and 🔮 range indented under it.
     The scalp read is returned separately for its own section."""
@@ -1181,14 +1193,14 @@ def coin_block(L_, R, c, p, mid, q, ev_, sh):
     if ev_ == "new":
         bp = buy_px(L_, tk, up, q); st = sh.get("setup")
         line = f"{c} · ⭐ BUY {d} {arrow(q, up)}"
-        sub.append(f"💵 ≤{cents(bp)}" + sell_plan(bp, q["tl"], q["t1"]) + spread_note(q) + (f" · 🟢 setup {st[0]:.0%}" if st else ""))
+        sub.append(f"💵 ≤{cents(bp)}" + sell_plan(bp, q["tl"], q["t1"]) + spread_note(q) + tested(st))
     elif f and ev_ in ("flip", "against"):
         fd = "UP" if f["up"] else "DOWN"; line = f"{c} · 🚨 flipped {d} — sell your {fd}"
     elif f:
         fd = "UP" if f["up"] else "DOWN"; fs = p if f["up"] else 1 - p
-        line = f"{c} · 🔒 {fd} holding {arrow(q, f['up'])}" + (" (shaky)" if fs < 0.5 else "")
+        line = f"{c} · 🔒 {fd} holding {arrow(q, f['up'])}" + (" (shaky)" if fs < 0.5 else "") + tested(f.get("setup"))
     else:
-        line = f"{c} · 🚫 don't buy · leans {'↓DOWN' if not up else '↑UP'} {arrow(q, up)}"
+        line = f"{c} · 🚫 don't buy · leans {'↓DOWN' if not up else '↑UP'} {arrow(q, up)}" + gated_txt(sh, p)
     yb, ya = live_book(tk) or (q["bid"], q["ask"])
     if 0.12 <= (yb + ya) / 2 <= 0.88 and (pb := path_brief(q, tk)): sub.append(pb)   # forecast range only while it's still open
     sl = scalp_call(L_, R, c, q, tk)
@@ -1259,7 +1271,7 @@ def note_call(sh, p, tl, mid=None, dm1=0.0, px=None, sr=None):
     if px is not None and px > CALL_MAXP: return None
     if SELECT and tl < CALL_MINLEFT: return None                           # too late to buy and take profit
     if sr is not None and max(p, 1 - p) >= CALL_T and max(m, 1 - m) >= CALL_T:
-        sh["setup"] = [round(sr[0], 3), sr[1], sr[2]]
+        sh["setup"] = [round(sr[0], 3), sr[1], sr[2], sr[3] if len(sr) > 3 else None]
         if sr[0] < SETUP_GATE: sh["gated"] = sh["setup"]; return None       # setup backtests under the gate: don't send
     if (max(p, 1 - p) >= CALL_T and max(m, 1 - m) >= CALL_T and (m >= 0.5) == bool(up)
             and (not CALL_STABLE or (max(pm, 1 - pm) >= CALL_T and (pm >= 0.5) == bool(up)))):
@@ -1279,10 +1291,11 @@ def sel_row(c, ev_, sh, p, mid, q):
     if not f: return None, "none"
     fd = "UP" if f["up"] else "DOWN"; fs = p if f["up"] else 1 - p
     if ev_ in ("flip", "against"): return f"{c} · 🚨 flipped {d} — sell your {fd}", "warn"
-    return f"{c} · 🔒 {fd} holding {arrow(q, f['up'])}" + (" (shaky)" if fs < 0.5 else ""), "call"
+    return f"{c} · 🔒 {fd} holding {arrow(q, f['up'])}" + (" (shaky)" if fs < 0.5 else "") + tested(f.get("setup")), "call"
 
 
 LEGEND = ("Key: ⭐ buy · 🔒 holding · 🚨 sell · 🚫 don't buy (leans ↑UP/↓DOWN = where the market leans) · 💵 max price · 💰 take-profit · "
+          + "🧪 46/50 won = past calls with this same setup (last 2 weeks), how many were right · "
           + ("🔮 price each side reaches about half the time before the close (* = 1 in 4) · " if CRYPTO else "")
           + "↗/↘ Kalshi price moving your way/against (⚡ fast) · "
           + ("💸 scalp: cheap side likely to pop +10¢ soon — buy, set the sell, out by the time shown (graded separately) · "
@@ -1366,9 +1379,9 @@ def board_c(L_, R, preds, b, closed=(), res=None):
                 if kind == "call": strong.append(f"{c} {d}")
                 if ev0 == "new":
                     bp = buy_px(L_, q["tk"], up, q)
-                    txt += f"\n   💵 ≤{cents(bp)}" + sell_plan(bp, q["tl"], q["t1"]) + spread_note(q)
+                    txt += f"\n   💵 ≤{cents(bp)}" + sell_plan(bp, q["tl"], q["t1"]) + spread_note(q) + tested(L_.shown[q["tk"]].get("setup"))
                 if txt: rows.append(txt)
-                else: rows.append(f"{c} · 🚫 don't buy · leans {'↑UP' if p >= 0.5 else '↓DOWN'} {arrow(q, p >= 0.5)}")
+                else: rows.append(f"{c} · 🚫 don't buy · leans {'↑UP' if p >= 0.5 else '↓DOWN'} {arrow(q, p >= 0.5)}" + (gated_txt(L_.shown[q["tk"]], p) if q.get("tk") else ""))
                 if CRYPTO and q.get("tk") and (sl := scalp_call(L_, R, c, q, q["tk"])): swb.append(sl)
                 if txt and (fn := flow_note(flow_of(L_, c, q.get("tk")), up)): rows.append(fn)
                 elif not txt: flow_of(L_, c, q.get("tk"))
@@ -1582,10 +1595,10 @@ def update9_c(L_, R, upd, b):
             txt, kind = sel_row(c, ev_, sh, p, mid, q)
             if f: calls.append(f"{c} {'UP' if f['up'] else 'DOWN'}")
             if ev_ == "new":
-                bp = buy_px(L_, q["tk"], up, q); txt += f"\n   💵 ≤{cents(bp)}" + sell_plan(bp, q["tl"], q["t1"]) + spread_note(q)
+                bp = buy_px(L_, q["tk"], up, q); txt += f"\n   💵 ≤{cents(bp)}" + sell_plan(bp, q["tl"], q["t1"]) + spread_note(q) + tested(sh.get("setup"))
                 newc.append(f"{c} {d} ≤{cents(bp)}"); link = link or f"{WEB}/{K15[c].lower()}"
             if txt: rows.append(txt); nch += int(ev_ == "new"); nflip += int(kind == "warn")
-            else: rows.append(f"{c} · 🚫 don't buy · leans {'↑UP' if p >= 0.5 else '↓DOWN'} {arrow(q, p >= 0.5)}")
+            else: rows.append(f"{c} · 🚫 don't buy · leans {'↑UP' if p >= 0.5 else '↓DOWN'} {arrow(q, p >= 0.5)}" + gated_txt(sh, p))
             if CRYPTO and (sl := scalp_call(L_, R, c, q, q["tk"])): swl.append(sl)
             if go and not go0: rows.append(f"🟢 {c} now BET ≤ {cents(ask)}")
             continue
@@ -1736,9 +1749,9 @@ def final_c(L_, R, fin, b):
         if SELECT:
             txt, kind = sel_row(c, ev_, L_.shown[tk], p, mid, q); f = L_.shown[tk].get("first")
             if ev_ == "new":
-                bp = buy_px(L_, tk, up, q); txt += f"\n   💵 ≤{cents(bp)}" + sell_plan(bp, q["tl"], q["t1"]) + spread_note(q); newf.append(f"{c} {d} ≤{cents(bp)}")
+                bp = buy_px(L_, tk, up, q); txt += f"\n   💵 ≤{cents(bp)}" + sell_plan(bp, q["tl"], q["t1"]) + spread_note(q) + tested(L_.shown[tk].get("setup")); newf.append(f"{c} {d} ≤{cents(bp)}")
             if f: strong.append(f"{c} {'UP' if f['up'] else 'DOWN'}" + (" 🚨" if kind == "warn" else ""))
-            rows.append(txt or f"{c} · 🚫 don't buy · leans {'↑UP' if p >= 0.5 else '↓DOWN'}")
+            rows.append(txt or f"{c} · 🚫 don't buy · leans {'↑UP' if p >= 0.5 else '↓DOWN'}" + gated_txt(L_.shown[tk], p))
             if CRYPTO and (sl := scalp_call(L_, R, c, q, tk)): swf.append(sl)
             if (fn := flow_note(flow_of(L_, c, tk), up)): rows.append(fn)
             continue
