@@ -1151,6 +1151,29 @@ def spike_read(L_, R, c, q, tk):
 SCALP_HEAD = "━━ 💸 SCALPS (separate from calls) ━━"
 
 
+def spot_brief(c, strike=None):
+    """'$61,461 (+$61 vs target)' — live Coinbase price and distance to the price it must beat."""
+    S = _SPOT.get(c) or {}; now = time.time(); live = _LSPOT.get(c)
+    px = live[1] if live and now - live[0] < 30 else next((S[t] for t in sorted(S, reverse=True)[:3] if S[t] == S[t]), None)
+    if px is None: return ""
+    f2 = lambda v, ref: f"${v:,.0f}" if ref >= 1000 else f"${v:,.2f}" if ref >= 10 else f"${v:.4f}" if ref >= 0.1 else f"${v:.5f}"
+    out = f2(px, px)
+    if strike: dd = px - strike; out += f" ({'+' if dd >= 0 else '−'}{f2(abs(dd), strike)} vs target)"
+    return out
+
+
+def path_brief(q, tk):
+    """'🔮 UP 53¢→81¢ · DOWN 49¢→72¢' — the level each side reaches half the time before the close."""
+    if not _PATH: return ""
+    yb, ya = live_book(tk) or (q["bid"], q["ask"]); tl = q["tl"]; tb = 13 if tl >= 11.5 else 10 if tl >= 8.5 else 7 if tl >= 5.5 else 4; out = []
+    for nm, ask in (("UP", ya), ("DOWN", 1 - yb)):
+        r = _PATH.get(f"{tb}|{int(min(max(ask, .01), .99) * 20) * 5}")
+        if r and ask < .97:
+            h = max(min(r[0], .99), ask) if r[0] >= ask + .02 else min(r[1], .99)
+            if h >= ask + .02: out.append(f"{nm} {cents(ask)}→{cents(h)}" + ("" if r[0] >= ask + .02 else "*"))
+    return ("🔮 " + " · ".join(out)) if out else ""
+
+
 def coin_block(L_, R, c, p, mid, q, ev_, sh):
     """Coin · model lean · decision, then the live price line and buy/sell plan. The scalp read is returned separately."""
     up = p >= 0.5; d = "UP" if up else "DOWN"; f = sh.get("first"); tk = q["tk"]; sub = []
@@ -1169,9 +1192,19 @@ def coin_block(L_, R, c, p, mid, q, ev_, sh):
         status = "🔴 DON'T BUY" + (f" (setup {g_[0]:.0%} < {SETUP_GATE:.0%})" if g_ else "")
     sl = scalp_call(L_, R, c, q, tk)
     scalp = sl.replace("💸 SCALP ", "💸 ") if sl else f"{c}: " + spike_read(L_, R, c, q, tk)
-    sh_ = spot_head(c, q.get("strike")); pl = path_line(q, tk)
-    if pl: sub.insert(0, pl)
-    return ([f"{COIN_ICON.get(c, '•')} {c} · {status}" + ("" if f or ev_ == "new" else f" · {lean}") + (f"\n    {sh_}" if sh_ else "")] + ["    " + x for x in sub]), scalp
+    pb = path_brief(q, tk); sb = spot_brief(c, q.get("strike"))
+    line = f"{COIN_ICON.get(c, '•')} {c}" + (f" {sb}" if sb else "") + f" · {status}" + ("" if f or ev_ == "new" else f" · {lean}")
+    return [line] + ["    " + x for x in sub + ([pb] if pb else [])], scalp
+
+
+def market_wl(L_):
+    """Per-market W/L today: ⭐ calls and 💸 scalps, kept separate."""
+    t0 = _today(); w = [x for x in L_.wl if x[0] > t0]; out = []
+    cw = [(x[1], call_wl(x)) for x in w]; cw = [(c, z) for c, z in cw if z is not None]
+    if cw: out.append("📊 Calls W/L: " + " · ".join(f"{c} {sum(z for cc, z in cw if cc == c)}-{sum(1 - z for cc, z in cw if cc == c)}" for c in SHOW if any(cc == c for cc, _ in cw)))
+    sc = [x for x in getattr(L_, "scalpc", []) if x["t"] > t0 and not x.get("open")]
+    if sc: out.append("💸 Scalps W/L: " + " · ".join(f"{c} {sum(x['hit'] for x in sc if x['c'] == c)}-{sum(1 - x['hit'] for x in sc if x['c'] == c)}" for c in SHOW if any(x["c"] == c for x in sc)))
+    return out
 
 
 def scalpc_txt(L_, since=None):
@@ -1251,8 +1284,8 @@ def sel_row(c, ev_, sh, p, mid, q):
 
 
 LEGEND = (("Key: 🟢 BUY · 🔒 holding · 🚨 sell · 🔴 don't buy (leans ↑UP/↓DOWN = where the market leans, for reference) · 💵 max price · 💰 take-profit · "
-           "coin line = live price, 5-min change, 12-min chart, trend, the price it must beat (target) · "
-          "🔮 how high each side's price usually climbs before the close from here (1 in 2 / 1 in 4 times; a range, not a direction) · "
+           "coin line = live price and how far it is from the price it must beat · "
+          "🔮 the price each side reaches about half the time before the close (* = only 1 in 4); a range, not a direction · "
           "⚡/⚠️/➖ spike read for the cheap side · " if CRYPTO else
            "Key: ⭐ buy · 🔒 holding · 🚨 sell · 🚫 don't buy (↑UP/↓DOWN = where it leans) · 💵 max price · 💰 take-profit · ")
           + "↗/↘ Kalshi price moving your way/against (⚡ fast) · "
@@ -1619,7 +1652,7 @@ def results_c(L_, t1, rows, send=True):
               + (" · settled its way" if x.get("won") else "") for x in sw_]
         L += [f"💸 {x['c']} {'UP' if x['up'] else 'DOWN'} {cents(x['entry'])} → {cents(x['tgt'])} {'✅ popped' if x['hit'] else '❌ no pop'}"
               for x in L_.scalpc if not x.get("open") and int(round(x["t1"])) == int(t1)]
-        tail = [line, scalpc_txt(L_)] + ["", LEGEND]
+        tail = [line, scalpc_txt(L_)] + market_wl(L_) + ["", LEGEND]
         if not send: return n, k, L, [x for x in tail if x and x != LEGEND]   # bundled push adds the key once, at the bottom
         notify((f"{'✅' if n == k else '🎯'} {n}/{k} calls right" if k else "no calls") + f" · {et(t1 - 900)}–{et(t1)}" + (f" · today {rec}" if rec else ""),
                "\n".join(L + [""] + [x for x in tail if x]), 2)
