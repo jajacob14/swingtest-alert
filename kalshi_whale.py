@@ -1175,26 +1175,25 @@ def path_brief(q, tk):
 
 
 def coin_block(L_, R, c, p, mid, q, ev_, sh):
-    """Coin · model lean · decision, then the live price line and buy/sell plan. The scalp read is returned separately."""
+    """Same line style as the commodity scanner: MARKET · decision · lean; buy plan and 🔮 range indented under it.
+    The scalp read is returned separately for its own section."""
     up = p >= 0.5; d = "UP" if up else "DOWN"; f = sh.get("first"); tk = q["tk"]; sub = []
-    lean = f"leans {'↑UP' if up else '↓DOWN'} {arrow(q, up)}"
     if ev_ == "new":
         bp = buy_px(L_, tk, up, q); st = sh.get("setup")
-        status = f"🟢{'⬆️' if up else '⬇️'} BUY {d} ≤{cents(bp)} {arrow(q, up)}"
+        line = f"{c} · ⭐ BUY {d} {arrow(q, up)}"
         sub.append(f"💵 ≤{cents(bp)}" + sell_plan(bp, q["tl"], q["t1"]) + spread_note(q) + (f" · 🟢 setup {st[0]:.0%}" if st else ""))
     elif f and ev_ in ("flip", "against"):
-        fd = "UP" if f["up"] else "DOWN"; status = f"🚨 SELL your {fd}"; sub.append(f"flipped {d} — don't buy {d}")
+        fd = "UP" if f["up"] else "DOWN"; line = f"{c} · 🚨 flipped {d} — sell your {fd}"
     elif f:
         fd = "UP" if f["up"] else "DOWN"; fs = p if f["up"] else 1 - p
-        status = f"🔒{'⬆️' if f['up'] else '⬇️'} HOLDING {fd} {arrow(q, f['up'])}" + (" (shaky)" if fs < 0.5 else "")
+        line = f"{c} · 🔒 {fd} holding {arrow(q, f['up'])}" + (" (shaky)" if fs < 0.5 else "")
     else:
-        g_ = sh.get("gated")
-        status = "🔴 DON'T BUY" + (f" (setup {g_[0]:.0%} < {SETUP_GATE:.0%})" if g_ else "")
+        line = f"{c} · 🚫 don't buy · leans {'↓DOWN' if not up else '↑UP'} {arrow(q, up)}"
+    yb, ya = live_book(tk) or (q["bid"], q["ask"])
+    if 0.12 <= (yb + ya) / 2 <= 0.88 and (pb := path_brief(q, tk)): sub.append(pb)   # forecast range only while it's still open
     sl = scalp_call(L_, R, c, q, tk)
     scalp = sl.replace("💸 SCALP ", "💸 ") if sl else f"{c}: " + spike_read(L_, R, c, q, tk)
-    pb = path_brief(q, tk); sb = spot_brief(c, q.get("strike"))
-    line = f"{COIN_ICON.get(c, '•')} {c}" + (f" {sb}" if sb else "") + f" · {status}" + ("" if f or ev_ == "new" else f" · {lean}")
-    return [line] + ["    " + x for x in sub + ([pb] if pb else [])], scalp
+    return [line] + ["    " + x for x in sub], scalp
 
 
 def market_wl(L_):
@@ -1283,11 +1282,8 @@ def sel_row(c, ev_, sh, p, mid, q):
     return f"{c} · 🔒 {fd} holding {arrow(q, f['up'])}" + (" (shaky)" if fs < 0.5 else ""), "call"
 
 
-LEGEND = (("Key: 🟢 BUY · 🔒 holding · 🚨 sell · 🔴 don't buy (leans ↑UP/↓DOWN = where the market leans, for reference) · 💵 max price · 💰 take-profit · "
-           "coin line = live price and how far it is from the price it must beat · "
-          "🔮 the price each side reaches about half the time before the close (* = only 1 in 4); a range, not a direction · "
-          "⚡/⚠️/➖ spike read for the cheap side · " if CRYPTO else
-           "Key: ⭐ buy · 🔒 holding · 🚨 sell · 🚫 don't buy (↑UP/↓DOWN = where it leans) · 💵 max price · 💰 take-profit · ")
+LEGEND = ("Key: ⭐ buy · 🔒 holding · 🚨 sell · 🚫 don't buy (leans ↑UP/↓DOWN = where the market leans) · 💵 max price · 💰 take-profit · "
+          + ("🔮 price each side reaches about half the time before the close (* = 1 in 4) · " if CRYPTO else "")
           + "↗/↘ Kalshi price moving your way/against (⚡ fast) · "
           + ("💸 scalp: cheap side likely to pop +10¢ soon — buy, set the sell, out by the time shown (graded separately) · "
              "send 'all' (9 markets) or 'core' (5 coins) to this topic to switch channel" if CRYPTO else "limit only = wide spread"))
@@ -1372,7 +1368,7 @@ def board_c(L_, R, preds, b, closed=(), res=None):
                     bp = buy_px(L_, q["tk"], up, q)
                     txt += f"\n   💵 ≤{cents(bp)}" + sell_plan(bp, q["tl"], q["t1"]) + spread_note(q)
                 if txt: rows.append(txt)
-                else: nob.append(f"{c} {'↑UP' if p >= 0.5 else '↓DOWN'}")
+                else: rows.append(f"{c} · 🚫 don't buy · leans {'↑UP' if p >= 0.5 else '↓DOWN'} {arrow(q, p >= 0.5)}")
                 if CRYPTO and q.get("tk") and (sl := scalp_call(L_, R, c, q, q["tk"])): swb.append(sl)
                 if txt and (fn := flow_note(flow_of(L_, c, q.get("tk")), up)): rows.append(fn)
                 elif not txt: flow_of(L_, c, q.get("tk"))
@@ -1589,7 +1585,7 @@ def update9_c(L_, R, upd, b):
                 bp = buy_px(L_, q["tk"], up, q); txt += f"\n   💵 ≤{cents(bp)}" + sell_plan(bp, q["tl"], q["t1"]) + spread_note(q)
                 newc.append(f"{c} {d} ≤{cents(bp)}"); link = link or f"{WEB}/{K15[c].lower()}"
             if txt: rows.append(txt); nch += int(ev_ == "new"); nflip += int(kind == "warn")
-            else: same.append(f"{c} {'↑UP' if p >= 0.5 else '↓DOWN'}")
+            else: rows.append(f"{c} · 🚫 don't buy · leans {'↑UP' if p >= 0.5 else '↓DOWN'} {arrow(q, p >= 0.5)}")
             if CRYPTO and (sl := scalp_call(L_, R, c, q, q["tk"])): swl.append(sl)
             if go and not go0: rows.append(f"🟢 {c} now BET ≤ {cents(ask)}")
             continue
