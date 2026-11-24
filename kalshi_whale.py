@@ -1068,7 +1068,7 @@ def scalp_prob(R, c, q, up, ask, spread):
     return float(sig(_SCM["w"][0] + z @ np.array(_SCM["w"][1:])))
 
 
-def scalp_call(L_, R, c, q, tk):
+def scalp_call(L_, R, c, q, tk):  # noqa
     """Flag a scalp (once per coin per window) when the cheap side's spike odds are high; returns the push line or ''."""
     if not CRYPTO or q["tl"] < SCALP_TLMIN_C or any(x["tk"] == tk for x in L_.scalpc): return ""
     yb, ya = live_book(tk) or (q["bid"], q["ask"]); up = ya <= 1 - yb; ask = ya if up else 1 - yb
@@ -1078,6 +1078,44 @@ def scalp_call(L_, R, c, q, tk):
     now = time.time(); until = min(now + 300, q["t1"] - 30); tg = round(min(ask + 0.10, 0.99), 2)
     L_.scalpc.append(dict(t=now, c=c, tk=tk, up=up, entry=round(ask, 2), tgt=tg, p=round(p, 3), t1=q["t1"], until=until, best=round(ask, 2), open=True))
     return f"💸 SCALP {c} {'UP' if up else 'DOWN'} ≤{cents(ask)} → sell {cents(tg)} by {et(until)} (~1 in 2 pop)"   # flagged ones popped ~47% on unseen data
+
+
+COIN_ICON = {"BTC": "🟠", "ETH": "🔷", "SOL": "🟣", "XRP": "⚫", "DOGE": "🐶"}
+SPARKC = "▁▂▃▄▅▆▇█"
+
+
+def spot_head(c):
+    """Live coin price, 5-min change, 12-min sparkline and a plain trend word (Coinbase)."""
+    S = _SPOT.get(c) or {}; now = time.time(); t = int(now // 60) * 60
+    pts = [S.get(t - 60 * k) for k in range(12, 0, -1)]; live = _LSPOT.get(c)
+    px = live[1] if live and now - live[0] < 30 else next((v for v in reversed(pts) if v and v == v), None)
+    if px is None: return f"{COIN_ICON.get(c, '•')} {c}"
+    pts = [v for v in pts if v and v == v] + [px]
+    p5 = S.get(t - 300) or (pts[-6] if len(pts) >= 6 else pts[0]); ch = px / p5 - 1 if p5 else 0.0
+    lo, hi = min(pts), max(pts); sp = "".join(SPARKC[int((v - lo) / (hi - lo + 1e-12) * 7)] for v in pts[-12:])
+    lr = np.diff(np.log(pts)) if len(pts) > 3 else np.array([0.0]); sd = float(np.std(lr)) or 1e-9
+    z = math.log(px / p5) / (sd * math.sqrt(5)) if p5 else 0.0
+    word = "⚡ spiking up" if z >= 2.5 else "⚡ dropping fast" if z <= -2.5 else "rising" if z >= 1 else "falling" if z <= -1 else "steady"
+    fmt = f"${px:,.0f}" if px >= 1000 else f"${px:,.2f}" if px >= 10 else f"${px:.4f}" if px >= 0.1 else f"${px:.5f}"
+    return f"{COIN_ICON.get(c, '•')} {c} {fmt}  {ch * 100:+.2f}% in 5 min  {sp}  {word}"
+
+
+def coin_block(L_, R, c, p, mid, q, ev_, sh):
+    """Commodity-bot style block: decision + live coin line, then the buy/sell plan and any scalp underneath."""
+    up = p >= 0.5; d = "UP" if up else "DOWN"; f = sh.get("first"); tk = q["tk"]; sub = []
+    if ev_ == "new":
+        bp = buy_px(L_, tk, up, q); st = sh.get("setup")
+        status = f"🟢{'⬆️' if up else '⬇️'} BUY {d} ≤{cents(bp)} {arrow(q, up)}"
+        sub.append(f"💵 ≤{cents(bp)}" + sell_plan(bp, q["tl"], q["t1"]) + spread_note(q) + (f" · 🟢 setup {st[0]:.0%}" if st else ""))
+    elif f and ev_ in ("flip", "against"):
+        fd = "UP" if f["up"] else "DOWN"; status = f"🚨 SELL {fd}"; sub.append(f"flipped {d} — sell your {fd}, don't buy {d}")
+    elif f:
+        fd = "UP" if f["up"] else "DOWN"; fs = p if f["up"] else 1 - p
+        status = f"🔒{'⬆️' if f['up'] else '⬇️'} HOLDING {fd} {arrow(q, f['up'])}" + (" (shaky)" if fs < 0.5 else "")
+    else:
+        status = f"🔴 DON'T BUY · leans {'↑UP' if mid >= 0.5 else '↓DOWN'}"
+    if (sl := scalp_call(L_, R, c, q, tk)): sub.append(sl.replace(f"💸 SCALP {c} ", "💸 SCALP "))
+    return [f"{status} · {spot_head(c)}"] + ["    " + x for x in sub]
 
 
 def scalpc_txt(L_, since=None):
@@ -1156,7 +1194,10 @@ def sel_row(c, ev_, sh, p, mid, q):
     return f"🔒 {c} {fd} holding {arrow(q, f['up'])}" + (" (shaky)" if fs < 0.5 else ""), "call"
 
 
-LEGEND = ("Key: ⭐ buy · 💵 max price · 💰 take-profit · 🔒 holding · 🚨 sell · 🚫 don't buy (↑UP/↓DOWN = where the market leans, for reference) · ↗/↘ price moving your way/against (⚡ fast) · "
+LEGEND = (("Key: 🟢 BUY · 🔒 holding · 🚨 sell · 🔴 don't buy (leans ↑UP/↓DOWN, for reference) · 💵 max price · 💰 take-profit · "
+           "coin line = live price, 5-min change, 12-min chart, trend · " if CRYPTO else
+           "Key: ⭐ buy · 🔒 holding · 🚨 sell · 🚫 don't buy (↑UP/↓DOWN = where it leans) · 💵 max price · 💰 take-profit · ")
+          + "↗/↘ Kalshi price moving your way/against (⚡ fast) · "
           + ("💸 scalp: cheap side likely to pop +10¢ soon — buy, set the sell, out by the time shown (graded separately)" if CRYPTO else "limit only = wide spread"))
 
 
@@ -1228,6 +1269,10 @@ def board_c(L_, R, preds, b, closed=(), res=None):
             bets.append(f"{c} {d}")
             rows.append(f"🟢 BET {c} {d} ≤ {cents(ask)} · {ps:.0%} vs K {kp:.0%}" + (" ✅tested" if pv.get(c) else " ⚠️untested"))
         else:
+            if SELECT and CRYPTO and q.get("tk"):
+                sh_ = L_.shown[q["tk"]]
+                if ev0 == "new" or sh_.get("first"): strong.append(f"{c} {d}")
+                rows += coin_block(L_, R, c, p, mid, q, ev0, sh_); flow_of(L_, c, q.get("tk")); continue
             if SELECT:
                 txt, kind = sel_row(c, ev0, L_.shown[q["tk"]], p, mid, q) if q.get("tk") else (None, "none")
                 if kind == "call": strong.append(f"{c} {d}")
@@ -1441,6 +1486,11 @@ def update9_c(L_, R, upd, b):
         if SELECT:
             sh = L_.shown[q["tk"]]; bpx = buy_px(L_, q["tk"], up, q)
             ev_ = note_call(sh, p, q["tl"], mid, q.get("dmid1", 0.0), bpx, setup_rate(R, c, p, mid, q, bpx)); f = sh.get("first")
+            if CRYPTO:
+                if f: calls.append(f"{c} {'UP' if f['up'] else 'DOWN'}")
+                if ev_ == "new": newc.append(f"{c} {d} ≤{cents(bpx)}"); link = link or f"{WEB}/{K15[c].lower()}"; nch += 1
+                if ev_ in ("flip", "against"): nflip += 1
+                rows += coin_block(L_, R, c, p, mid, q, ev_, sh); continue
             txt, kind = sel_row(c, ev_, sh, p, mid, q)
             if f: calls.append(f"{c} {'UP' if f['up'] else 'DOWN'}")
             if ev_ == "new":
@@ -1590,6 +1640,11 @@ def final_c(L_, R, fin, b):
         L_.shown[tk].update(p5=round(p, 4), mid5=round(mid, 4)); bpx = buy_px(L_, tk, up, q); ev_ = note_call(L_.shown[tk], p, q["tl"], mid, q.get("dmid1", 0.0), bpx, setup_rate(R, c, p, mid, q, bpx)); f = L_.shown[tk].get("first")
         if ps >= STRONG and TIERS and not SELECT: strong.append(f"{c} {d} {ps:.0%}")
         ch = " · ⚡ changed from board" if (sh["p"] >= 0.5) != up else ""
+        if SELECT and CRYPTO:
+            f = L_.shown[tk].get("first")
+            if f: strong.append(f"{c} {'UP' if f['up'] else 'DOWN'}" + (" 🚨" if ev_ in ("flip", "against") else ""))
+            if ev_ == "new": newf.append(f"{c} {d} ≤{cents(bpx)}")
+            rows += coin_block(L_, R, c, p, mid, q, ev_, L_.shown[tk]); continue
         if SELECT:
             txt, kind = sel_row(c, ev_, L_.shown[tk], p, mid, q); f = L_.shown[tk].get("first")
             if ev_ == "new":
