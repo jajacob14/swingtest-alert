@@ -1124,25 +1124,29 @@ def spike_read(L_, R, c, q, tk):
     return f"➖ no spike expected: {p:.0%} (normally {base:.0%})"
 
 
+SCALP_HEAD = "━━ 💸 SCALPS (separate from calls) ━━"
+
+
 def coin_block(L_, R, c, p, mid, q, ev_, sh):
-    """Commodity-bot style block: decision + live coin line, then the buy/sell plan and any scalp underneath."""
+    """Coin · model lean · decision, then the live price line and buy/sell plan. The scalp read is returned separately."""
     up = p >= 0.5; d = "UP" if up else "DOWN"; f = sh.get("first"); tk = q["tk"]; sub = []
+    lean = f"model leans {'↑UP' if up else '↓DOWN'} {max(p, 1 - p):.0%} {arrow(q, up)}"
     if ev_ == "new":
         bp = buy_px(L_, tk, up, q); st = sh.get("setup")
-        status = f"🟢{'⬆️' if up else '⬇️'} BUY {d} ≤{cents(bp)} · model {max(p, 1 - p):.0%} {arrow(q, up)}"
+        status = f"🟢{'⬆️' if up else '⬇️'} BUY {d} ≤{cents(bp)}"
         sub.append(f"💵 ≤{cents(bp)}" + sell_plan(bp, q["tl"], q["t1"]) + spread_note(q) + (f" · 🟢 setup {st[0]:.0%}" if st else ""))
     elif f and ev_ in ("flip", "against"):
-        fd = "UP" if f["up"] else "DOWN"; status = f"🚨 SELL {fd}"; sub.append(f"flipped {d} — sell your {fd}, don't buy {d}")
+        fd = "UP" if f["up"] else "DOWN"; status = f"🚨 SELL your {fd}"; sub.append(f"flipped {d} — don't buy {d}")
     elif f:
         fd = "UP" if f["up"] else "DOWN"; fs = p if f["up"] else 1 - p
-        status = f"🔒{'⬆️' if f['up'] else '⬇️'} HOLDING {fd} · model {fd} {fs:.0%} {arrow(q, f['up'])}" + (" (shaky)" if fs < 0.5 else "")
+        status = f"🔒{'⬆️' if f['up'] else '⬇️'} HOLDING {fd}" + (" (shaky)" if fs < 0.5 else "")
     else:
         g_ = sh.get("gated")
-        status = f"🔴 DON'T BUY · model leans {'↑UP' if up else '↓DOWN'} {max(p, 1 - p):.0%}" + (f" (setup {g_[0]:.0%} < {SETUP_GATE:.0%})" if g_ else "")
-    if (sl := scalp_call(L_, R, c, q, tk)): sub.append(sl.replace(f"💸 SCALP {c} ", "💸 SCALP "))
-    else: sub.append(spike_read(L_, R, c, q, tk))
+        status = "🔴 DON'T BUY" + (f" (setup {g_[0]:.0%} < {SETUP_GATE:.0%})" if g_ else "")
+    sl = scalp_call(L_, R, c, q, tk)
+    scalp = sl.replace("💸 SCALP ", "💸 ") if sl else f"{c}: " + spike_read(L_, R, c, q, tk)
     sh_ = spot_head(c, q.get("strike"))
-    return [f"{COIN_ICON.get(c, '•')} {c} · {status}" + (f"\n    {sh_}" if sh_ else "")] + ["    " + x for x in sub]
+    return ([f"{COIN_ICON.get(c, '•')} {c} · {lean} · {status}" + (f"\n    {sh_}" if sh_ else "")] + ["    " + x for x in sub]), scalp
 
 
 def scalpc_txt(L_, since=None):
@@ -1299,7 +1303,7 @@ def board_c(L_, R, preds, b, closed=(), res=None):
             if SELECT and CRYPTO and q.get("tk"):
                 sh_ = L_.shown[q["tk"]]
                 if ev0 == "new" or sh_.get("first"): strong.append(f"{c} {d}")
-                rows += coin_block(L_, R, c, p, mid, q, ev0, sh_); flow_of(L_, c, q.get("tk")); continue
+                blk, scr = coin_block(L_, R, c, p, mid, q, ev0, sh_); rows += blk; swb.append(scr); flow_of(L_, c, q.get("tk")); continue
             if SELECT:
                 txt, kind = sel_row(c, ev0, L_.shown[q["tk"]], p, mid, q) if q.get("tk") else (None, "none")
                 if kind == "call": strong.append(f"{c} {d}")
@@ -1326,7 +1330,7 @@ def board_c(L_, R, preds, b, closed=(), res=None):
         [f"🎯 Last window {et(b - 1800)}–{et(b - 900)}: " + (f"{R_[0]}/{R_[1]} {'calls ' if SELECT else ''}right" if R_[1] else "no calls")] + R_[2] + [""] + R_[3] + ["", f"━━ 📈 Calls for the {et(b)} window ━━"]
     pass
     if nob: rows.append("🚫 Don't buy: " + ", ".join(nob))
-    if swb: rows += [""] + swb
+    if swb: rows += ["", SCALP_HEAD] + swb
     if closed: rows.append("Closed: " + ", ".join(closed))
     tail = [(f"⭐ CALL = ≥{STRONG:.0%} sure (backtest ~87% right, ~92% at the final call) · ⏸ = under {STRONG:.0%}, no call · " if SELECT else
              f"⭐ ≥{STRONG:.0%} sure (~87% right) · 🔹 {TOSS:.0%}-{STRONG:.0%} · ⚪ toss-up · " if TIERS else "% = chance it settles that way · ")
@@ -1517,7 +1521,7 @@ def update9_c(L_, R, upd, b):
                 if f: calls.append(f"{c} {'UP' if f['up'] else 'DOWN'}")
                 if ev_ == "new": newc.append(f"{c} {d} ≤{cents(bpx)}"); link = link or f"{WEB}/{K15[c].lower()}"; nch += 1
                 if ev_ in ("flip", "against"): nflip += 1
-                rows += coin_block(L_, R, c, p, mid, q, ev_, sh); continue
+                blk, scr = coin_block(L_, R, c, p, mid, q, ev_, sh); rows += blk; swl.append(scr); continue
             txt, kind = sel_row(c, ev_, sh, p, mid, q)
             if f: calls.append(f"{c} {'UP' if f['up'] else 'DOWN'}")
             if ev_ == "new":
@@ -1536,7 +1540,7 @@ def update9_c(L_, R, upd, b):
         else: same.append(f"{c} {d} {ps:.0%}")
     if not rows and not same: return
     if same: rows.append(("🚫 Don't buy: " if SELECT else "Same: ") + (", " if SELECT else " · ").join(same))
-    if swl: rows += [""] + swl
+    if swl: rows += ["", SCALP_HEAD] + swl
     m = f"{round(left)} min left" if left is not None else ""
     if SELECT:
         head = ("🔒 " + ", ".join(calls)) if calls else "don't buy yet"
@@ -1671,7 +1675,7 @@ def final_c(L_, R, fin, b):
             f = L_.shown[tk].get("first")
             if f: strong.append(f"{c} {'UP' if f['up'] else 'DOWN'}" + (" 🚨" if ev_ in ("flip", "against") else ""))
             if ev_ == "new": newf.append(f"{c} {d} ≤{cents(bpx)}")
-            rows += coin_block(L_, R, c, p, mid, q, ev_, L_.shown[tk]); continue
+            blk, scr = coin_block(L_, R, c, p, mid, q, ev_, L_.shown[tk]); rows += blk; swf.append(scr); continue
         if SELECT:
             txt, kind = sel_row(c, ev_, L_.shown[tk], p, mid, q); f = L_.shown[tk].get("first")
             if ev_ == "new":
@@ -1684,7 +1688,7 @@ def final_c(L_, R, fin, b):
         rows.append(f"{mark(ps)} {c} {d} {ps:.0%} · K {kp:.0%} {arrow(q, up)}" + (" · toss-up" if TIERS and ps < TOSS else "") + ch)
         if (fn := flow_note(flow_of(L_, c, tk), up)): rows.append(fn)
     if not rows: return
-    if swf: rows += [""] + swf
+    if swf: rows += ["", SCALP_HEAD] + swf
     rec, line = wl_line(L_); u5 = u5_txt(L_)
     tail = [x for x in ("" if SELECT else (f"Final calls today: {u5}" if u5 else ""), line) if x]
     pick = (("🔒 " if SELECT else "⭐ ") + ", ".join(strong)) if strong else ("don't buy" if SELECT else "no strong picks")
