@@ -1313,13 +1313,16 @@ def pick15(mkt, up, lv, px_etf):
             dict(ticker=c["ticker"], side=side, cost=cost, k=c["k"], close=str(c["close"])))
 
 
-def contract_status(info):
-    """(text, verdict) from Kalshi itself: verdict True/False = contract is up/down vs entry (or won/lost)."""
+def contract_status(info, final=False):
+    """(text, verdict) from Kalshi itself: verdict True/False = contract is up/down vs entry (or won/lost).
+    final=True (grading a closed window): verdict only from Kalshi's official result, else None (try again later).
+    Without this, a call graded in the seconds before the result posts was scored on a ~0¢ bid = wrongly LOST."""
     if not info: return "", None
     try:
         m = requests.get(f"{KALSHI}/markets/{info['ticker']}", timeout=10).json()["market"]
     except Exception: return "", None
     paid = info["cost"] * 100
+    if final and (m.get("result") or "").lower() not in ("yes", "no"): return "", None
     if m.get("result"):
         won = m["result"].lower() == info["side"].lower()
         return f"\nKalshi {info['side']}: settled {'$1 (won)' if won else '$0 (lost)'} (bought at {paid:.0f}¢)", won
@@ -2139,7 +2142,7 @@ def manage_ls(mkt, px, st, lv):
     k = pos["k"]; c = k15(mkt); left = (pd.Timestamp(k["close"]) - pd.Timestamp.now(tz="UTC")).total_seconds() / 60
     cost = k["cost"] * 100
     if not c or c["ticker"] != k["ticker"]:  # window over → final result
-        _, won = contract_status(k)
+        _, won = contract_status(k, final=True)
         if won is None: return False
         if pos.get("took_profit"):
             follow_msg(mkt, pos, "", f"RESULT: prediction {'RIGHT' if won else 'WRONG'} at the close (profit was taken earlier)")
@@ -2492,7 +2495,7 @@ def settle_only(st):
             c = k15(mkt)
             if c and c["ticker"] == pos["k"]["ticker"]: continue
             if pd.Timestamp(pos["k"]["close"]) > pd.Timestamp.now(tz="UTC"): continue
-            txt, won = contract_status(pos["k"])
+            txt, won = contract_status(pos["k"], final=True)
             if won is None: continue
             follow_msg(mkt, pos, "", f"RESULT: {'RIGHT' if won else 'WRONG'} at the close"); log_call(mkt, pos, won); learn_update(st)
             del st["lpos"][mkt]; changed = True
