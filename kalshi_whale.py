@@ -1146,8 +1146,10 @@ def wl_line(L_):
         cs = [c for c in map(call_wl, w) if c is not None]; cw = sum(cs)
         v3 = [x[0] for x in w if len(x) > 12 and x[12] == 3]
         lab = "🔒 Calls today" if not v3 or min(v3) - 900 <= _today() + 60 else f"🔒 Calls since {et(min(v3) - 900)}"
-        if not cs: return "", f"{lab}: none graded yet"
-        return f"{cw}-{len(cs) - cw}", f"{lab}: {cw}-{len(cs) - cw} ({cw / len(cs):.0%})"
+        c7 = [z for z in (call_wl(x) for x in L_.wl if x[0] > time.time() - 7 * 86400) if z is not None]
+        wk = f" · 7d {sum(c7)}-{len(c7) - sum(c7)} ({sum(c7) / len(c7):.0%})" if len(c7) > len(cs) else ""
+        if not cs: return "", f"{lab}: none graded yet{wk}"
+        return f"{cw}-{len(cs) - cw}", f"{lab}: {cw}-{len(cs) - cw} ({cw / len(cs):.0%}){wk}"
     return f"{m}-{len(w) - m}", f"Today: {m}-{len(w) - m} ({m / len(w):.0%}) · Kalshi {k / len(w):.0%}"
 
 
@@ -1830,7 +1832,7 @@ def live():
             if now - trained > 6 * 3600 and not _TR["busy"]: L_.flush(); bg_train(days=3); trained = now
             if now - digest_t > 6 * 3600: digest(L_, R); digest_t = now
             dk = datetime.now(ET).strftime("%Y-%m-%d")
-            if datetime.now(ET).hour >= 8 and L_.__dict__.setdefault("score_day", st.get("score_day")) != dk:
+            if E("KW_SCORECARD", 0) == 1 and datetime.now(ET).hour >= 8 and L_.__dict__.setdefault("score_day", st.get("score_day")) != dk:
                 L_.score_day = dk; sc_ = daily_scorecard()
                 if sc_: notify(f"📊 Daily scorecard · {LBL}", "\n".join(sc_), 3)
             if CRYPTO and now - ticks_t > 60: flush_ticks(); ticks_t = now
