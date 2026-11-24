@@ -1081,9 +1081,13 @@ def scalp_call(L_, R, c, q, tk):
 
 
 def scalpc_txt(L_, since=None):
+    """Scalp calls' own record (separate from ⭐ buys): today and the last 7 days."""
     s_ = [x for x in L_.scalpc if x["t"] > (since or _today()) and not x.get("open")]
-    if not s_: return ""
-    h = sum(x["hit"] for x in s_); return f"💸 Scalps today: {h}-{len(s_) - h} ({h / len(s_):.0%})"
+    w7 = [x for x in L_.scalpc if x["t"] > time.time() - 7 * 86400 and not x.get("open")]
+    if not w7: return ""
+    h, h7 = sum(x["hit"] for x in s_), sum(x["hit"] for x in w7)
+    return (f"💸 Scalps today: {h}-{len(s_) - h} ({h / len(s_):.0%})" if s_ else "💸 Scalps today: none") + \
+           (f" · 7d {h7}-{len(w7) - h7} ({h7 / len(w7):.0%})" if len(w7) > len(s_) else "")
 
 
 def swing_line(c, q, tk):
