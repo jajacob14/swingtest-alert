@@ -40,7 +40,7 @@ if PROFILE == "crypto9":
     SHOW = COMMS
     KEYS = {c: (c,) for c in COMMS}
     SPOT = {c: f"{c}-USD" for c in COMMS}                  # Coinbase; a coin it doesn't list falls back to Kalshi-only features
-    LBL, lbl, TOPIC_ENV = "Crypto all", "crypto", "KC9_NTFY_TOPIC"
+    LBL, lbl, TOPIC_ENV = "Crypto all", "crypto", "KC_NTFY_TOPIC"   # same ntfy topic as the core crypto bot; the channel switch decides who pushes
 elif CRYPTO:
     COMMS = ("BTC", "ETH", "SOL", "XRP", "DOGE")             # the markets on your Kalshi (BNB, HYPE dropped)
     SHOW = COMMS
@@ -1235,7 +1235,8 @@ LEGEND = (("Key: 🟢 BUY · 🔒 holding · 🚨 sell · 🔴 don't buy (model'
            "coin line = live price, 5-min change, 12-min chart, trend, the price it must beat (target) · ⚡/⚠️/➖ spike read for the cheap side · " if CRYPTO else
            "Key: ⭐ buy · 🔒 holding · 🚨 sell · 🚫 don't buy (↑UP/↓DOWN = where it leans) · 💵 max price · 💰 take-profit · ")
           + "↗/↘ Kalshi price moving your way/against (⚡ fast) · "
-          + ("💸 scalp: cheap side likely to pop +10¢ soon — buy, set the sell, out by the time shown (graded separately)" if CRYPTO else "limit only = wide spread"))
+          + ("💸 scalp: cheap side likely to pop +10¢ soon — buy, set the sell, out by the time shown (graded separately) · "
+             "send 'all' (9 markets) or 'core' (5 coins) to this topic to switch channel" if CRYPTO else "limit only = wide spread"))
 
 
 def switch_txt(w):
@@ -1966,6 +1967,11 @@ def live():
                 L_.score_day = dk; sc_ = daily_scorecard()
                 if sc_: notify(f"📊 Daily scorecard · {LBL}", "\n".join(sc_), 3)
             if CRYPTO and now - ticks_t > 60: flush_ticks(); ticks_t = now
+            if CRYPTO:
+                ch_, chg = channel()
+                if chg and ch_ == CHAN_ME:
+                    notify(f"🔀 Channel: {'ALL 9 crypto markets' if CHAN_ME == 'all' else 'CORE 5 crypto (BTC ETH SOL XRP DOGE)'}",
+                           f"Now showing {', '.join(SHOW)}. Send 'core' or 'all' to this topic to switch.", 4)
             if now - saved > 1800:
                 L_.flush(); meta.save(); save_json(f"{DATA}/state.json", {**L_.state(), "started": True, "digest_t": digest_t, "is_open": is_open}); persist(); saved = now
         except Exception as ex:
@@ -2102,8 +2108,33 @@ def digest(L_, R):
 _PUSHED = []
 
 
+# ---------------- channel switch: both crypto bots share one ntfy topic; send "all" or "core" to it to pick who pushes ----------------
+CHAN_ME = ("all" if PROFILE == "crypto9" else "core") if CRYPTO else None
+_CHAN = {"v": None, "t": 0.0}
+CHAN_CMDS = {"all": "all", "9": "all", "all markets": "all", "crypto all": "all", "core": "core", "5": "core", "main": "core", "normal": "core"}
+
+
+def channel():
+    """Latest 'all' / 'core' message on the topic (checked every 30 s); default core. Returns (active, changed)."""
+    if not CRYPTO: return None, False
+    if time.time() - _CHAN["t"] < 30 and _CHAN["v"]: return _CHAN["v"], False
+    _CHAN["t"] = time.time(); t = os.getenv(TOPIC_ENV); v = _CHAN["v"] or "core"
+    if t:
+        try:
+            r = requests.get(f"{os.getenv('KW_NTFY_SERVER', 'https://ntfy.sh').rstrip('/')}/{t}/json", params={"poll": 1, "since": "12h"}, timeout=10)
+            for line in r.text.splitlines():
+                m = json.loads(line) if line.strip() else {}
+                cmd = CHAN_CMDS.get((m.get("message") or "").strip().lower()) if m.get("event") == "message" and not m.get("title") else None
+                if cmd: v = cmd
+        except Exception as e: print("channel check:", e, flush=True)
+    changed = _CHAN["v"] is not None and v != _CHAN["v"]; _CHAN["v"] = v
+    return v, changed
+
+
 def notify(title, body, prio=3, click=None):
     print(f"\n=== {title}\n{body}", flush=True)
+    if CRYPTO and channel()[0] != CHAN_ME: print("  (other channel is active: not pushed)", flush=True); return
+    if PROFILE == "crypto9": title = "🌐 ALL · " + title
     # daily budget (ntfy.sh free tier ~250/day): only ⚡ spikes and 🐋 whales draw from the noise budget, so boards,
     # 9-min updates, results, calls and waves always go out (a hard ceiling only guards against a runaway loop)
     t = os.getenv(TOPIC_ENV); now = time.time(); _PUSHED[:] = [x for x in _PUSHED if x[0] > now - 86400]
