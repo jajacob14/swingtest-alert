@@ -2347,7 +2347,7 @@ def night_tick(st, params, cool, nh, yc, only=None):
         try:
             a = analyze(mkt, m, kp, lv, k15(mkt), (cal_ or {}).get("fcast"), wm_for(st, mkt, cal_), (cal_ or {}).get("proj")); st.setdefault("ana", {})[mkt] = a
             if a: apply_pcal(st, mkt, a); apply_proj_bias(st, mkt, a); track_projection(st, mkt, a); record_pred(st, mkt, a, k15(mkt))
-            if a: changed |= fav_call(st, mkt, a, lv)
+            if a: changed |= fav_call(st, mkt, a, lv, kp)
             if a: changed |= kcall(st, mkt, y, lv, kp, params)
             if a and FAV_ON: changed |= spike_alert(st, mkt, a, lv, cal_, cool)
             elif a: changed |= (early_call(st, mkt, a, lv, cal_) or boom_call(st, mkt, a, lv, cal_) or spike_alert(st, mkt, a, lv, cal_, cool)
@@ -2574,7 +2574,7 @@ def live():
                 st.setdefault("ana", {})[mkt] = _a
                 if _a: apply_pcal(st, mkt, _a); apply_proj_bias(st, mkt, _a); track_projection(st, mkt, _a); record_pred(st, mkt, _a, k15(mkt))
                 _c = (params.get("_cal") or {}).get(mkt)
-                if _a: changed |= fav_call(st, mkt, _a, _lv)
+                if _a: changed |= fav_call(st, mkt, _a, _lv, float(px[etf]))
                 if _a: changed |= kcall(st, mkt, _m, _lv, float(px[etf]), params)
                 if _a and FAV_ON: changed |= spike_alert(st, mkt, _a, _lv, _c, cool)
                 elif _a: changed |= (early_call(st, mkt, _a, _lv, _c) or boom_call(st, mkt, _a, _lv, _c) or spike_alert(st, mkt, _a, _lv, _c, cool)
@@ -3060,7 +3060,7 @@ def fav_table():
     return _FAVT
 
 
-def fav_call(st, mkt, a, lv):
+def fav_call(st, mkt, a, lv, px):
     """⭐ BUY the side Kalshi already favors ≥80% at the 12/9/6-min check, when that exact setup (market, minutes left,
     price band, model agreeing) has won ≥88% in the live log. Fewer surprises, smaller payouts."""
     if not FAV_ON or a.get("p_up") is None or "T" not in a: return False
@@ -3085,7 +3085,7 @@ def fav_call(st, mkt, a, lv):
     W[mkt] = None
     why = (f"Kalshi already favors {'UP' if up else 'DOWN'} at {conf:.0%}K" + (" and our model agrees" if agree else "")
            + f"; 🧪 tested {w}/{n} won ({w / n:.0%}): same market, {left} min left, {fav_band(conf)}¢ price, last {FAV_DAYS} days live")
-    return open_call(st, mkt, "fav15", "YES" if up else "NO", c, lv, a["px"], odds_line(w / n, ask), why, True, prob=w / n) is not None
+    return open_call(st, mkt, "fav15", "YES" if up else "NO", c, lv, px, odds_line(rate, ask), why, True, prob=rate) is not None   # % shown = record shrunk toward the average (32/32 is not a sure thing)
 
 
 def disproven(st, mkt, T):
