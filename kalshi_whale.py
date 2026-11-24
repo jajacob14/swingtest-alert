@@ -322,7 +322,7 @@ def harvest():
     out = pd.concat([read_gz(f"{DATA}/c_whales.csv.gz")] + wh, ignore_index=True) if wh else read_gz(f"{DATA}/c_whales.csv.gz")
     if len(out): out.drop_duplicates(["t", "tk", "sd"]).to_csv(f"{DATA}/c_whales.csv.gz", index=False, compression="gzip")
     for p in glob.glob(f"{DATA}/*"):
-        if not os.path.basename(p).startswith(("k15_", "c_whales", "meta", "state", "live_preds", "spot_", "flow_log", "scalp_log", "ticks")): os.remove(p)
+        if not os.path.basename(p).startswith(("k15_", "c_whales", "meta", "state", "live_preds", "spot_", "flow_log", "scalp_log", "ticks", "calls_log")): os.remove(p)
     print(f"HARVEST: {len(out)} commodity whale events kept · {n_marks} commodity snapshots seen", flush=True)
     return out
 
@@ -892,7 +892,7 @@ class Live:
         self.flow = {c: {k: v for k, v in f.items() if int(k) > h} for c, f in self.flow.items()}
         self.recent = {t: [w for w in ws if w[0] > time.time() - 10800] for t, ws in self.recent.items() if ws}
         self.calls = [c for c in self.calls if c.get("won") is None or c["t"] > time.time() - 14 * 86400]
-        return dict(whale_v=WHALE_V, flow=self.flow, unw=self.unw, recent=self.recent, pend_w=self.pend_w, wstats=self.wstats, calls=self.calls,
+        return dict(whale_v=WHALE_V, score_day=getattr(self, "score_day", None), flow=self.flow, unw=self.unw, recent=self.recent, pend_w=self.pend_w, wstats=self.wstats, calls=self.calls,
                     snaps=self.snaps, missed=self.missed[-500:], stats=self.stats, last_ts=self.quiet,
                     wl=[w for w in self.wl if w[0] > time.time() - 7 * 86400], res_pend=self.res_pend,
                     shown={k: v for k, v in self.shown.items() if v["t1"] > time.time() - 7200},
@@ -1095,7 +1095,9 @@ def note_call(sh, p, tl, mid=None, dm1=0.0, px=None, sr=None):
         if sr[0] < SETUP_GATE: sh["gated"] = sh["setup"]; return None       # setup backtests under the gate: don't send
     if (max(p, 1 - p) >= CALL_T and max(m, 1 - m) >= CALL_T and (m >= 0.5) == bool(up)
             and (not CALL_STABLE or (max(pm, 1 - pm) >= CALL_T and (pm >= 0.5) == bool(up)))):
-        sh["first"] = dict(up=bool(up), ps=round(max(p, 1 - p), 3), tl=round(tl), setup=sh.get("setup")); sh.pop("gated", None); return "new"
+        sh["first"] = dict(up=bool(up), ps=round(max(p, 1 - p), 3), tl=round(tl), setup=sh.get("setup"), t=time.time(),
+                           px=round(px, 3) if px is not None else None, best=round(px, 3) if px is not None else None)
+        sh.pop("gated", None); return "new"
     return None
 
 
@@ -1261,6 +1263,30 @@ def scalp_check(L_, c, q, live=None):
                     against=bool(f and f["up"] != up), call=("UP" if f["up"] else "DOWN") if f else None)
         if best is None or p > best["sim"]: best = cand
     return best
+
+
+def daily_scorecard():
+    """Once a day: the calls and the scalp test graded against what actually happened (24 h and 7 days)."""
+    d = read_gz(f"{DATA}/calls_log.csv.gz")
+    if not len(d): return None
+    d = d.drop_duplicates(["t1", "c"]); now = time.time(); L = []
+    f_ = lambda a: np.ceil(7 * np.clip(a, .01, .99) * (1 - np.clip(a, .01, .99)) - 1e-9) / 100
+    def block(x, nm):
+        if not len(x): return [f"{nm}: no calls"]
+        px = pd.to_numeric(x.px, errors="coerce").fillna(x.ps); cost = px + f_(px); best = pd.to_numeric(x.best, errors="coerce").fillna(0)
+        tp = best >= 0.95 - 1e-9; held = (x.won - cost).sum(); tpp = np.where(tp & (px < .95), .95 - f_(.95), x.won) - cost
+        out = [f"{nm}: {int(x.won.sum())}-{int(len(x) - x.won.sum())} ({x.won.mean():.0%}) · avg paid {px.mean() * 100:.0f}¢ · 95¢ take-profit hit {tp[px < .95].mean():.0%}",
+               f"   result per contract: held to close {held * 100:+.0f}¢ · selling at 95¢ when hit {tpp.sum() * 100:+.0f}¢"]
+        sc = pd.to_numeric(x.setup, errors="coerce")
+        if sc.notna().sum() >= 10: out.append(f"   setup score said {sc.mean():.0%} → actual {x.won[sc.notna()].mean():.0%} (honest if close)")
+        return out
+    L += block(d[d.t1 > now - 86400], "Calls 24h") + block(d[d.t1 > now - 7 * 86400], "Calls 7d")
+    w7 = d[d.t1 > now - 7 * 86400]
+    if len(w7): L.append("By coin 7d: " + " · ".join(f"{c} {int(g.won.sum())}-{int(len(g) - g.won.sum())}" for c, g in w7.groupby("c")))
+    rv = w7[w7.rev == 1]
+    if len(rv): L.append(f"🚨 Reversal alerts 7d: {len(rv)} · the original call still won {rv.won.mean():.0%}")
+    if CRYPTO and (ss := scalp_shadow_txt()): L.append(ss)
+    return L
 
 
 def scalp_shadow_txt():
@@ -1676,6 +1702,11 @@ def live():
                 seen.add(r[1]); last_ts = max(last_ts, r[0]); L_.ingest(r[0], *r[2:])
             if len(seen) > 200000: seen = set(list(seen)[-50000:])
             L_.tick(time.time()); now = time.time(); minute = int(now // 60); preds, upd, fin = {}, {}, {}
+            for tk_, sh_ in L_.shown.items():   # best price each locked call's side was sellable at after the call (take-profit check)
+                f_ = sh_.get("first")
+                if f_ and f_.get("best") is not None and now < sh_.get("t1", 0):
+                    bk = live_book(tk_)
+                    if bk: f_["best"] = round(max(f_["best"], bk[0] if f_["up"] else 1 - bk[1]), 3)
             for x in L_.scalps:   # best price each open scalp's side has been sellable at (its bid): order book, else trades
                 if not x.get("open") or now >= x["t1"]: continue
                 bk = live_book(x["tk"]); kk = L_.T.get(x["tk"])
@@ -1798,6 +1829,10 @@ def live():
             if _TR["R"] is not None: R = _TR["R"]; _TR["R"] = None; trained = now; print("live: retrained model swapped in", flush=True)
             if now - trained > 6 * 3600 and not _TR["busy"]: L_.flush(); bg_train(days=3); trained = now
             if now - digest_t > 6 * 3600: digest(L_, R); digest_t = now
+            dk = datetime.now(ET).strftime("%Y-%m-%d")
+            if datetime.now(ET).hour >= 8 and L_.__dict__.setdefault("score_day", st.get("score_day")) != dk:
+                L_.score_day = dk; sc_ = daily_scorecard()
+                if sc_: notify(f"📊 Daily scorecard · {LBL}", "\n".join(sc_), 3)
             if CRYPTO and now - ticks_t > 60: flush_ticks(); ticks_t = now
             if now - saved > 1800:
                 L_.flush(); meta.save(); save_json(f"{DATA}/state.json", {**L_.state(), "started": True, "digest_t": digest_t, "is_open": is_open}); persist(); saved = now
@@ -1831,6 +1866,11 @@ def settle(L_):
                           int((sh["p5"] >= 0.5) == up) if "p5" in sh else None, round(max(sh["p5"], 1 - sh["p5"]), 3) if "p5" in sh else None,
                           ] + ([int(sh["first"]["up"] == up) if sh.get("first") else None, int(sh["sw"]["up"] == up) if sh.get("sw") else None, sh.get("v")]
                                if sh.get("v", 0) >= 2 else []))   # v2: graded on the first call; older boards keep the old rule
+            if sh.get("first"):   # full call log for the daily scorecard + research
+                f_ = sh["first"]; st_ = f_.get("setup") or [None, None, None]; fl = f"{DATA}/calls_log.csv.gz"; os.makedirs(DATA, exist_ok=True)
+                pd.DataFrame([dict(t1=S["t1"], c=S["c"], up=int(f_["up"]), won=int(f_["up"] == up), ps=f_["ps"], px=f_.get("px"), best=f_.get("best"),
+                                   tl=f_["tl"], setup=st_[0], setup_n=st_[1], setup_k=st_[2], rev=int(bool(sh.get("sw"))))]).to_csv(
+                    fl, mode="ab", index=False, header=not os.path.exists(fl), compression="gzip")
             if sh.get("flow"):
                 fl = f"{DATA}/flow_log.csv.gz"; os.makedirs(DATA, exist_ok=True)
                 pd.DataFrame([dict(t1=S["t1"], c=S["c"], tk=tk, p=sh["p"], mid=sh["mid"], up=int(up), **sh["flow"])]).to_csv(
