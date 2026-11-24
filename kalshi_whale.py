@@ -322,7 +322,7 @@ def harvest():
     out = pd.concat([read_gz(f"{DATA}/c_whales.csv.gz")] + wh, ignore_index=True) if wh else read_gz(f"{DATA}/c_whales.csv.gz")
     if len(out): out.drop_duplicates(["t", "tk", "sd"]).to_csv(f"{DATA}/c_whales.csv.gz", index=False, compression="gzip")
     for p in glob.glob(f"{DATA}/*"):
-        if not os.path.basename(p).startswith(("k15_", "c_whales", "meta", "state", "live_preds", "spot_", "flow_log", "scalp_log", "ticks", "calls_log")): os.remove(p)
+        if not os.path.basename(p).startswith(("k15_", "c_whales", "meta", "state", "live_preds", "spot_", "flow_log", "scalp_log", "ticks", "calls_log", "scalp_calls")): os.remove(p)
     print(f"HARVEST: {len(out)} commodity whale events kept · {n_marks} commodity snapshots seen", flush=True)
     return out
 
@@ -803,6 +803,7 @@ class Live:
         self.res_pend = st.get("res_pend", {})    # window close -> graded rows waiting to be sent together
         self.shown = st.get("shown", {})          # ticker -> exactly what the board showed (graded at settlement)
         self.scalps = st.get("scalps", [])        # scalp alerts: entry, best price traded since, outcome at the close
+        self.scalpc = st.get("scalpc", [])        # 💸 scalp CALLS shown to the user (graded: did it pop +10¢ within 5 min)
         self.waves = st.get("waves", [])          # wave alerts: buy pushed, waiting for the cash-out / settlement
         self.stats = st.get("stats", dict(trades=0, whales=0, vol=0.0)); self.quiet = 0; self.cool = {}; self.sent_h = defaultdict(int)
 
@@ -897,7 +898,8 @@ class Live:
                     wl=[w for w in self.wl if w[0] > time.time() - 7 * 86400], res_pend=self.res_pend,
                     shown={k: v for k, v in self.shown.items() if v["t1"] > time.time() - 7200},
                     waves=[w for w in self.waves if w["t1"] > time.time() - 3 * 86400],
-                    scalps=[x for x in self.scalps if x["t1"] > time.time() - 3 * 86400])
+                    scalps=[x for x in self.scalps if x["t1"] > time.time() - 3 * 86400],
+                    scalpc=[x for x in self.scalpc if x["t1"] > time.time() - 7 * 86400])
 
 
 # ---------------- live: 15-min predictions ----------------
@@ -932,7 +934,9 @@ def live_pred(R, c, w):
     if not len(D): return None
     r = D.iloc[[-1]]; p = float(p_of(R["model"], r)[0]) if R.get("model") else float(r.mid.iloc[0])
     return p, float(r.mid.iloc[0]), dict(bid=float(r.bid.iloc[0]), ask=float(r.ask.iloc[0]), tl=float(r.tl.iloc[0]), t1=ts_of(w["close_time"]),
-                                                  dmid3=float(r.dmid3.iloc[0]), dmid1=float(r.dmid1.iloc[0]), spot3=spot_move(c, float(r.ts.iloc[0])),
+                                                  dmid3=float(r.dmid3.iloc[0]), dmid1=float(r.dmid1.iloc[0]), dmid5=float(r.dmid5.iloc[0]), spot3=spot_move(c, float(r.ts.iloc[0])),
+                                                  sr1=float(r.sr1.iloc[0]) if "sr1" in r else None, sr5=float(r.sr5.iloc[0]) if "sr5" in r else None,
+                                                  svz=float(r.svz.iloc[0]) if "svz" in r else None,
                                                   sgap=float(r.sgap.iloc[0]) if "sgap" in r and float(r.sok.iloc[0]) > 0 else None,
                                                   sr3=float(r.sr3.iloc[0]) if "sr3" in r else None, kvol=float(r.kvol.iloc[0]),
                                                   spx=float(r.spx.iloc[0]) if "spx" in r and r.spx.notna().iloc[0] else None,
@@ -1047,6 +1051,41 @@ SELL = {(14, 0): (.67, 7, .62, 8), (14, 1): (.64, 6, .61, 7), (11, 0): (.64, 5, 
 _SWING = load_json(f"{DIR}/swing.json", {})   # research_swing.py: next-5-min highs by price and minutes left (crypto)
 
 
+_SCM = load_json(f"{DIR}/scalp_model.json", {})   # research_scalpmodel.py: P(cheap side's bid +10¢ within 5 min); AUC 0.66, calibrated
+SCALP_P, SCALP_TLMIN_C = E("KW_SCALP_P", 0.45), E("KW_SCALP_TL", 4.0)   # flag ≥45% (top ~20%: popped ~47% vs 32% base); none under 4 min left
+
+
+def scalp_prob(R, c, q, up, ask, spread):
+    """Spike odds for one side from everything at this minute: price, time left, Kalshi 1/3/5-min moves, spread, volume,
+    spot 1/3/5-min moves, spot volatility, spot vs Kalshi, and how close spot is to the target in σ units."""
+    if not _SCM or None in (q.get("spx"), q.get("ssv"), q.get("strike")): return None
+    s_ = 1 if up else -1; vm, vsd = (((R or {}).get("setups") or {}).get("vol") or {}).get(c, (q.get("kvol") or 0.0, 1.0))
+    zd = math.log(q["spx"] / q["strike"]) / (max(q["ssv"], 1e-5) * math.sqrt(max(q["tl"] - 0.5, 0.25)))
+    x = dict(ask=ask, tl=q["tl"], m1=q.get("dmid1", 0) * s_, m3=q.get("dmid3", 0) * s_, m5=q.get("dmid5", 0) * s_, am3=abs(q.get("dmid3", 0)),
+             am5=abs(q.get("dmid5", 0)), spread=spread, kvz=((q.get("kvol") or vm) - vm) / (vsd + 1e-9), s1=(q.get("sr1") or 0) * s_,
+             s3=(q.get("sr3") or 0) * s_, s5=(q.get("sr5") or 0) * s_, svz=q.get("svz") or 0.0, sg=(q.get("sgap") or 0) * s_, az=abs(zd), sz=zd * s_)
+    z = np.clip((np.array([x[f] for f in _SCM["F"]], float) - np.array(_SCM["mu"])) / np.array(_SCM["sd"]), -6, 6)
+    return float(sig(_SCM["w"][0] + z @ np.array(_SCM["w"][1:])))
+
+
+def scalp_call(L_, R, c, q, tk):
+    """Flag a scalp (once per coin per window) when the cheap side's spike odds are high; returns the push line or ''."""
+    if not CRYPTO or q["tl"] < SCALP_TLMIN_C or any(x["tk"] == tk for x in L_.scalpc): return ""
+    yb, ya = live_book(tk) or (q["bid"], q["ask"]); up = ya <= 1 - yb; ask = ya if up else 1 - yb
+    if not (0.03 <= ask <= 0.35): return ""
+    p = scalp_prob(R, c, q, up, ask, ya - yb)
+    if p is None or p < SCALP_P: return ""
+    now = time.time(); until = min(now + 300, q["t1"] - 30); tg = round(min(ask + 0.10, 0.99), 2)
+    L_.scalpc.append(dict(t=now, c=c, tk=tk, up=up, entry=round(ask, 2), tgt=tg, p=round(p, 3), t1=q["t1"], until=until, best=round(ask, 2), open=True))
+    return f"💸 SCALP {c} {'UP' if up else 'DOWN'} ≤{cents(ask)} → sell {cents(tg)} by {et(until)} (~1 in 2 pop)"   # flagged ones popped ~47% on unseen data
+
+
+def scalpc_txt(L_, since=None):
+    s_ = [x for x in L_.scalpc if x["t"] > (since or _today()) and not x.get("open")]
+    if not s_: return ""
+    h = sum(x["hit"] for x in s_); return f"💸 Scalps today: {h}-{len(s_) - h} ({h / len(s_):.0%})"
+
+
 def swing_line(c, q, tk):
     """Scalper's view of the cheap side: how far it usually runs in the next 5 min and how often it still dies."""
     if not _SWING: return ""
@@ -1114,7 +1153,7 @@ def sel_row(c, ev_, sh, p, mid, q):
 
 
 LEGEND = ("Key: ⭐ buy · 💵 max price · 💰 take-profit · 🔒 holding · 🚨 sell · 🚫 don't buy · ↗/↘ price moving your way/against (⚡ fast) · "
-          + ("📈 scalp: cheap side's odds to pop +10¢" if CRYPTO else "limit only = wide spread"))
+          + ("💸 scalp: cheap side likely to pop +10¢ soon — buy, set the sell, out by the time shown (graded separately)" if CRYPTO else "limit only = wide spread"))
 
 
 def switch_txt(w):
@@ -1193,7 +1232,7 @@ def board_c(L_, R, preds, b, closed=(), res=None):
                     txt += f"\n   💵 ≤{cents(bp)}" + sell_plan(bp, q["tl"], q["t1"]) + spread_note(q)
                 if txt: rows.append(txt)
                 else: nob.append(c)
-                if CRYPTO and q.get("tk") and (sl := swing_line(c, q, q["tk"])): swb.append(sl)
+                if CRYPTO and q.get("tk") and (sl := scalp_call(L_, R, c, q, q["tk"])): swb.append(sl)
                 if txt and (fn := flow_note(flow_of(L_, c, q.get("tk")), up)): rows.append(fn)
                 elif not txt: flow_of(L_, c, q.get("tk"))
                 continue
@@ -1211,7 +1250,7 @@ def board_c(L_, R, preds, b, closed=(), res=None):
         [f"🎯 Last window {et(b - 1800)}–{et(b - 900)}: " + (f"{R_[0]}/{R_[1]} {'calls ' if SELECT else ''}right" if R_[1] else "no calls")] + R_[2] + [""] + R_[3] + ["", f"━━ 📈 Calls for the {et(b)} window ━━"]
     pass
     if nob: rows.append("🚫 Don't buy: " + ", ".join(nob))
-    if swb: rows += ["", SWING_HEAD] + swb
+    if swb: rows += [""] + swb
     if closed: rows.append("Closed: " + ", ".join(closed))
     tail = [(f"⭐ CALL = ≥{STRONG:.0%} sure (backtest ~87% right, ~92% at the final call) · ⏸ = under {STRONG:.0%}, no call · " if SELECT else
              f"⭐ ≥{STRONG:.0%} sure (~87% right) · 🔹 {TOSS:.0%}-{STRONG:.0%} · ⚪ toss-up · " if TIERS else "% = chance it settles that way · ")
@@ -1405,7 +1444,7 @@ def update9_c(L_, R, upd, b):
                 newc.append(f"{c} {d} ≤{cents(bp)}"); link = link or f"{WEB}/{K15[c].lower()}"
             if txt: rows.append(txt); nch += int(ev_ == "new"); nflip += int(kind == "warn")
             else: same.append(c)
-            if CRYPTO and (sl := swing_line(c, q, q["tk"])): swl.append(sl)
+            if CRYPTO and (sl := scalp_call(L_, R, c, q, q["tk"])): swl.append(sl)
             if go and not go0: rows.append(f"🟢 {c} now BET ≤ {cents(ask)}")
             continue
         if flip:
@@ -1416,7 +1455,7 @@ def update9_c(L_, R, upd, b):
         else: same.append(f"{c} {d} {ps:.0%}")
     if not rows and not same: return
     if same: rows.append(("🚫 Don't buy: " if SELECT else "Same: ") + (", " if SELECT else " · ").join(same))
-    if swl: rows += ["", SWING_HEAD] + swl
+    if swl: rows += [""] + swl
     m = f"{round(left)} min left" if left is not None else ""
     if SELECT:
         head = ("🔒 " + ", ".join(calls)) if calls else "don't buy yet"
@@ -1465,7 +1504,9 @@ def results_c(L_, t1, rows, send=True):
         L += [f"💸 Scalp {x['c']} {'UP' if x['up'] else 'DOWN'} @ {cents(x['entry'])} → best {cents(x['best'])} ({(x['best'] - x['entry']) * 100:+.0f}¢)"
               + (f" ✅ hit the {cents(x.get('tgt', x['entry'] + .12))} target" if x["best"] >= x.get("tgt", x["entry"] + .12) - 1e-9 else f" ❌ missed the {cents(x.get('tgt', x['entry'] + .12))} target")
               + (" · settled its way" if x.get("won") else "") for x in sw_]
-        tail = [line, "" if SCALP_SHADOW else scalp_txt(L_)] + ["", LEGEND]
+        L += [f"💸 {x['c']} {'UP' if x['up'] else 'DOWN'} {cents(x['entry'])} → {cents(x['tgt'])} {'✅ popped' if x['hit'] else '❌ no pop'}"
+              for x in L_.scalpc if not x.get("open") and int(round(x["t1"])) == int(t1)]
+        tail = [line, scalpc_txt(L_)] + ["", LEGEND]
         if not send: return n, k, L, [x for x in tail if x and x != LEGEND]   # bundled push adds the key once, at the bottom
         notify((f"{'✅' if n == k else '🎯'} {n}/{k} calls right" if k else "no calls") + f" · {et(t1 - 900)}–{et(t1)}" + (f" · today {rec}" if rec else ""),
                "\n".join(L + [""] + [x for x in tail if x]), 2)
@@ -1551,13 +1592,13 @@ def final_c(L_, R, fin, b):
                 bp = buy_px(L_, tk, up, q); txt += f"\n   💵 ≤{cents(bp)}" + sell_plan(bp, q["tl"], q["t1"]) + spread_note(q); newf.append(f"{c} {d} ≤{cents(bp)}")
             if f: strong.append(f"{c} {'UP' if f['up'] else 'DOWN'}" + (" 🚨" if kind == "warn" else ""))
             rows.append(txt or f"🚫 {c} don't buy")
-            if CRYPTO and (sl := swing_line(c, q, tk)): swf.append(sl)
+            if CRYPTO and (sl := scalp_call(L_, R, c, q, tk)): swf.append(sl)
             if (fn := flow_note(flow_of(L_, c, tk), up)): rows.append(fn)
             continue
         rows.append(f"{mark(ps)} {c} {d} {ps:.0%} · K {kp:.0%} {arrow(q, up)}" + (" · toss-up" if TIERS and ps < TOSS else "") + ch)
         if (fn := flow_note(flow_of(L_, c, tk), up)): rows.append(fn)
     if not rows: return
-    if swf: rows += ["", SWING_HEAD] + swf
+    if swf: rows += [""] + swf
     rec, line = wl_line(L_); u5 = u5_txt(L_)
     tail = [x for x in ("" if SELECT else (f"Final calls today: {u5}" if u5 else ""), line) if x]
     pick = (("🔒 " if SELECT else "⭐ ") + ", ".join(strong)) if strong else ("don't buy" if SELECT else "no strong picks")
@@ -1690,6 +1731,13 @@ def live():
                 seen.add(r[1]); last_ts = max(last_ts, r[0]); L_.ingest(r[0], *r[2:])
             if len(seen) > 200000: seen = set(list(seen)[-50000:])
             L_.tick(time.time()); now = time.time(); minute = int(now // 60); preds, upd, fin = {}, {}, {}
+            for x in L_.scalpc:   # 💸 scalp calls: best sellable price until the deadline, then graded (popped +10¢ or not)
+                if not x.get("open"): continue
+                bk = live_book(x["tk"])
+                if bk and now < x["until"]: x["best"] = round(max(x["best"], bk[0] if x["up"] else 1 - bk[1]), 3)
+                if now >= x["until"] or x["best"] >= x["tgt"] - 1e-9:
+                    x.update(open=False, hit=int(x["best"] >= x["tgt"] - 1e-9)); fl = f"{DATA}/scalp_calls.csv.gz"; os.makedirs(DATA, exist_ok=True)
+                    pd.DataFrame([{k_: v for k_, v in x.items() if k_ != "open"}]).to_csv(fl, mode="ab", index=False, header=not os.path.exists(fl), compression="gzip")
             for tk_, sh_ in L_.shown.items():   # best price each locked call's side was sellable at after the call (take-profit check)
                 f_ = sh_.get("first")
                 if f_ and f_.get("best") is not None and now < sh_.get("t1", 0):
