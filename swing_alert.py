@@ -1571,7 +1571,7 @@ def why_lines(mkt, cx, bdir, px, lv, cell, kind):
 
 
 # ---------------- unified 15-min calls: BUY → (TAKE PROFIT | WRONG → FLIP | HOLD) → RESULT ----------------
-KIND = {"kreal": "Real-Kalshi tested", "early": "EARLY", "boom": "BOOMING", "pre": "Sharp move ahead", "lock": "Near lock", "spike": "🔥 Spike", "drift": "📊 Session drift", "fast": "⚡ Fast move", "ls": "🎯 Longshot", "fav": "💪 Edge pick", "ihm": "📈 Close pattern", "flip": "🔄 Flip"}
+KIND = {"fav15": "Tested favorite", "kreal": "Real-Kalshi tested", "early": "EARLY", "boom": "BOOMING", "pre": "Sharp move ahead", "lock": "Near lock", "spike": "🔥 Spike", "drift": "📊 Session drift", "fast": "⚡ Fast move", "ls": "🎯 Longshot", "fav": "💪 Edge pick", "ihm": "📈 Close pattern", "flip": "🔄 Flip"}
 
 
 def sess(close):
@@ -1614,13 +1614,13 @@ def open_call(st, mkt, kind, side, c, lv, px, odds, why, tested, parent=None, pr
     """Create a numbered call on the current 15-min contract and send the BUY message."""
     cost = c["ya"] if side == "YES" else c["na"]
     left0 = (c["close"] - pd.Timestamp.now(tz="UTC")).total_seconds() / 60
-    if (kind != "kreal" and not proven(st, mkt, left0)) or (kind == "kreal" and disproven(st, mkt, left0)):
+    if (kind not in ("kreal", "fav15") and not proven(st, mkt, left0)) or (kind == "kreal" and disproven(st, mkt, left0)):
         st.setdefault("blocked", {})[mkt] = dt.datetime.now(ET).strftime("%-I:%M %p"); return None
     k = dict(ticker=c["ticker"], side=side, cost=cost, k=c["k"], close=str(c["close"]))
     tp = (min(0.95, max(2.5 * cost, cost + 0.25)) if kind == "ls" else
           0.97 if kind == "lock" else min(0.92, cost + max(0.12, (1 - cost) * 0.55)))  # scalp: sell into the move
     bail = max(0.03, cost * 0.5)
-    if kind == "lock": tp, bail = 0.995, 0.60  # hold to the end; bail only if it really reverses
+    if kind in ("lock", "fav15"): tp, bail = 0.995, 0.60  # hold to the end; bail only if it really reverses
     pos = dict(side=1 if side == "YES" else -1, entry=px, stop=0, tgt=0, best=px, n=0, t0=time.time(), kind=kind, k=k,
                tp=tp, bail=bail, parent=parent, prob=prob)
     st.setdefault("lpos", {})[mkt] = pos; st.setdefault("lswin", {})[mkt] = c["ticker"]
@@ -1640,7 +1640,7 @@ def open_call(st, mkt, kind, side, c, lv, px, odds, why, tested, parent=None, pr
     gain_tp = (tp - cost - kfee(cost)) / cost
     exits = (f"Sell high: when the bet is up about +{gain_tp:.0%}" + (f" (likely once {NAME[mkt].title()} {'reaches' if up else 'drops to'} "
              f"about {pk(tpx)})" if tpx else "") + ". If it doesn't get there, hold to the end."
-             if kind != "lock" else "Hold to the end (near lock).")
+             if kind not in ("lock", "fav15") else "Hold to the end: favorites pay most when held (a 95¢ sell gives up the last 5¢ on every win).")
     L = (st.get("learn") or {}).get(f"{mkt}|{kind}")
     rec = (f" Live record for this call type here: {L.get('raw', '')}." if L else "") + \
           f" Market profile: {(st.get('profile') or {}).get(mkt, 'partial')}."
@@ -2342,14 +2342,16 @@ def night_tick(st, params, cool, nh, yc, only=None):
         cal_ = (params.get("_cal") or {}).get(mkt)
         if now.time() < dt.time(15, 50) or now.time() > dt.time(16, 10):
             changed |= (ihm_call(mkt, m, kp, st, lv, cal_) or drift_call(mkt, m.iloc[:-1], kp, st, lv, cal_)
-                        or k15_call(mkt, m.iloc[:-1], kp, st, lv, cal_, night=True))
+                        or (not FAV_ON and k15_call(mkt, m.iloc[:-1], kp, st, lv, cal_, night=True)))
         regime_update(st, mkt, y); boards[mkt] = (m, kp, lv); LIVEVIEW[mkt] = (m, kp, lv)  # volatility from one clean source
         try:
             a = analyze(mkt, m, kp, lv, k15(mkt), (cal_ or {}).get("fcast"), wm_for(st, mkt, cal_), (cal_ or {}).get("proj")); st.setdefault("ana", {})[mkt] = a
             if a: apply_pcal(st, mkt, a); apply_proj_bias(st, mkt, a); track_projection(st, mkt, a); record_pred(st, mkt, a, k15(mkt))
+            if a: changed |= fav_call(st, mkt, a, lv)
             if a: changed |= kcall(st, mkt, y, lv, kp, params)
-            if a: changed |= (early_call(st, mkt, a, lv, cal_) or boom_call(st, mkt, a, lv, cal_) or spike_alert(st, mkt, a, lv, cal_, cool)
-                              or premove_alert(st, mkt, a, lv, cal_, cool) or lock_call(st, mkt, a, lv, cal_))
+            if a and FAV_ON: changed |= spike_alert(st, mkt, a, lv, cal_, cool)
+            elif a: changed |= (early_call(st, mkt, a, lv, cal_) or boom_call(st, mkt, a, lv, cal_) or spike_alert(st, mkt, a, lv, cal_, cool)
+                                or premove_alert(st, mkt, a, lv, cal_, cool) or lock_call(st, mkt, a, lv, cal_))
         except Exception as e: print("analyze", mkt, e)
         st.setdefault("thin", {})[mkt] = bool(len(y) and pd.Timestamp.now(tz="UTC") - y.index[-1] > pd.Timedelta(minutes=25))
       except Exception as e:
@@ -2572,9 +2574,11 @@ def live():
                 st.setdefault("ana", {})[mkt] = _a
                 if _a: apply_pcal(st, mkt, _a); apply_proj_bias(st, mkt, _a); track_projection(st, mkt, _a); record_pred(st, mkt, _a, k15(mkt))
                 _c = (params.get("_cal") or {}).get(mkt)
+                if _a: changed |= fav_call(st, mkt, _a, _lv)
                 if _a: changed |= kcall(st, mkt, _m, _lv, float(px[etf]), params)
-                if _a: changed |= (early_call(st, mkt, _a, _lv, _c) or boom_call(st, mkt, _a, _lv, _c) or spike_alert(st, mkt, _a, _lv, _c, cool)
-                                   or premove_alert(st, mkt, _a, _lv, _c, cool) or lock_call(st, mkt, _a, _lv, _c))
+                if _a and FAV_ON: changed |= spike_alert(st, mkt, _a, _lv, _c, cool)
+                elif _a: changed |= (early_call(st, mkt, _a, _lv, _c) or boom_call(st, mkt, _a, _lv, _c) or spike_alert(st, mkt, _a, _lv, _c, cool)
+                                     or premove_alert(st, mkt, _a, _lv, _c, cool) or lock_call(st, mkt, _a, _lv, _c))
             except Exception as e: print("analyze", mkt, e)
             m = data[etf]; m = m[m.index + pd.Timedelta(minutes=1) <= pd.Timestamp.now(tz="UTC")]
             cur = pd.Timestamp.now(tz="UTC").floor("min"); p_ = float(px[etf])
@@ -2583,7 +2587,7 @@ def live():
             if dt.datetime.now(ET).time() >= dt.time(15, 50): continue  # no new calls into the close
             cal_ = (params.get("_cal") or {}).get(mkt)
             changed |= (ihm_call(mkt, m, p_, st, lv_, cal_) or drift_call(mkt, m, p_, st, lv_, cal_)
-                        or k15_call(mkt, m, p_, st, lv_, cal_))
+                        or (not FAV_ON and k15_call(mkt, m, p_, st, lv_, cal_)))
             row = pd.DataFrame({"Open": p_, "High": p_, "Low": p_, "Close": p_, "Volume": m.Volume.iloc[-1]}, index=[cur])
             changed |= bool(fast_checks(mkt, pd.concat([m, row]), st, cool))
           except Exception as e:
@@ -3025,6 +3029,65 @@ def kp_live(M, x, mid, alpha=1.0):
     return float(1 / (1 + np.exp(-(lgm + alpha * (z @ np.array(M["w"]))))))  # alpha = live-learned trust for this market
 
 
+# ---------------- tested-favorite calls (replace the value calls: those lost live, 47% right on 188 calls) ----------------
+FAV_ON = os.getenv("FAV_CALLS", "1") == "1"          # 0 = old value calls (kreal/early/lock/edge picks) instead
+FAV_T = float(os.getenv("FAV_T") or 0.80)            # Kalshi must already favor the side this much
+FAV_GATE = float(os.getenv("FAV_GATE") or 0.88)      # ...and the same setup must have won this often in the live log
+FAV_DAYS = int(os.getenv("FAV_DAYS") or 14)          # live-log lookback
+FAV_MAX_ASK = 0.95                                   # never pay more than this
+_FAVT = {"t": 0, "T": {}, "prior": 0.88}
+
+
+def fav_band(conf): return "80-85" if conf < 0.85 else "85-90" if conf < 0.90 else "90-95" if conf < 0.95 else "95+"
+
+
+def fav_table():
+    """From every graded 15-min snapshot (preds.jsonl, last FAV_DAYS days): how often the side Kalshi favored ≥80% won,
+    per market × minutes left × price band × whether our model agreed. Rebuilt every 30 min, so each new loss counts."""
+    if time.time() - _FAVT["t"] < 1800 and _FAVT["T"]: return _FAVT
+    try:
+        d = pd.read_json(PRED_LOG, lines=True).dropna(subset=["wm", "mid"])
+        d = d[pd.to_datetime(d.close.astype(str).str[:16]) >= pd.Timestamp.now() - pd.Timedelta(days=FAV_DAYS)]
+        d = d[d.left.isin([12, 9, 6])]
+        side = d.mid >= 0.5; conf = np.maximum(d.mid, 1 - d.mid); d = d[(conf >= FAV_T) & (conf < 0.99)]
+        side = d.mid >= 0.5; conf = np.maximum(d.mid, 1 - d.mid)
+        won = (side == d.up.astype(bool)).astype(int); agree = (d.wm >= 0.5) == side
+        key = d.mkt + "|" + d.left.astype(str) + "|" + conf.map(fav_band) + "|" + agree.map({True: "agree", False: "split"})
+        g = pd.DataFrame(dict(k=key, w=won)).groupby("k").w.agg(["sum", "size"])
+        _FAVT.update(t=time.time(), prior=float(won.mean()) if len(won) else 0.88,
+                     T={k: [int(r["sum"]), int(r["size"])] for k, r in g.iterrows()})
+    except Exception as e: print("fav_table", e); _FAVT["t"] = time.time()
+    return _FAVT
+
+
+def fav_call(st, mkt, a, lv):
+    """⭐ BUY the side Kalshi already favors ≥80% at the 12/9/6-min check, when that exact setup (market, minutes left,
+    price band, model agreeing) has won ≥88% in the live log. Fewer surprises, smaller payouts."""
+    if not FAV_ON or a.get("p_up") is None or "T" not in a: return False
+    T = a["T"]; left = 12 if 10.8 < T <= 12.6 else 9 if 7.8 < T <= 9.6 else 6 if 4.8 < T <= 6.6 else None
+    W = st.setdefault("favwhy", {})
+    if left is None: W[mkt] = "waits for the 12/9/6-min checks"; return False
+    mid = a["p_up"]; up = mid >= 0.5; conf = max(mid, 1 - mid)
+    if conf < FAV_T: W[mkt] = f"no side is {FAV_T:.0%}K yet"; return False
+    if conf >= 0.99: W[mkt] = "already decided"; return False
+    if busy(st, mkt) or not live_ready(st, mkt): W[mkt] = "call already open" if busy(st, mkt) else "warming up"; return False
+    c = k15(mkt)
+    if not c or st.setdefault("lswin", {}).get(mkt) == c["ticker"]: W[mkt] = "already called this window"; return False
+    if event_window(mkt, dt.datetime.now(ET), T): W[mkt] = "report/jump window"; return False
+    ask = c["ya"] if up else c["na"]
+    if not 0 < ask <= FAV_MAX_ASK: W[mkt] = f"too expensive ({ask * 100:.0f}¢)"; return False
+    wr = a.get("wm_raw", a.get("wm_p")); agree = wr is None or (wr >= 0.5) == up
+    F = fav_table(); w, n = F["T"].get(f"{mkt}|{left}|{fav_band(conf)}|{'agree' if agree else 'split'}", [0, 0])
+    rate = (w + F["prior"] * 30) / (n + 30) if n >= 30 else min(F["prior"], FAV_GATE) - 0.02
+    a["fav"] = dict(w=w, n=n, rate=round(rate, 3))
+    if rate < FAV_GATE:
+        W[mkt] = f"setup tested {w}/{n} won ({w / n:.0%}), under {FAV_GATE:.0%}" if n else "setup never tested"; return False
+    W[mkt] = None
+    why = (f"Kalshi already favors {'UP' if up else 'DOWN'} at {conf:.0%}K" + (" and our model agrees" if agree else "")
+           + f"; 🧪 tested {w}/{n} won ({w / n:.0%}): same market, {left} min left, {fav_band(conf)}¢ price, last {FAV_DAYS} days live")
+    return open_call(st, mkt, "fav15", "YES" if up else "NO", c, lv, a["px"], odds_line(w / n, ask), why, True, prob=w / n) is not None
+
+
 def disproven(st, mkt, T):
     e = ((st.get("edge_live") or {}).get(mkt) or {}).get("early" if T >= 9 else "late")
     return bool(e and e["n"] >= 20 and e["win"] - e["kalshi"] < -0.03)
@@ -3051,6 +3114,7 @@ def kcall(st, mkt, bars, lv, px, params):
               ("report/jump window" if event_window(mkt, now, T) else None) or \
               (f"Kalshi already {ask:.0%}K: too late" if ask > KMAX_ASK else None) or \
               (None if 0.05 < ask and ps - ask - kfee(ask) >= 0.04 else f"edge too small ({(ps - ask - kfee(ask)) * 100:+.0f} pts after fees)")
+    if FAV_ON: KP[mkt]["why_not"] = (st.get("favwhy") or {}).get(mkt) or "tested-favorite rule"; return False
     KP[mkt]["why_not"] = why_not
     if why_not: return False
     why = (f"tested on {M['windows']} real Kalshi windows ({'fresh' if reg == 'fresh' else 'delayed'} data): trades like this won "
