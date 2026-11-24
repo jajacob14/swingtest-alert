@@ -32,10 +32,16 @@ def E(k, d): return type(d)(os.getenv(k) or d)
 
 API, WEB = "https://api.elections.kalshi.com/trade-api/v2", "https://kalshi.com/markets"
 PROFILE = os.getenv("KW_PROFILE", "commodity")       # "crypto" = same engine on Kalshi's crypto 15-min markets + live spot
-CRYPTO = PROFILE == "crypto"
-DIR = E("KW_DIR", "kcrypto" if CRYPTO else "kwhale"); DATA = f"{DIR}/data"   # data/ lives in the Actions cache; model.json + report.md go in git
+CRYPTO = PROFILE in ("crypto", "crypto9")             # crypto9 = second crypto channel: all 9 of Kalshi's 15-min crypto markets
+DIR = E("KW_DIR", {"crypto": "kcrypto", "crypto9": "kcrypto9"}.get(PROFILE, "kwhale")); DATA = f"{DIR}/data"   # data/ lives in the Actions cache; model.json + report.md go in git
 OLD_CACHE = "data"                                   # commodity bot's 3-week Kalshi cache (read only)
-if CRYPTO:
+if PROFILE == "crypto9":
+    COMMS = ("ETH", "BTC", "SOL", "XRP", "NEAR", "HYPE", "DOGE", "BNB", "ZEC")   # Kalshi's on-screen order
+    SHOW = COMMS
+    KEYS = {c: (c,) for c in COMMS}
+    SPOT = {c: f"{c}-USD" for c in COMMS}                  # Coinbase; a coin it doesn't list falls back to Kalshi-only features
+    LBL, lbl, TOPIC_ENV = "Crypto all", "crypto", "KC9_NTFY_TOPIC"
+elif CRYPTO:
     COMMS = ("BTC", "ETH", "SOL", "XRP", "DOGE")             # the markets on your Kalshi (BNB, HYPE dropped)
     SHOW = COMMS
     KEYS = {c: (c,) for c in COMMS}
@@ -1083,7 +1089,7 @@ def scalp_call(L_, R, c, q, tk):  # noqa
     return f"💸 SCALP {c} {'UP' if up else 'DOWN'} ≤{cents(ask)} → sell {cents(tg)} by {et(until)} (~1 in 2 pop)"   # flagged ones popped ~47% on unseen data
 
 
-COIN_ICON = {"BTC": "🟠", "ETH": "🔷", "SOL": "🟣", "XRP": "⚫", "DOGE": "🐶"}
+COIN_ICON = {"BTC": "🟠", "ETH": "🔷", "SOL": "🟣", "XRP": "⚫", "DOGE": "🐶", "NEAR": "🟩", "HYPE": "⚪", "BNB": "🟡", "ZEC": "🟧"}
 SPARKC = "▁▂▃▄▅▆▇█"
 
 

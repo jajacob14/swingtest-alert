@@ -1,0 +1,28 @@
+{
+ "pause_all": false,
+ "markets": {
+  "ETH": true,
+  "BTC": true,
+  "SOL": true,
+  "XRP": true,
+  "NEAR": true,
+  "HYPE": true,
+  "DOGE": true,
+  "BNB": true,
+  "ZEC": true
+ },
+ "alerts": {
+  "board": true,
+  "edge_calls": true,
+  "results": true,
+  "whales": false,
+  "spikes": false,
+  "digest": true,
+  "open_close": true,
+  "low_spikes": true,
+  "pred_results": true,
+  "board_update": true,
+  "waves": true,
+  "scalps": true
+ }
+}
