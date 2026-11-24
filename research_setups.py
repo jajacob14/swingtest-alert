@@ -5,6 +5,8 @@ import os
 import numpy as np, pandas as pd, kalshi_whale as K
 P = lambda *a: print(*a, flush=True)
 D = pd.concat([K.kframe(K.load_k(m), 14.6, True) for m in K.COMMS], ignore_index=True).sort_values(["ticker", "ts"])
+for c_ in ("sr3", "sgap"):
+    if c_ not in D: D[c_] = 0.0   # commodities: no spot feed
 D["tlr"] = D.tl.round().astype(int); D["conf"] = np.maximum(D.mid, 1 - D.mid); D["side"] = D.mid >= 0.5
 s = np.where(D.side, 1, -1); D["kt"] = D.dmid3 * s; D["st"] = D.sr3 * s; D["sg"] = D.sgap * s
 D["vz"] = D.groupby("mkt").kvol.transform(lambda v: (v - v.median()) / (v.std() + 1e-9))

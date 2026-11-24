@@ -13,14 +13,14 @@ def rec(x, col):
 
 
 # ticks first: the scalp calls are re-graded on them (time to pop, price at the deadline)
-tk_ = K.read_gz(f"{K.DATA}/ticks.csv.gz"); num(tk_, ["ts", "yb", "ya", "qb", "qa", "spot"])
+tk_ = K.read_gz(f"{K.DATA}/ticks.csv.gz", ["ts", "c", "tk", "yb", "ya", "qb", "qa", "spot"]); num(tk_, ["ts", "yb", "ya", "qb", "qa", "spot"])
 tk_ = tk_.dropna(subset=["ts", "yb", "ya"]).sort_values("ts")
 P(f"ticks: {len(tk_):,} book snapshots" + (f" · {pd.to_datetime(tk_.ts.min(), unit='s'):%m-%d %H:%M} → {pd.to_datetime(tk_.ts.max(), unit='s'):%m-%d %H:%M} UTC" if len(tk_) else ""))
 TB = {k: g for k, g in tk_.groupby("tk")} if len(tk_) else {}
 
 # ───── ⭐ buy calls ─────
 P("\n━━ ⭐ BUY CALLS (calls_log) ━━")
-c = K.read_gz(f"{K.DATA}/calls_log.csv.gz"); num(c, ["t1", "up", "won", "ps", "px", "best", "tl", "setup", "setup_n", "rev"])
+c = K.read_gz(f"{K.DATA}/calls_log.csv.gz", ["t1", "c", "up", "won", "ps", "px", "best", "tl", "setup", "setup_n", "rev"]); num(c, ["t1", "up", "won", "ps", "px", "best", "tl", "setup", "setup_n", "rev"])
 c = c.dropna(subset=["t1", "won"]).drop_duplicates(["t1", "c"])
 if len(c):
     P(f"24h {rec(c[c.t1 >= D1], 'won')} · 7d {rec(c[c.t1 >= D7], 'won')} · all {rec(c, 'won')}")
@@ -47,7 +47,7 @@ else: P("no calls logged yet")
 
 # ───── 💸 scalp calls ─────
 P("\n━━ 💸 SCALP CALLS (scalp_calls) ━━")
-s = K.read_gz(f"{K.DATA}/scalp_calls.csv.gz"); num(s, ["t", "up", "entry", "tgt", "p", "t1", "until", "best", "hit"])
+s = K.read_gz(f"{K.DATA}/scalp_calls.csv.gz", ["t", "c", "tk", "up", "entry", "tgt", "p", "t1", "until", "best", "hit"]); num(s, ["t", "up", "entry", "tgt", "p", "t1", "until", "best", "hit"])
 s = s.dropna(subset=["t", "hit"]).drop_duplicates(["tk", "up", "t"])
 if len(s):
     s["up"] = s.up.astype(bool)
@@ -74,7 +74,7 @@ else: P("no scalp calls logged yet")
 
 # ───── scalp shadow ─────
 P("\n━━ scalp shadow (scalp_log, silent) ━━")
-d = K.read_gz(f"{K.DATA}/scalp_log.csv.gz"); num(d, ["t", "entry", "best", "won", "t_hit", "tl"])
+d = K.read_gz(f"{K.DATA}/scalp_log.csv.gz", ["t", "tk", "up", "entry", "best", "won", "t_hit", "tl"]); num(d, ["t", "entry", "best", "won", "t_hit", "tl"])
 d = d.dropna(subset=["entry", "best"]).drop_duplicates(["tk", "up"])
 d = d[d.entry <= .35]
 if len(d):
