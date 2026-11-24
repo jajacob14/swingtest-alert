@@ -1061,7 +1061,7 @@ def swing_line(c, q, tk):
             f"{cents(min(ask + .15, .99))}: {t15:.0%} · peak ~{mins}m · wins at close {win:.0%}")
 
 
-SWING_HEAD = "📈 Scalp odds — cheap side, chance it pops within 5 min (from past windows, not a forecast; sell into the pop, most expire at 0):"
+SWING_HEAD = "📈 Scalp odds — cheap side, chance it pops within 5 min (from past windows, not a forecast):"
 
 
 def sell_plan(px, tl, t1):
