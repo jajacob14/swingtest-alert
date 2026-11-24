@@ -813,6 +813,7 @@ class Live:
         self.res_pend = st.get("res_pend", {})    # window close -> graded rows waiting to be sent together
         self.shown = st.get("shown", {})          # ticker -> exactly what the board showed (graded at settlement)
         self.scalps = st.get("scalps", [])        # scalp alerts: entry, best price traded since, outcome at the close
+        self.lw = st.get("lw", [])                # lean record per window: [t1, market, right] (right only if EVERY lean shown was right)
         self.scalpc = st.get("scalpc", [])        # 💸 scalp CALLS shown to the user (graded: did it pop +10¢ within 5 min)
         self.waves = st.get("waves", [])          # wave alerts: buy pushed, waiting for the cash-out / settlement
         self.stats = st.get("stats", dict(trades=0, whales=0, vol=0.0)); self.quiet = 0; self.cool = {}; self.sent_h = defaultdict(int)
@@ -909,7 +910,8 @@ class Live:
                     shown={k: v for k, v in self.shown.items() if v["t1"] > time.time() - 7200},
                     waves=[w for w in self.waves if w["t1"] > time.time() - 3 * 86400],
                     scalps=[x for x in self.scalps if x["t1"] > time.time() - 3 * 86400],
-                    scalpc=[x for x in self.scalpc if x["t1"] > time.time() - 7 * 86400])
+                    scalpc=[x for x in self.scalpc if x["t1"] > time.time() - 7 * 86400],
+                    lw=[x for x in self.lw if x[0] > time.time() - 7 * 86400])
 
 
 # ---------------- live: 15-min predictions ----------------
@@ -1259,6 +1261,8 @@ def note_call(sh, p, tl, mid=None, dm1=0.0, px=None, sr=None):
     never changes: a later lean the other way is a warning, logged as a switch, never graded."""
     if not SELECT or not sh: return None
     up = p >= 0.5; f = sh.get("first")
+    ln = sh.setdefault("lns", [])                     # every lean shown this window (board + check-ins): a flip grades the lean as a loss
+    if not ln or ln[-1] != int(up): ln.append(int(up))
     if f:
         m = p if mid is None else mid
         rev = bool(up) != f["up"] and max(p, 1 - p) >= REV_T and max(m, 1 - m) >= REV_T and (m >= 0.5) == bool(up)
@@ -1297,7 +1301,7 @@ def sel_row(c, ev_, sh, p, mid, q):
 LEGEND = ("Key: ⭐ buy · 🔒 holding · 🚨 sell · 🚫 don't buy (leans ↑UP/↓DOWN = where the market leans) · 💵 max price · 💰 take-profit · "
           + "🧪 46/50 won = past calls with this same setup (last 2 weeks), how many were right · "
           + ("🔮 price each side reaches about half the time before the close (* = 1 in 4) · " if CRYPTO else "")
-          + "↗/↘ Kalshi price moving your way/against (⚡ fast) · "
+          + "↗/↘ Kalshi price moving your way/against (⚡ fast) · " + ("" if CRYPTO else "58¢→66¢ = the leaning side's price at the opening push → now · ")
           + ("💸 scalp: cheap side likely to pop +10¢ soon — buy, set the sell, out by the time shown (graded separately) · "
              "send 'all' (9 markets) or 'core' (5 coins) to this topic to switch channel" if CRYPTO else "limit only = wide spread"))
 
@@ -1308,6 +1312,32 @@ def switch_txt(w):
     if not g: return ""
     saved = sum(1 for x in g if not x[10] and x[11]); broke = sum(1 for x in g if x[10] and not x[11])
     return f"🔄 Calls the model later leaned against: {len(g)} · the call was right anyway {sum(1 for x in g if x[10])} · the later lean would have been right {saved} (not counted)"
+
+
+def lean_grade(L_, t1, r):
+    """Strict lean grade: right only if every lean shown this window pointed to the result (a flip = L, even if it corrected)."""
+    lns = r.get("lns") or [int(r.get("p5", r["p"]) >= 0.5)]; ok = all(x == int(r["up"]) for x in lns)
+    if not any(x[0] == int(t1) and x[1] == r["c"] for x in L_.lw): L_.lw.append([int(t1), r["c"], int(ok)])
+    return ok, "→".join("UP" if x else "DOWN" for x in lns)
+
+
+def trend_txt(sh, p, mid):
+    """Commodities: the leaning side's Kalshi price at the opening push → now, e.g. ' · 58¢→66¢' (flip shown as 'was ↓DOWN')."""
+    if CRYPTO or not sh or sh.get("mid") is None or mid is None: return ""
+    up = p >= 0.5; b = sh["mid"] if up else 1 - sh["mid"]; nw = mid if up else 1 - mid
+    was = "" if (sh.get("p", p) >= 0.5) == up else f" (was {'↑UP' if not up else '↓DOWN'})"
+    return f" · {cents(b)}→{cents(nw)}{was}"
+
+
+def with_trend(txt, tr):
+    return txt.replace("\n", tr + "\n", 1) if "\n" in txt else txt + tr
+
+
+def lean_line(L_):
+    w = [x for x in L_.lw if x[0] > _today()]
+    if not w: return ""
+    k = sum(x[2] for x in w); w7 = [x for x in L_.lw if x[0] > time.time() - 7 * 86400]; k7 = sum(x[2] for x in w7)
+    return f"👀 Leans today: {k}-{len(w) - k} ({k / len(w):.0%})" + (f" · 7d {k7}-{len(w7) - k7}" if len(w7) > len(w) else "") + " · a flip = L"
 
 
 def wl_line(L_):
@@ -1597,8 +1627,8 @@ def update9_c(L_, R, upd, b):
             if ev_ == "new":
                 bp = buy_px(L_, q["tk"], up, q); txt += f"\n   💵 ≤{cents(bp)}" + sell_plan(bp, q["tl"], q["t1"]) + spread_note(q) + tested(sh.get("setup"))
                 newc.append(f"{c} {d} ≤{cents(bp)}"); link = link or f"{WEB}/{K15[c].lower()}"
-            if txt: rows.append(txt); nch += int(ev_ == "new"); nflip += int(kind == "warn")
-            else: rows.append(f"{c} · 🚫 don't buy · leans {'↑UP' if p >= 0.5 else '↓DOWN'} {arrow(q, p >= 0.5)}" + gated_txt(sh, p))
+            if txt: rows.append(with_trend(txt, trend_txt(sh, p, mid))); nch += int(ev_ == "new"); nflip += int(kind == "warn")
+            else: rows.append(f"{c} · 🚫 don't buy · leans {'↑UP' if p >= 0.5 else '↓DOWN'} {arrow(q, p >= 0.5)}" + trend_txt(sh, p, mid) + gated_txt(sh, p))
             if CRYPTO and (sl := scalp_call(L_, R, c, q, q["tk"])): swl.append(sl)
             if go and not go0: rows.append(f"🟢 {c} now BET ≤ {cents(ask)}")
             continue
@@ -1632,13 +1662,16 @@ def results_c(L_, t1, rows, send=True):
             if not f:
                 if r.get("v", 0) < 2 and (cr := call_r(r)) is not None:   # pushed before first-call tracking: old rule
                     ok = bool(cr[0]); n += ok; k += 1; L.append(f"{'✅' if ok else '❌'} {r['c']} ⭐ ({cr[1]} call)" + ("" if ok else f" → went {end}")); continue
-                lean = (r.get("p5", r["p"]) >= 0.5); L.append(f"➖ {r['c']} no buy · leaned {'UP' if lean else 'DOWN'}, ended {end} {'✓' if lean == bool(r['up']) else '✗'}"); continue
+                lok, path = lean_grade(L_, t1, r)
+                L.append(f"➖ {r['c']} no buy · leaned {path}, ended {end} {'✓' if lok else '✗'}" + (" (flipped = L)" if "→" in path else "")); continue
+            lok, path = lean_grade(L_, t1, r)
             cr = call_r(r); ok = bool(cr[0]); n += ok; k += 1
             if cr[1] == "final":
                 fp = r["p5"]; s_ = f"{'✅' if ok else '❌'} {r['c']} {'UP' if fp >= 0.5 else 'DOWN'}"
             else:
                 fd = "UP" if f["up"] else "DOWN"
                 s_ = f"{'✅' if ok else '❌'} {r['c']} {fd}"
+            if not lok and "→" in path: s_ += f" · leaned {path} this window (lean L)"
             if r.get("go"): s_ += f" · BET ≤ {cents(r['ask'])} {'WON' if (r['p'] >= 0.5) == bool(r['up']) else 'LOST'}"
             L.append(s_); continue
         n += ok; k += 1
@@ -1661,7 +1694,7 @@ def results_c(L_, t1, rows, send=True):
               + (" · settled its way" if x.get("won") else "") for x in sw_]
         L += [f"💸 {x['c']} {'UP' if x['up'] else 'DOWN'} {cents(x['entry'])} → {cents(x['tgt'])} {'✅ popped' if x['hit'] else '❌ no pop'}"
               for x in L_.scalpc if not x.get("open") and int(round(x["t1"])) == int(t1)]
-        tail = [line, scalpc_txt(L_)] + market_wl(L_) + ["", LEGEND]
+        tail = [line, lean_line(L_), scalpc_txt(L_)] + market_wl(L_) + ["", LEGEND]
         if not send: return n, k, L, [x for x in tail if x and x != LEGEND]   # bundled push adds the key once, at the bottom
         notify((f"{'✅' if n == k else '🎯'} {n}/{k} calls right" if k else "no calls") + f" · {et(t1 - 900)}–{et(t1)}" + (f" · today {rec}" if rec else ""),
                "\n".join(L + [""] + [x for x in tail if x]), 2)
@@ -1751,7 +1784,8 @@ def final_c(L_, R, fin, b):
             if ev_ == "new":
                 bp = buy_px(L_, tk, up, q); txt += f"\n   💵 ≤{cents(bp)}" + sell_plan(bp, q["tl"], q["t1"]) + spread_note(q) + tested(L_.shown[tk].get("setup")); newf.append(f"{c} {d} ≤{cents(bp)}")
             if f: strong.append(f"{c} {'UP' if f['up'] else 'DOWN'}" + (" 🚨" if kind == "warn" else ""))
-            rows.append(txt or f"{c} · 🚫 don't buy · leans {'↑UP' if p >= 0.5 else '↓DOWN'}" + gated_txt(L_.shown[tk], p))
+            tr = trend_txt(L_.shown[tk], p, mid)
+            rows.append(with_trend(txt, tr) if txt else f"{c} · 🚫 don't buy · leans {'↑UP' if p >= 0.5 else '↓DOWN'} {arrow(q, p >= 0.5)}" + tr + gated_txt(L_.shown[tk], p))
             if CRYPTO and (sl := scalp_call(L_, R, c, q, tk)): swf.append(sl)
             if (fn := flow_note(flow_of(L_, c, tk), up)): rows.append(fn)
             continue
