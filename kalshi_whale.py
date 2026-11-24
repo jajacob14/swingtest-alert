@@ -132,6 +132,9 @@ def label15(meta, tk):
     return "15-min window" + (f" · target {m.group(1).strip()}" if m else "")
 
 
+SESS_NAME = {"US": "US session", "EU": "Europe session", "ASIA": "Asia session"}
+
+
 def session(t):
     h = datetime.fromtimestamp(t, ET).hour
     return "US" if 9 <= h < 18 else ("EU" if 3 <= h < 9 else "ASIA")
@@ -1084,7 +1087,7 @@ COIN_ICON = {"BTC": "🟠", "ETH": "🔷", "SOL": "🟣", "XRP": "⚫", "DOGE": 
 SPARKC = "▁▂▃▄▅▆▇█"
 
 
-def spot_head(c):
+def spot_head(c, strike=None):
     """Live coin price, 5-min change, 12-min sparkline and a plain trend word (Coinbase)."""
     S = _SPOT.get(c) or {}; now = time.time(); t = int(now // 60) * 60
     pts = [S.get(t - 60 * k) for k in range(12, 0, -1)]; live = _LSPOT.get(c)
@@ -1097,7 +1100,28 @@ def spot_head(c):
     z = math.log(px / p5) / (sd * math.sqrt(5)) if p5 else 0.0
     word = "⚡ spiking up" if z >= 2.5 else "⚡ dropping fast" if z <= -2.5 else "rising" if z >= 1 else "falling" if z <= -1 else "steady"
     fmt = f"${px:,.0f}" if px >= 1000 else f"${px:,.2f}" if px >= 10 else f"${px:.4f}" if px >= 0.1 else f"${px:.5f}"
-    return f"{COIN_ICON.get(c, '•')} {c} {fmt}  {ch * 100:+.2f}% in 5 min  {sp}  {word}"
+    tgt = ""
+    if strike:
+        dd = px - strike; f2 = (lambda v: f"${v:,.0f}" if strike >= 1000 else f"${v:,.2f}" if strike >= 10 else f"${v:.4f}" if strike >= 0.1 else f"${v:.5f}")
+        tgt = f"  · target {f2(strike)} ({'+' if dd >= 0 else '−'}{f2(abs(dd))} {'above' if dd >= 0 else 'below'})"
+    return f"{COIN_ICON.get(c, '•')} {c} {fmt}  {ch * 100:+.2f}% in 5 min  {sp}  {word}{tgt}"
+
+
+SPIKE_BASE = ((10, 0.39), (6, 0.33), (4, 0.26), (0, 0.15))   # how often a cheap side pops +10¢ in 5 min, by minutes left
+
+
+def spike_read(L_, R, c, q, tk):
+    """Spike / no-spike read for the cheap side (spike model), vs what's normal at this point in the window."""
+    yb, ya = live_book(tk) or (q["bid"], q["ask"]); up = ya <= 1 - yb; ask = ya if up else 1 - yb
+    base = next(v for t_, v in SPIKE_BASE if q["tl"] >= t_)
+    if not (0.03 <= ask <= 0.35): return "➖ no spike read (no cheap side)"
+    p = scalp_prob(R, c, q, up, ask, ya - yb)
+    if p is None: return "➖ spike read: waiting for data"
+    d = "UP" if up else "DOWN"
+    if q["tl"] < SCALP_TLMIN_C: return f"➖ late in the window: prices barely move now ({p:.0%} chance of a +10¢ pop {d})"
+    if p >= SCALP_P: return f"⚡ SPIKE {d} likely: {p:.0%} (normally {base:.0%})"
+    if p >= base * 1.25: return f"⚠️ spike {d} possible: {p:.0%} (normally {base:.0%})"
+    return f"➖ no spike expected: {p:.0%} (normally {base:.0%})"
 
 
 def coin_block(L_, R, c, p, mid, q, ev_, sh):
@@ -1115,7 +1139,8 @@ def coin_block(L_, R, c, p, mid, q, ev_, sh):
     else:
         status = f"🔴 DON'T BUY · leans {'↑UP' if mid >= 0.5 else '↓DOWN'}"
     if (sl := scalp_call(L_, R, c, q, tk)): sub.append(sl.replace(f"💸 SCALP {c} ", "💸 SCALP "))
-    return [f"{status} · {spot_head(c)}"] + ["    " + x for x in sub]
+    else: sub.append(spike_read(L_, R, c, q, tk))
+    return [f"{status} · {spot_head(c, q.get('strike'))}"] + ["    " + x for x in sub]
 
 
 def scalpc_txt(L_, since=None):
@@ -1195,7 +1220,7 @@ def sel_row(c, ev_, sh, p, mid, q):
 
 
 LEGEND = (("Key: 🟢 BUY · 🔒 holding · 🚨 sell · 🔴 don't buy (leans ↑UP/↓DOWN, for reference) · 💵 max price · 💰 take-profit · "
-           "coin line = live price, 5-min change, 12-min chart, trend · " if CRYPTO else
+           "coin line = live price, 5-min change, 12-min chart, trend, the price it must beat (target) · ⚡/⚠️/➖ spike read for the cheap side · " if CRYPTO else
            "Key: ⭐ buy · 🔒 holding · 🚨 sell · 🚫 don't buy (↑UP/↓DOWN = where it leans) · 💵 max price · 💰 take-profit · ")
           + "↗/↘ Kalshi price moving your way/against (⚡ fast) · "
           + ("💸 scalp: cheap side likely to pop +10¢ soon — buy, set the sell, out by the time shown (graded separately)" if CRYPTO else "limit only = wide spread"))
@@ -1307,7 +1332,7 @@ def board_c(L_, R, preds, b, closed=(), res=None):
     pick = ("🟢 BET " + ", ".join(bets)) if bets else ("⭐ BUY " + ", ".join(strong)) if strong else ("don't buy yet" if SELECT else "no strong picks")
     lead = ((f"{'✅' if R_[0] == R_[1] else '🎯'} {R_[0]}/{R_[1]} {'calls ' if SELECT else ''}last · " if R_[1] else "no calls last · ") if R_ else "")
     if SELECT: tail = [LEGEND]
-    notify(f"{lead}📈 {et(b)} calls · {pick}" + (f" · today {rec}" if rec else ""), "\n".join(head + ([""] if head else []) + rows + [""] + tail), 2)
+    notify(f"{lead}📈 {et(b)} calls · {pick}" + (f" · today {rec}" if rec else "") + f" ({SESS_NAME[session(time.time())]})", "\n".join(head + ([""] if head else []) + rows + [""] + tail), 2)
 
 
 SCALP_MAX, SCALP_EDGE = E("KW_SCALP_MAX", 0.15), E("KW_SCALP_EDGE", 0.05)   # side at ≤15¢ that live spot says is worth 5¢+ more
@@ -1909,7 +1934,7 @@ def live():
             snap = lambda: save_json(f"{DATA}/state.json", {**L_.state(), "started": True, "digest_t": digest_t, "is_open": is_open})
             if COMPACT and preds and b not in boarded:   # opening push waits (≤ ~2 min) for the last window's results to bundle them
                 prev = b - 900; wait = any(int(S["t1"]) == prev for S in L_.snaps.values())
-                if wait and now < prev + 150: preds = {}
+                if wait and now < prev + 75: preds = {}
             if preds and b not in boarded and any(int(round(v["t1"])) == b for v in L_.shown.values()):
                 boarded.add(b); board_t[b] = 0; preds = {}       # restarted mid-window: this window's opening push already went out
             if preds and b not in boarded:
@@ -1920,7 +1945,7 @@ def live():
                     updated.add((b, ck))
                     if now - board_t.get(b, 0) > 120: update9(L_, R, u, b); snap()   # no check-in right on top of the opening push
             if fin and b in boarded and b not in finaled: finaled.add(b); final_c(L_, R, fin, b); snap()
-            if now - settled_t > 60: settle(L_); settled_t = now; snap()   # a restart keeps what the board showed
+            if now - settled_t > (15 if now % 900 < 180 else 60): settle(L_); settled_t = now; snap()   # fast right after a close   # a restart keeps what the board showed
             if _TR["R"] is not None: R = _TR["R"]; _TR["R"] = None; trained = now; print("live: retrained model swapped in", flush=True)
             if now - trained > 6 * 3600 and not _TR["busy"]: L_.flush(); bg_train(days=3); trained = now
             if now - digest_t > 6 * 3600: digest(L_, R); digest_t = now
