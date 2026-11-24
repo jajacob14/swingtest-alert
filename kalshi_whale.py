@@ -1057,8 +1057,8 @@ def swing_line(c, q, tk):
     r = _SWING.get(f"{tb}|{int(min(ask, .99) * 20) * 5}")
     if not r: return ""
     t5, t10, t15, med, q75, mins, win = r[:7]
-    return (f"📈 {c} {'UP' if up else 'DOWN'} {cents(ask)}: {cents(min(ask + .10, .99))} {t10:.0%} · {cents(min(ask + .15, .99))} {t15:.0%} · "
-            f"peak ~{mins}m · wins {win:.0%}")
+    return (f"📈 {c} {'UP' if up else 'DOWN'} at {cents(ask)} → {t10:.0%} chance hits {cents(min(ask + .10, .99))}, {t15:.0%} hits "
+            f"{cents(min(ask + .15, .99))} (in ~{mins}m) · only {win:.0%} win at close")
 
 
 def sell_plan(px, tl, t1):
@@ -1118,9 +1118,9 @@ def sel_row(c, ev_, sh, p, mid, q):
 
 
 LEGEND = (f"Key: 🔒⭐ BUY (≥80% + setup ≥{SETUP_GATE:.0%}, ≥5m left; ~1 in 12 lose) · 🔒 holding · 🚨 reversal (other side ≥80%) · "
-          "🚫 don't buy · ✅/❌ buy right/wrong · ↗/↘ Kalshi's last 3 min toward/against the pick, → flat, ⚡ fast (past, not a forecast) · "
+          "🚫 don't buy · ✅/❌ buy right/wrong · ↗ your way / ↘ against / → steady = how the price moved the last 3 min (⚡fast; past, not a forecast) · "
           "🟢 setup = past calls like it that were right · 💵 buy · 💰 take-profit (hit rate, time) · "
-          + ("📈 scalp: cheap side's odds to touch +10¢/+15¢ in 5m, then how often it wins · " if CRYPTO else "↔ wide spread: limit only · ")
+          + ("📈 scalp: the cheap side's chance to spike +10¢/+15¢ in the next 5 min, and how often it wins at the close · " if CRYPTO else "↔ wide spread: limit only · ")
           + "K = Kalshi")
 
 
@@ -1170,8 +1170,9 @@ def mark(ps):
 def arrow(q, up):
     """Kalshi's last-3-min move read toward the pick: ↗ +12 its way, ↘ −6 against, → flat, ⚡ fast (past, not a forecast)."""
     k = q.get("dmid3", 0.0) * 100
-    if abs(k) < 2: return "→"
-    return f"{'↗' if (k > 0) == up else '↘'}{'+' if (k > 0) == up else '−'}{abs(k):.0f}" + ("⚡" if abs(k) >= 8 else "")
+    if abs(k) < 2: return "→ steady"
+    w = (k > 0) == up
+    return f"{'↗' if w else '↘'} {'+' if w else '−'}{abs(k):.0f} {'your way' if w else 'against'}" + (" ⚡fast" if abs(k) >= 8 else "")
 
 
 def board_c(L_, R, preds, b, closed=(), res=None):
