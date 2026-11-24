@@ -1113,6 +1113,24 @@ def spot_head(c, strike=None):
     return f"{fmt}  {ch * 100:+.2f}% in 5 min  {sp}  {word}{tgt}"
 
 
+_PATH = load_json(f"{DIR}/path.json", {})   # research_path.py: highs each side's bid reached before the close, by price & minutes left
+
+
+def path_line(q, tk):
+    """Forecast range for both sides before the close: half the time it reaches X, a quarter of the time Y."""
+    if not _PATH: return ""
+    yb, ya = live_book(tk) or (q["bid"], q["ask"]); tl = q["tl"]; tb = 13 if tl >= 11.5 else 10 if tl >= 8.5 else 7 if tl >= 5.5 else 4
+    out = []
+    for nm, ask in (("UP", ya), ("DOWN", 1 - yb)):
+        r = _PATH.get(f"{tb}|{int(min(max(ask, .01), .99) * 20) * 5}")
+        if not r or ask >= 0.97: continue
+        h2, h4 = min(r[0], .99), min(r[1], .99); parts = []
+        if h2 >= ask + 0.02: parts.append(f"{cents(h2)} (1 in 2)")
+        if h4 >= ask + 0.02 and h4 > h2: parts.append(f"{cents(h4)} (1 in 4)")
+        if parts: out.append(f"{nm} {cents(ask)} → " + " · ".join(parts))
+    return ("🔮 highs before close: " + " | ".join(out)) if out else ""
+
+
 SPIKE_BASE = ((10, 0.39), (6, 0.33), (4, 0.26), (0, 0.15))   # how often a cheap side pops +10¢ in 5 min, by minutes left
 
 
@@ -1151,7 +1169,8 @@ def coin_block(L_, R, c, p, mid, q, ev_, sh):
         status = "🔴 DON'T BUY" + (f" (setup {g_[0]:.0%} < {SETUP_GATE:.0%})" if g_ else "")
     sl = scalp_call(L_, R, c, q, tk)
     scalp = sl.replace("💸 SCALP ", "💸 ") if sl else f"{c}: " + spike_read(L_, R, c, q, tk)
-    sh_ = spot_head(c, q.get("strike"))
+    sh_ = spot_head(c, q.get("strike")); pl = path_line(q, tk)
+    if pl: sub.insert(0, pl)
     return ([f"{COIN_ICON.get(c, '•')} {c} · {status}" + ("" if f or ev_ == "new" else f" · {lean}") + (f"\n    {sh_}" if sh_ else "")] + ["    " + x for x in sub]), scalp
 
 
@@ -1232,7 +1251,9 @@ def sel_row(c, ev_, sh, p, mid, q):
 
 
 LEGEND = (("Key: 🟢 BUY · 🔒 holding · 🚨 sell · 🔴 don't buy (leans ↑UP/↓DOWN = where the market leans, for reference) · 💵 max price · 💰 take-profit · "
-           "coin line = live price, 5-min change, 12-min chart, trend, the price it must beat (target) · ⚡/⚠️/➖ spike read for the cheap side · " if CRYPTO else
+           "coin line = live price, 5-min change, 12-min chart, trend, the price it must beat (target) · "
+          "🔮 how high each side's price usually climbs before the close from here (1 in 2 / 1 in 4 times; a range, not a direction) · "
+          "⚡/⚠️/➖ spike read for the cheap side · " if CRYPTO else
            "Key: ⭐ buy · 🔒 holding · 🚨 sell · 🚫 don't buy (↑UP/↓DOWN = where it leans) · 💵 max price · 💰 take-profit · ")
           + "↗/↘ Kalshi price moving your way/against (⚡ fast) · "
           + ("💸 scalp: cheap side likely to pop +10¢ soon — buy, set the sell, out by the time shown (graded separately) · "
