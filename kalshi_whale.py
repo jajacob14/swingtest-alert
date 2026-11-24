@@ -1092,7 +1092,7 @@ def spot_head(c, strike=None):
     S = _SPOT.get(c) or {}; now = time.time(); t = int(now // 60) * 60
     pts = [S.get(t - 60 * k) for k in range(12, 0, -1)]; live = _LSPOT.get(c)
     px = live[1] if live and now - live[0] < 30 else next((v for v in reversed(pts) if v and v == v), None)
-    if px is None: return f"{COIN_ICON.get(c, '•')} {c}"
+    if px is None: return ""
     pts = [v for v in pts if v and v == v] + [px]
     p5 = S.get(t - 300) or (pts[-6] if len(pts) >= 6 else pts[0]); ch = px / p5 - 1 if p5 else 0.0
     lo, hi = min(pts), max(pts); sp = "".join(SPARKC[int((v - lo) / (hi - lo + 1e-12) * 7)] for v in pts[-12:])
@@ -1104,7 +1104,7 @@ def spot_head(c, strike=None):
     if strike:
         dd = px - strike; f2 = (lambda v: f"${v:,.0f}" if strike >= 1000 else f"${v:,.2f}" if strike >= 10 else f"${v:.4f}" if strike >= 0.1 else f"${v:.5f}")
         tgt = f"  · target {f2(strike)} ({'+' if dd >= 0 else '−'}{f2(abs(dd))} {'above' if dd >= 0 else 'below'})"
-    return f"{COIN_ICON.get(c, '•')} {c} {fmt}  {ch * 100:+.2f}% in 5 min  {sp}  {word}{tgt}"
+    return f"{fmt}  {ch * 100:+.2f}% in 5 min  {sp}  {word}{tgt}"
 
 
 SPIKE_BASE = ((10, 0.39), (6, 0.33), (4, 0.26), (0, 0.15))   # how often a cheap side pops +10¢ in 5 min, by minutes left
@@ -1141,7 +1141,8 @@ def coin_block(L_, R, c, p, mid, q, ev_, sh):
         status = f"🔴 DON'T BUY · model leans {'↑UP' if up else '↓DOWN'} {max(p, 1 - p):.0%}" + (f" (setup {g_[0]:.0%} < {SETUP_GATE:.0%})" if g_ else "")
     if (sl := scalp_call(L_, R, c, q, tk)): sub.append(sl.replace(f"💸 SCALP {c} ", "💸 SCALP "))
     else: sub.append(spike_read(L_, R, c, q, tk))
-    return [f"{status} · {spot_head(c, q.get('strike'))}"] + ["    " + x for x in sub]
+    sh_ = spot_head(c, q.get("strike"))
+    return [f"{COIN_ICON.get(c, '•')} {c} · {status}" + (f"\n    {sh_}" if sh_ else "")] + ["    " + x for x in sub]
 
 
 def scalpc_txt(L_, since=None):
@@ -1213,11 +1214,11 @@ REV_T = E("KW_REV_T", 0.80)   # only call out a reversal when the other side is 
 def sel_row(c, ev_, sh, p, mid, q):
     """One short decision line per coin -> (text or None, kind: call / warn / none)."""
     up = p >= 0.5; d = "UP" if up else "DOWN"; f = sh.get("first")
-    if ev_ == "new": return f"⭐ BUY {c} {d} {arrow(q, up)}", "call"
+    if ev_ == "new": return f"{c} · ⭐ BUY {d} {arrow(q, up)}", "call"
     if not f: return None, "none"
     fd = "UP" if f["up"] else "DOWN"; fs = p if f["up"] else 1 - p
-    if ev_ in ("flip", "against"): return f"🚨 {c} flipped {d} — sell your {fd}", "warn"
-    return f"🔒 {c} {fd} holding {arrow(q, f['up'])}" + (" (shaky)" if fs < 0.5 else ""), "call"
+    if ev_ in ("flip", "against"): return f"{c} · 🚨 flipped {d} — sell your {fd}", "warn"
+    return f"{c} · 🔒 {fd} holding {arrow(q, f['up'])}" + (" (shaky)" if fs < 0.5 else ""), "call"
 
 
 LEGEND = (("Key: 🟢 BUY · 🔒 holding · 🚨 sell · 🔴 don't buy (model's lean ↑UP/↓DOWN and %, for reference) · 💵 max price · 💰 take-profit · "
@@ -1676,7 +1677,7 @@ def final_c(L_, R, fin, b):
             if ev_ == "new":
                 bp = buy_px(L_, tk, up, q); txt += f"\n   💵 ≤{cents(bp)}" + sell_plan(bp, q["tl"], q["t1"]) + spread_note(q); newf.append(f"{c} {d} ≤{cents(bp)}")
             if f: strong.append(f"{c} {'UP' if f['up'] else 'DOWN'}" + (" 🚨" if kind == "warn" else ""))
-            rows.append(txt or f"🚫 {c} don't buy · leans {'↑UP' if p >= 0.5 else '↓DOWN'} {max(p, 1 - p):.0%}")
+            rows.append(txt or f"{c} · 🚫 don't buy · leans {'↑UP' if p >= 0.5 else '↓DOWN'} {max(p, 1 - p):.0%}")
             if CRYPTO and (sl := scalp_call(L_, R, c, q, tk)): swf.append(sl)
             if (fn := flow_note(flow_of(L_, c, tk), up)): rows.append(fn)
             continue
