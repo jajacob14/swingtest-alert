@@ -614,6 +614,7 @@ def setup_rate(R, c, p, mid, q, px):
     x = dict(px=px, tl=q["tl"], kt=q.get("dmid3", 0.0) * s_, st=(q.get("sr3") or 0.0) * s_, sg=(q.get("sgap") or 0.0) * s_,
              vz=((q.get("kvol") or vm) - vm) / (vsd + 1e-9))
     cols = setup_cols(x); r, n = T["t"].get("|".join(cols), [T["prior"], 0])
+    if n < 30: r = min(r, T["prior"] - 0.02)          # too few past calls like it: needs evidence, never passes on the average alone
     return r, n, " ".join(cols[2:])
 
 
@@ -1056,7 +1057,7 @@ def swing_line(c, q, tk):
     r = _SWING.get(f"{tb}|{int(min(ask, .99) * 20) * 5}")
     if not r: return ""
     t5, t10, t15, med, q75, mins, win = r[:7]
-    return (f"📈 {c} {'YES' if up else 'NO'} {cents(ask)}: {cents(min(ask + .10, .99))} {t10:.0%} · {cents(min(ask + .15, .99))} {t15:.0%} · "
+    return (f"📈 {c} {'UP' if up else 'DOWN'} {cents(ask)}: {cents(min(ask + .10, .99))} {t10:.0%} · {cents(min(ask + .15, .99))} {t15:.0%} · "
             f"peak ~{mins}m · wins {win:.0%}")
 
 
@@ -1103,21 +1104,21 @@ def sel_row(c, ev_, sh, p, mid, q):
     up = p >= 0.5; d = "UP" if up else "DOWN"; ps = max(p, 1 - p); kp = mid if up else 1 - mid; f = sh.get("first")
     if ev_ == "new":
         st = sh.get("setup")
-        return (f"🔒⭐ {c} {d} · K {kp:.0%} {arrow(q, up)}"
+        return (f"🔒⭐ BUY {c} {d} · K {kp:.0%} {arrow(q, up)}"
                 + (f" · 🟢 setup {st[0]:.0%} ({st[1]:,})" if st else f" · ~1 in {max(round(1 / max(1 - kp, .01)), 2)} lose")), "call"
     if not f:
         g_ = sh.get("gated")
-        if g_: return f"⏸ {c} {d} {ps:.0%} {arrow(q, up)} · setup {g_[0]:.0%} < {SETUP_GATE:.0%}, not sent", "none"
+        if g_: return f"🚫 {c} DON'T BUY · {d} {ps:.0%} {arrow(q, up)} · setup {g_[0]:.0%} < {SETUP_GATE:.0%}", "none"
         return None, "none"
     fd = "UP" if f["up"] else "DOWN"; fs = p if f["up"] else 1 - p
     if ev_ in ("flip", "against"):
-        return f"🚨 {c} REVERSAL → {d} {ps:.0%} · call {fd} likely lost · to cut, sell your {fd} (don't flip)", "warn"
-    return (f"🔒 {c} {fd} · {fs:.0%} {arrow(q, f['up'])} (called {f['ps']:.0%} @{f['tl']}m)"
+        return f"🚨 {c} REVERSAL → {d} {ps:.0%} · {fd} likely lost · to cut, sell your {fd} (don't buy {d})", "warn"
+    return (f"🔒 {c} {fd} holding · {fs:.0%} {arrow(q, f['up'])} (bought {f['ps']:.0%} @{f['tl']}m)"
             + (" · swing, not a reversal" if fs < 0.5 else "")), "call"
 
 
-LEGEND = (f"Key: 🔒⭐ new call (≥80% + setup ≥{SETUP_GATE:.0%}, ≥5m left; ~1 in 12 lose) · 🔒 holding · 🚨 reversal (other side ≥80%) · "
-          "⏸ no call · ✅/❌ call right/wrong · ↗/↘ Kalshi's last 3 min toward/against the pick, → flat, ⚡ fast (past, not a forecast) · "
+LEGEND = (f"Key: 🔒⭐ BUY (≥80% + setup ≥{SETUP_GATE:.0%}, ≥5m left; ~1 in 12 lose) · 🔒 holding · 🚨 reversal (other side ≥80%) · "
+          "🚫 don't buy · ✅/❌ buy right/wrong · ↗/↘ Kalshi's last 3 min toward/against the pick, → flat, ⚡ fast (past, not a forecast) · "
           "🟢 setup = past calls like it that were right · 💵 buy · 💰 take-profit (hit rate, time) · "
           + ("📈 scalp: cheap side's odds to touch +10¢/+15¢ in 5m, then how often it wins · " if CRYPTO else "↔ wide spread: limit only · ")
           + "K = Kalshi")
@@ -1193,8 +1194,8 @@ def board_c(L_, R, preds, b, closed=(), res=None):
                 if kind == "call": strong.append(f"{c} {d}")
                 if ev0 == "new":
                     bp = buy_px(L_, q["tk"], up, q)
-                    txt += f"\n   💵 buy {side_name(up)} ≤{cents(bp)}" + sell_plan(bp, q["tl"], q["t1"]) + spread_note(q)
-                rows.append(txt or f"⏸ {c} no call yet · leans {d} {ps:.0%}")
+                    txt += f"\n   💵 pay ≤{cents(bp)}" + sell_plan(bp, q["tl"], q["t1"]) + spread_note(q)
+                rows.append(txt or f"🚫 {c} DON'T BUY yet · leans {d} {ps:.0%}")
                 if CRYPTO and q.get("tk") and (sl := swing_line(c, q, q["tk"])): rows.append(sl)
                 if txt and (fn := flow_note(flow_of(L_, c, q.get("tk")), up)): rows.append(fn)
                 elif not txt: flow_of(L_, c, q.get("tk"))
@@ -1216,7 +1217,7 @@ def board_c(L_, R, preds, b, closed=(), res=None):
     tail = [(f"⭐ CALL = ≥{STRONG:.0%} sure (backtest ~87% right, ~92% at the final call) · ⏸ = under {STRONG:.0%}, no call · " if SELECT else
              f"⭐ ≥{STRONG:.0%} sure (~87% right) · 🔹 {TOSS:.0%}-{STRONG:.0%} · ⚪ toss-up · " if TIERS else "% = chance it settles that way · ")
             + f"↗ Kalshi moving its way · 🟢 BET = beats K's price by {EDGE * 100:.0f}+ after fees"]
-    pick = ("🟢 BET " + ", ".join(bets)) if bets else ("⭐ " + ", ".join(strong)) if strong else ("no calls yet" if SELECT else "no strong picks")
+    pick = ("🟢 BET " + ", ".join(bets)) if bets else ("⭐ BUY " + ", ".join(strong)) if strong else ("don't buy yet" if SELECT else "no strong picks")
     lead = ((f"{'✅' if R_[0] == R_[1] else '🎯'} {R_[0]}/{R_[1]} {'calls ' if SELECT else ''}last · " if R_[1] else "no calls last · ") if R_ else "")
     if SELECT: tail = [LEGEND]
     notify(f"{lead}📈 {et(b)} calls · {pick}" + (f" · today {rec}" if rec else ""), "\n".join(head + ([""] if head else []) + rows + [""] + tail), 2)
@@ -1347,7 +1348,7 @@ def buy_px(L_, tk, up, q):
     return min(max(ask if up else 1 - bid, 0.01), 0.99)
 
 
-def side_name(up): return "YES/UP" if up else "NO/DOWN"
+def side_name(up): return "UP" if up else "DOWN"
 
 
 def spread_note(q):
@@ -1377,7 +1378,7 @@ def update9_c(L_, R, upd, b):
             txt, kind = sel_row(c, ev_, sh, p, mid, q)
             if f: calls.append(f"{c} {'UP' if f['up'] else 'DOWN'}")
             if ev_ == "new":
-                bp = buy_px(L_, q["tk"], up, q); txt += f"\n   💵 buy {side_name(up)} ≤{cents(bp)}" + sell_plan(bp, q["tl"], q["t1"]) + spread_note(q)
+                bp = buy_px(L_, q["tk"], up, q); txt += f"\n   💵 pay ≤{cents(bp)}" + sell_plan(bp, q["tl"], q["t1"]) + spread_note(q)
                 newc.append(f"{c} {d} ≤{cents(bp)}"); link = link or f"{WEB}/{K15[c].lower()}"
             if txt: rows.append(txt); nch += int(ev_ == "new"); nflip += int(kind == "warn")
             else: same.append(f"{c} {d} {ps:.0%} {arrow(q, up)}")
@@ -1391,12 +1392,12 @@ def update9_c(L_, R, upd, b):
             nch += 1
         else: same.append(f"{c} {d} {ps:.0%}")
     if not rows and not same: return
-    if same: rows.append(("⏸ No call: " if SELECT else "Same: ") + " · ".join(same))
+    if same: rows.append(("🚫 Don't buy: " if SELECT else "Same: ") + " · ".join(same))
     if swl: rows += [""] + swl
     m = f"{round(left)} min left" if left is not None else ""
     if SELECT:
-        head = ("🔒 " + ", ".join(calls)) if calls else "no calls yet"
-        if newc: notify(f"⭐ NEW CALL {', '.join(newc)} · {m} · {et(b)}", "\n".join(rows + ["", LEGEND]), 5, link)   # lock-screen first: urgent
+        head = ("🔒 " + ", ".join(calls)) if calls else "don't buy yet"
+        if newc: notify(f"⭐ BUY {', '.join(newc)} · {m} · {et(b)}", "\n".join(rows + ["", LEGEND]), 5, link)   # lock-screen first: urgent
         else: notify(f"🔄 {et(b)} · {m} · {head}" + (f" · 🚨 {nflip} reversal" if nflip else ""), "\n".join(rows + ["", LEGEND]), 4 if nflip else 2)
     else:
         notify(f"🔄 {et(b)} window · " + (f"{nflip} flipped" if nflip else f"{nch} changed" if nch else "no changes") + f" ({m})", "\n".join(rows), 2)
@@ -1414,7 +1415,7 @@ def results_c(L_, t1, rows, send=True):
             if not f:
                 if r.get("v", 0) < 2 and (cr := call_r(r)) is not None:   # pushed before first-call tracking: old rule
                     ok = bool(cr[0]); n += ok; k += 1; L.append(f"{'✅' if ok else '❌'} {r['c']} ⭐ ({cr[1]} call)" + ("" if ok else f" → went {end}")); continue
-                L.append(f"➖ {r['c']} no call · went {end}"); continue
+                L.append(f"➖ {r['c']} no buy · went {end}"); continue
             cr = call_r(r); ok = bool(cr[0]); n += ok; k += 1
             if cr[1] == "final":
                 fp = r["p5"]; s_ = f"{'✅' if ok else '❌'} {r['c']} {'UP' if fp >= 0.5 else 'DOWN'} {max(fp, 1 - fp):.0%} ⭐ (final call)" + ("" if ok else f" → went {end}")
@@ -1441,7 +1442,7 @@ def results_c(L_, t1, rows, send=True):
         per = " · ".join(f"{c} {sum(x[2] for x in w if x[1] == c)}-{sum(1 - x[2] for x in w if x[1] == c)}" for c in SHOW if any(x[1] == c for x in w))
     if SELECT:
         sw_ = [] if SCALP_SHADOW else [x for x in L_.scalps if not x.get("open") and int(round(x["t1"])) == int(t1)]
-        L += [f"💸 Scalp {x['c']} {'YES' if x['up'] else 'NO'} @ {cents(x['entry'])} → best {cents(x['best'])} ({(x['best'] - x['entry']) * 100:+.0f}¢)"
+        L += [f"💸 Scalp {x['c']} {'UP' if x['up'] else 'DOWN'} @ {cents(x['entry'])} → best {cents(x['best'])} ({(x['best'] - x['entry']) * 100:+.0f}¢)"
               + (f" ✅ hit the {cents(x.get('tgt', x['entry'] + .12))} target" if x["best"] >= x.get("tgt", x["entry"] + .12) - 1e-9 else f" ❌ missed the {cents(x.get('tgt', x['entry'] + .12))} target")
               + (" · settled its way" if x.get("won") else "") for x in sw_]
         tail = [line, switch_txt(w), "" if SCALP_SHADOW else scalp_txt(L_), (f"Per {'coin' if CRYPTO else 'market'}: {per}" if per else ""), f"🟢 Bets today: {bets_txt(L_)}"] + ["", LEGEND]
@@ -1527,9 +1528,9 @@ def final_c(L_, R, fin, b):
         if SELECT:
             txt, kind = sel_row(c, ev_, L_.shown[tk], p, mid, q); f = L_.shown[tk].get("first")
             if ev_ == "new":
-                bp = buy_px(L_, tk, up, q); txt += f"\n   💵 buy {side_name(up)} ≤{cents(bp)}" + sell_plan(bp, q["tl"], q["t1"]) + spread_note(q); newf.append(f"{c} {d} ≤{cents(bp)}")
+                bp = buy_px(L_, tk, up, q); txt += f"\n   💵 pay ≤{cents(bp)}" + sell_plan(bp, q["tl"], q["t1"]) + spread_note(q); newf.append(f"{c} {d} ≤{cents(bp)}")
             if f: strong.append(f"{c} {'UP' if f['up'] else 'DOWN'}" + (" 🚨" if kind == "warn" else ""))
-            rows.append(txt or f"⏸ {c} no call · leans {d} {ps:.0%}")
+            rows.append(txt or f"🚫 {c} DON'T BUY · leans {d} {ps:.0%}")
             if CRYPTO and (sl := swing_line(c, q, tk)): swf.append(sl)
             if (fn := flow_note(flow_of(L_, c, tk), up)): rows.append(fn)
             continue
@@ -1539,9 +1540,9 @@ def final_c(L_, R, fin, b):
     if swf: rows += [""] + swf
     rec, line = wl_line(L_); u5 = u5_txt(L_)
     tail = [x for x in ("" if SELECT else (f"Final calls today: {u5}" if u5 else ""), line) if x]
-    pick = (("🔒 " if SELECT else "⭐ ") + ", ".join(strong)) if strong else ("no calls" if SELECT else "no strong picks")
+    pick = (("🔒 " if SELECT else "⭐ ") + ", ".join(strong)) if strong else ("don't buy" if SELECT else "no strong picks")
     if SELECT: tail = tail + ["", LEGEND]
-    notify((f"⭐ NEW CALL {', '.join(newf)} · " if newf else "") + f"🏁 Final {et(b)} · {pick} · {'3-4' if COMPACT else '5'} min left",
+    notify((f"⭐ BUY {', '.join(newf)} · " if newf else "") + f"🏁 Final {et(b)} · {pick} · {'3-4' if COMPACT else '5'} min left",
            "\n".join(rows + ([""] + tail if tail else [])), 5 if newf else 3, f"{WEB}/{K15[list(fin)[0]].lower()}" if fin else None)
 
 
@@ -1712,15 +1713,15 @@ def live():
                     up_ = p >= 0.5; bp = buy_px(L_, tk, up_, q)
                     if note_call(sh_, p, tl, mid, q.get("dmid1", 0.0), bp, setup_rate(R, c, p, mid, q, bp)) == "new":
                         txt, _ = sel_row(c, "new", sh_, p, mid, q); sh_["called_t"] = now
-                        notify(f"⭐ NEW CALL {c} {'UP' if up_ else 'DOWN'} ≤{cents(bp)} · {round(tl)}m left · {et(q['t1'])}",
-                               txt + f"\n   💵 buy {side_name(up_)} ≤{cents(bp)}" + sell_plan(bp, tl, q["t1"]) + spread_note(q) + "\n\n" + LEGEND,
+                        notify(f"⭐ BUY {c} {'UP' if up_ else 'DOWN'} ≤{cents(bp)} · {round(tl)}m left · {et(q['t1'])}",
+                               txt + f"\n   💵 pay ≤{cents(bp)}" + sell_plan(bp, tl, q["t1"]) + spread_note(q) + "\n\n" + LEGEND,
                                5, f"{WEB}/{K15[c].lower()}")
                         save_json(f"{DATA}/state.json", {**L_.state(), "started": True, "digest_t": digest_t, "is_open": is_open})
                 kk = L_.T.get(tk)
                 if on("scalps", c) and (sc := scalp_check(L_, c, q, live_book(tk) or ((kk.bid, kk.ask) if kk and kk.fresh(now) else None))):
                     L_.scalps.append(sc)
                 if on("scalps", c) and sc and not SCALP_SHADOW:
-                    sd_ = "YES/UP" if sc["up"] else "NO/DOWN"; st_ = scalp_txt(L_)
+                    sd_ = "UP" if sc["up"] else "DOWN"; st_ = scalp_txt(L_)
                     by = et(min(now + 60 * sc["eta"], sc["t1"] - 120)); quit_ = et(sc["t1"] - 120)
                     notify(f"💸 SCALP {c} {sd_} ≤{cents(sc['entry'])} → sell {cents(sc['tgt'])} · {sc['tl']}m left",
                            f"1) Buy {sd_} limit ≤ {cents(sc['entry'])} now.\n2) Right after the fill, place a sell limit at {cents(sc['tgt'])} (+{(sc['tgt'] - sc['entry']) * 100:.0f}¢).\n"
@@ -1766,7 +1767,7 @@ def live():
                 if (R.get("proven", {}).get(c) and not bad and on("edge_calls", c) and 3 <= tl <= 12 and e >= EDGE and 0.03 < ask <= KMAX
                         and not any(x["tk"] == tk for x in L_.calls)):
                     cost = ask + fee(ask); L_.calls.append(dict(t=now, c=c, tk=tk, up=bool(up), ask=ask, cost=cost, p=ps, won=None, pnl=0.0))
-                    notify(f"🎯 {c} 15-min: {'YES (UP)' if up else 'NO (DOWN)'} ≤ {cents(ask)}",
+                    notify(f"🎯 {c} 15-min: BUY {'UP' if up else 'DOWN'} ≤ {cents(ask)}",
                            f"Model {ps:.0%} vs Kalshi {(mid if up else 1 - mid):.0%} · edge {int(round(e * 100)):+d} pts after fees · {tl:.0f} min left\n"
                            f"Closes {et(q['t1'])} ET · whales {flow}\nBacktest: {fmt_eval(R['weeks']['test_by'].get(c))}", 4, f"{WEB}/{K15[c].lower()}")
             b = int(now // 900 * 900) + 900
