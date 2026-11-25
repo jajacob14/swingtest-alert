@@ -1773,7 +1773,7 @@ def board_line(mkt, a, st):
     if kp:
         up = kp["p"] >= 0.5
         out += (f"\n    Prediction: {'UP' if up else 'DOWN'} {max(kp['p'], 1 - kp['p']):.0%} vs {(kp['mid'] if up else 1 - kp['mid']):.0%}K"
-                f" ({'fresh' if kp['reg'] == 'fresh' else 'delayed'} data) · " + ("CALL SENT" if not kp.get("why_not") else f"no call: {kp['why_not']}"))
+                + lean_txt(mkt, kp.get("T"), kp["mid"] if up else 1 - kp["mid"]) + f" ({'fresh' if kp['reg'] == 'fresh' else 'delayed'} data) · " + ("CALL SENT" if not kp.get("why_not") else f"no call: {kp['why_not']}"))
         ka = (st.get("kalpha") or {}).get(mkt)
         if ka: out += f"\n    Live record: model right {ka['model']:.0%} vs {ka['kalshi']:.0%}K ({ka['n']} checks), trust x{ka['alpha']:.2f}"
     return out
@@ -2386,7 +2386,8 @@ def overview(mkt, st):
     parts = [f"{COLOR[mkt][0]} {NAME[mkt]} {money(mkt, a['px'])}"]
     if kp:
         up = kp["p"] >= 0.5
-        parts.append(f"leans {'UP' if up else 'DOWN'} {max(kp['p'], 1 - kp['p']):.0%} vs {(kp['mid'] if up else 1 - kp['mid']):.0%}K")
+        parts.append(f"leans {'UP' if up else 'DOWN'} {max(kp['p'], 1 - kp['p']):.0%} vs {(kp['mid'] if up else 1 - kp['mid']):.0%}K"
+                     + lean_txt(mkt, kp.get("T"), kp["mid"] if up else 1 - kp["mid"]))
     parts.append(spike_line(mkt, a))
     parts.append("call possible" if kp and not kp.get("why_not") else f"no call yet{': ' + kp['why_not'] if kp and kp.get('why_not') else ''}")
     return " · ".join(parts)
@@ -3089,6 +3090,31 @@ def fav_call(st, mkt, a, lv, px):
     why = (f"Kalshi already favors {'UP' if up else 'DOWN'} at {conf:.0%}K" + (" and our model agrees" if agree else "")
            + f"; 🧪 tested {w}/{n} won ({w / n:.0%}): same market, {left} min left, {fav_band(conf)}¢ price, last {FAV_DAYS} days live")
     return open_call(st, mkt, "fav15", "YES" if up else "NO", c, lv, px, odds_line(rate, ask), why, True, prob=rate) is not None   # % shown = record shrunk toward the average (32/32 is not a sure thing)
+
+
+_LEANT = {"t": 0, "T": {}}
+
+
+def lean_band(x):
+    return next(lab for hi, lab in ((0.2, "0-20"), (0.3, "20-30"), (0.4, "30-40"), (0.5, "40-50"), (0.6, "50-60"), (0.7, "60-70"),
+                                    (0.8, "70-80"), (0.85, "80-85"), (0.9, "85-90"), (0.95, "90-95"), (9, "95+")) if x < hi)
+
+
+def lean_txt(mkt, T, price):
+    """' · 🧪 412/600 won': in the live log (last FAV_DAYS days), how often a side priced like this, this many minutes
+    before the close, went on to win in this market. Shown on every prediction so confidence is visible at a glance."""
+    if time.time() - _LEANT["t"] > 1800:
+        _LEANT["t"] = time.time()
+        try:
+            d = pd.read_json(PRED_LOG, lines=True).dropna(subset=["mid"])
+            d = d[pd.to_datetime(d.close.astype(str).str[:16]) >= pd.Timestamp.now() - pd.Timedelta(days=FAV_DAYS)]
+            up = d.up.astype(bool).astype(int)
+            parts = [pd.DataFrame(dict(k=d.mkt + "|" + d.left.astype(str) + "|" + px.map(lean_band), w=won)) for px, won in ((d.mid, up), (1 - d.mid, 1 - up))]
+            g = pd.concat(parts).groupby("k").w.agg(["sum", "size"]); _LEANT["T"] = {k: [int(r["sum"]), int(r["size"])] for k, r in g.iterrows()}
+        except Exception as e: print("lean_txt", e)
+    if T is None or price is None: return ""
+    r = _LEANT["T"].get(f"{mkt}|{min(CHECKPOINTS, key=lambda b: abs(b - T))}|{lean_band(price)}")
+    return f" · 🧪 {r[0]:,}/{r[1]:,} won" if r and r[1] >= 20 else ""
 
 
 def disproven(st, mkt, T):

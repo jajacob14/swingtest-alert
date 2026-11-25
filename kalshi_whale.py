@@ -1197,9 +1197,46 @@ def tested(st, why=""):
     return f" · 🧪 never tested{why}" if not st[1] else f" · 🧪 {st[3]}/{st[1]} won{why}"
 
 
-def gated_txt(sh, p):
-    """Don't-buy because the setup tested under the bar: show its record (only while a side is still ≥80%)."""
-    return tested(sh.get("gated"), " (under bar)") if sh.get("gated") and max(p, 1 - p) >= CALL_T and not sh.get("first") else ""
+_LEAN = {"T": None, "t": 0, "busy": False}
+LEAN_TL = (14, 11, 8, 5, 3)
+
+
+def lean_band(x):
+    return next(lab for hi, lab in ((0.2, "0-20"), (0.3, "20-30"), (0.4, "30-40"), (0.5, "40-50"), (0.6, "50-60"), (0.7, "60-70"),
+                                    (0.8, "70-80"), (0.85, "80-85"), (0.9, "85-90"), (0.95, "90-95"), (9, "95+")) if x < hi)
+
+
+def lean_build():
+    """Lean record: in the last SETUP_DAYS days, how often a side priced like this, this many minutes before the close,
+    went on to win — per market. Built in the background from the stored windows; refreshed every 6 h."""
+    try:
+        D = pd.concat([kframe(load_k(m), 14.6, True) for m in COMMS], ignore_index=True)
+        D["tlr"] = D.tl.round().astype(int)
+        C = D[D.tlr.isin(LEAN_TL) & (D.cl >= time.time() - SETUP_DAYS * 86400)].dropna(subset=["mid", "up"])
+        up = (pd.to_numeric(C.up, errors="coerce") == 1).astype(int)
+        parts = [pd.DataFrame(dict(k=C.mkt + "|" + C.tlr.astype(str) + "|" + px.map(lean_band), w=won))
+                 for px, won in ((C.mid, up), (1 - C.mid, 1 - up))]
+        g = pd.concat(parts).groupby("k").w.agg(["sum", "size"])
+        _LEAN.update(T={k: [int(r["sum"]), int(r["size"])] for k, r in g.iterrows()}, t=time.time())
+        print(f"lean record: {len(_LEAN['T'])} cells from {C.ticker.nunique()} windows", flush=True)
+    except Exception as e: print("lean_build:", e, flush=True); _LEAN["t"] = time.time()
+    finally: _LEAN["busy"] = False
+
+
+def lean_rec(c, tl, price):
+    """[won, tested] for the leaning side right now, or None (still building)."""
+    if not _LEAN["busy"] and time.time() - _LEAN["t"] > 6 * 3600:
+        _LEAN["busy"] = True; threading.Thread(target=lean_build, daemon=True).start()
+    T = _LEAN["T"]
+    if not T or tl is None or price is None: return None
+    return T.get(f"{c}|{min(LEAN_TL, key=lambda b: abs(b - tl))}|{lean_band(price)}")
+
+
+def gated_txt(sh, p, mid=None, tl=None, c=None):
+    """Don't-buy line's 🧪: the setup's record if it tested under the bar, else how often this lean (price, time left) won."""
+    if sh.get("gated") and max(p, 1 - p) >= CALL_T and not sh.get("first"): return tested(sh.get("gated"), " (under bar)")
+    m = mid if mid is not None else p; r = lean_rec(c or sh.get("c"), tl, m if p >= 0.5 else 1 - m)
+    return f" · 🧪 {r[0]:,}/{r[1]:,} won" if r and r[1] >= 20 else ""
 
 
 def coin_block(L_, R, c, p, mid, q, ev_, sh):
@@ -1211,12 +1248,12 @@ def coin_block(L_, R, c, p, mid, q, ev_, sh):
         line = f"⭐ {c} · BUY {d} ≤{cents(bp)} {arrow(q, up)}" + tested(st)
         sub.append(sell_plan(bp, q["tl"], q["t1"]).replace(" → ", "", 1) + spread_note(q))
     elif f and ev_ in ("flip", "against"):
-        fd = "UP" if f["up"] else "DOWN"; line = f"🚨 {c} · flipped {d} — sell your {fd}"
+        fd = "UP" if f["up"] else "DOWN"; line = f"🚨 {c} · flipped {d} — sell your {fd}" + gated_txt({}, p, mid, q["tl"], c)
     elif f:
         fd = "UP" if f["up"] else "DOWN"; fs = p if f["up"] else 1 - p
         line = f"🔒 {c} · {fd} holding {arrow(q, f['up'])}" + (" (shaky)" if fs < 0.5 else "") + tested(f.get("setup"))
     else:
-        line = f"🚫 {c} · don't buy · {'↓DOWN' if not up else '↑UP'} {arrow(q, up)}" + gated_txt(sh, p)
+        line = f"🚫 {c} · don't buy · {'↓DOWN' if not up else '↑UP'} {arrow(q, up)}" + gated_txt(sh, p, mid, q["tl"], c)
     yb, ya = live_book(tk) or (q["bid"], q["ask"])
     if 0.12 <= (yb + ya) / 2 <= 0.88 and (pb := path_brief(q, tk)): sub.append(pb)   # forecast range only while it's still open
     sl = scalp_call(L_, R, c, q, tk)
@@ -1309,12 +1346,12 @@ def sel_row(c, ev_, sh, p, mid, q):
     if ev_ == "new": return f"⭐ {c} · BUY {d} {arrow(q, up)}", "call"
     if not f: return None, "none"
     fd = "UP" if f["up"] else "DOWN"; fs = p if f["up"] else 1 - p
-    if ev_ in ("flip", "against"): return f"🚨 {c} · flipped {d} — sell your {fd}", "warn"
+    if ev_ in ("flip", "against"): return f"🚨 {c} · flipped {d} — sell your {fd}" + gated_txt({}, p, mid, q.get("tl"), c), "warn"
     return f"🔒 {c} · {fd} holding {arrow(q, f['up'])}" + (" (shaky)" if fs < 0.5 else "") + tested(f.get("setup")), "call"
 
 
 LEGEND = ("Key: ⭐ buy · 🔒 holding · 🚨 sell · 🚫 don't buy (↑UP/↓DOWN = where the market leans) · ↳ = details for the line above · 💵 max price · 💰 take-profit · "
-          + "🧪 46/50 won = past calls with this same setup (last 2 weeks), how many were right · "
+          + "🧪 412/600 won = last 2 weeks in this market: how often that side won from this price & time left (on ⭐/🔒: past calls with the same setup) · "
           + ("🔮 price each side reaches about half the time before the close (* = 1 in 4) · " if CRYPTO else "")
           + "↗/↘ Kalshi price moving your way/against (⚡ fast) · " + ("" if CRYPTO else "58¢→66¢ = the leaning side's price at the opening push → now · ")
           + "💸 scalp: cheap side likely to pop +10¢ soon — buy, set the sell, out by the time shown (graded separately) · "
@@ -1426,7 +1463,7 @@ def board_c(L_, R, preds, b, closed=(), res=None):
                     bp = buy_px(L_, q["tk"], up, q)
                     txt += f"\n   ↳ 💵 ≤{cents(bp)}" + sell_plan(bp, q["tl"], q["t1"]) + spread_note(q) + tested(L_.shown[q["tk"]].get("setup"))
                 if txt: rows.append(txt)
-                else: rows.append(f"🚫 {c} · don't buy · {'↑UP' if p >= 0.5 else '↓DOWN'} {arrow(q, p >= 0.5)}" + (gated_txt(L_.shown[q["tk"]], p) if q.get("tk") else ""))
+                else: rows.append(f"🚫 {c} · don't buy · {'↑UP' if p >= 0.5 else '↓DOWN'} {arrow(q, p >= 0.5)}" + gated_txt(L_.shown.get(q.get("tk")) or {}, p, mid, q["tl"], c))
                 if q.get("tk") and (sl := scalp_call(L_, R, c, q, q["tk"])): swb.append(sl.replace("💸 SCALP ", "💸 "))
                 if txt and (fn := flow_note(flow_of(L_, c, q.get("tk")), up)): rows.append(fn)
                 elif not txt: flow_of(L_, c, q.get("tk"))
@@ -1643,7 +1680,7 @@ def update9_c(L_, R, upd, b):
                 bp = buy_px(L_, q["tk"], up, q); txt += f"\n   ↳ 💵 ≤{cents(bp)}" + sell_plan(bp, q["tl"], q["t1"]) + spread_note(q) + tested(sh.get("setup"))
                 newc.append(f"{c} {d} ≤{cents(bp)}"); link = link or f"{WEB}/{K15[c].lower()}"
             if txt: rows.append(with_trend(txt, trend_txt(sh, p, mid))); nch += int(ev_ == "new"); nflip += int(kind == "warn")
-            else: rows.append(f"🚫 {c} · don't buy · {'↑UP' if p >= 0.5 else '↓DOWN'} {arrow(q, p >= 0.5)}" + trend_txt(sh, p, mid) + gated_txt(sh, p))
+            else: rows.append(f"🚫 {c} · don't buy · {'↑UP' if p >= 0.5 else '↓DOWN'} {arrow(q, p >= 0.5)}" + trend_txt(sh, p, mid) + gated_txt(sh, p, mid, q["tl"], c))
             if (sl := scalp_call(L_, R, c, q, q["tk"])): swl.append(sl.replace("💸 SCALP ", "💸 "))
             if go and not go0: rows.append(f"🟢 {c} now BET ≤ {cents(ask)}")
             continue
@@ -1800,7 +1837,7 @@ def final_c(L_, R, fin, b):
                 bp = buy_px(L_, tk, up, q); txt += f"\n   ↳ 💵 ≤{cents(bp)}" + sell_plan(bp, q["tl"], q["t1"]) + spread_note(q) + tested(L_.shown[tk].get("setup")); newf.append(f"{c} {d} ≤{cents(bp)}")
             if f: strong.append(f"{c} {'UP' if f['up'] else 'DOWN'}" + (" 🚨" if kind == "warn" else ""))
             tr = trend_txt(L_.shown[tk], p, mid)
-            rows.append(with_trend(txt, tr) if txt else f"🚫 {c} · don't buy · {'↑UP' if p >= 0.5 else '↓DOWN'} {arrow(q, p >= 0.5)}" + tr + gated_txt(L_.shown[tk], p))
+            rows.append(with_trend(txt, tr) if txt else f"🚫 {c} · don't buy · {'↑UP' if p >= 0.5 else '↓DOWN'} {arrow(q, p >= 0.5)}" + tr + gated_txt(L_.shown[tk], p, mid, q["tl"], c))
             if (sl := scalp_call(L_, R, c, q, tk)): swf.append(sl.replace("💸 SCALP ", "💸 "))
             if (fn := flow_note(flow_of(L_, c, tk), up)): rows.append(fn)
             continue
