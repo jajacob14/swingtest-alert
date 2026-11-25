@@ -888,6 +888,13 @@ class Live:
                                           if fr < v), "most")
             L.append(f"About {frt} times another whale bets the other way ~{u[2] / u[1]:.0f} min later (likely cashing out)")
         L.append(f"Whale money on {comm}: " + self.flow_txt(comm, plain=True))
+        a15 = (w[1] / w[0] * 100) if w and w[0] >= 200 else 0.0
+        L.append(f"👉 Whales on {comm} have tended to be right (+{a15:.1f}¢ their way in 15 min): leans {d_}. Buy only if the ⭐ call agrees."
+                 if a15 >= 1.5 else f"👉 Whales on {comm} have tended to be wrong ({a15:+.1f}¢ in 15 min): don't copy this one."
+                 if a15 <= -1.5 else "👉 What to do: nothing on this alone. Copying whales hasn't paid here; bet only on the ⭐ calls.")
+        sh = (getattr(self, "shown", None) or {}).get(tk) or {}; f_ = sh.get("first")
+        if f_ and bull:
+            L.append(f"⭐ This window's call is {'UP' if f_['up'] else 'DOWN'}: the whale is betting {'the same way' if f_['up'] == (bull > 0) else 'AGAINST it'}")
         notify(f"🐋 {money(usd)} bet on {comm} {d_} · {cents(px)}", "\n".join(L), 4 if usd >= 4 * ALERT_WHALE else 3, meta.get("link"))
 
     def spike(self, tk, k, ts, a, m):
