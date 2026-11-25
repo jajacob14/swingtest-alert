@@ -1360,7 +1360,7 @@ def sel_row(c, ev_, sh, p, mid, q):
 LEGEND = ("Key: ⭐ buy · 🔒 holding · 🚨 sell · 🚫 don't buy (↑UP/↓DOWN = where the market leans) · ↳ = details for the line above · 💵 max price · 💰 take-profit · "
           + "🧪 412/600 won = last 2 weeks in this market: how often that side won from this price & time left (on ⭐/🔒: past calls with the same setup) · "
           + ("🔮 price each side reaches about half the time before the close (* = 1 in 4) · " if CRYPTO else "")
-          + "↗/↘ Kalshi price moving your way/against (⚡ fast) · " + ("" if CRYPTO else "58¢→66¢ = the leaning side's price at the opening push → now · ")
+          + "↗/↘ Kalshi price moving your way/against (⚡ fast) · 🌪️ wild: swinging far more than normal (calls stay as accurate; don't panic-sell) · " + ("" if CRYPTO else "58¢→66¢ = the leaning side's price at the opening push → now · ")
           + "💸 scalp: cheap side likely to pop +10¢ soon — buy, set the sell, out by the time shown (graded separately) · "
           + ("send 'all' (9 markets) or 'core' (5 coins) to this topic to switch channel" if CRYPTO else "limit only = wide spread"))
 
@@ -1436,11 +1436,68 @@ def mark(ps):
     return "⭐" if ps >= STRONG else "🔹" if ps >= TOSS else "⚪"
 
 
+# ---------------- 🌪️ wild markets (research_vol.py, 27k crypto / 34k commodity windows) ----------------
+# wild = the Kalshi price churned more in the last 3 min than in 90% of minutes (sum of minute-to-minute moves).
+# Findings: calls made in wild markets were right as often as calm ones (88%); after a sharp swing (≥15¢ in 3 min)
+# Kalshi's price stayed fair, and holding paid the same or more than selling; holding also beat taking profit at ≥90¢.
+WILD_THR = 0.45 if CRYPTO else 0.41
+_MM = {}   # ticker -> recent per-minute side-neutral mids [(minute, mid)]
+# (price band, time band) -> (still won, sell now gets) after a ≥15¢ swing against the call
+VOL_ADV = ({("<30", 0): (.16, .13), ("<30", 1): (.23, .17), ("<30", 2): (.18, .19), ("30-50", 0): (.39, .38), ("30-50", 1): (.42, .40),
+            ("30-50", 2): (.40, .40), ("50-70", 0): (.61, .58), ("50-70", 1): (.59, .58), ("50-70", 2): (.60, .58), ("70+", 0): (.72, .72),
+            ("70+", 1): (.72, .72), ("70+", 2): (.76, .71)} if CRYPTO else
+           {("<30", 0): (.13, .15), ("<30", 1): (.20, .17), ("<30", 2): (.29, .17), ("30-50", 0): (.37, .37), ("30-50", 1): (.42, .39),
+            ("30-50", 2): (.44, .39), ("50-70", 0): (.59, .57), ("50-70", 1): (.62, .58), ("50-70", 2): (.62, .58), ("70+", 0): (.73, .72),
+            ("70+", 1): (.76, .71), ("70+", 2): (.76, .70)})
+VOL_FAV = ((.95, .95), (.941, .93), (.97, .93)) if CRYPTO else ((.959, .94), (.955, .93), (.955, .92))   # wild + sellable ≥90¢, by time band
+
+
+def mm_tick(tk, mid, now):
+    m = int(now // 60); h = _MM.setdefault(tk, [])
+    if h and h[-1][0] == m: h[-1] = (m, mid)
+    else: h.append((m, mid)); del h[:-6]
+
+
+def churn3(tk):
+    h = _MM.get(tk) or []
+    return sum(abs(b[1] - a[1]) for a, b in zip(h[-4:], h[-3:])) if len(h) >= 2 else 0.0
+
+
+def wild_now(tk): return bool(tk) and churn3(tk) >= WILD_THR
+
+
+def vol_watch(L_, now):
+    """Open ⭐ calls in a wild market: one push per call per situation, with hold / sell / take-profit backed by history."""
+    for tk, sh in L_.shown.items():
+        f = sh.get("first"); bk = live_book(tk)
+        if not bk: continue
+        mid = (bk[0] + bk[1]) / 2; mm_tick(tk, mid, now)
+        if not f or now >= sh.get("t1", 0) - 20: continue
+        h = _MM.get(tk) or []; up = f["up"]; side = lambda x: x if up else 1 - x
+        sm, sb = side(mid), (bk[0] if up else 1 - bk[1]); tl = (sh["t1"] - now) / 60; c = sh.get("c", "?"); d = "UP" if up else "DOWN"
+        tb = 0 if tl < 2 else 1 if tl < 5 else 2; vw = sh.setdefault("volw", [])
+        old = side(h[-4][1]) if len(h) >= 4 else side(h[0][1]) if h else sm
+        if old - sm >= 0.15 and "adv" not in vw:
+            vw.append("adv"); b = "<30" if sm < .3 else "30-50" if sm < .5 else "50-70" if sm < .7 else "70+"
+            won, sell = VOL_ADV[(b, tb)]; e = won - (sb - fee(sb))
+            act = (f"HOLD: calls in this spot went on to win {won:.0%}, worth more than the {cents(sb)} you'd get selling. Don't panic-sell"
+                   if e > 0.01 else f"SELL is slightly better: the {cents(sb)} bid beats how often calls in this spot won ({won:.0%})"
+                   if e < -0.01 else "Your call: holding and selling have paid about the same here. Don't panic-sell")
+            notify(f"🌪️ {c} swing against your {d} call · {cents(old)}→{cents(sm)} in 3 min",
+                   f"Past swings like this ({round(tl)} min left, now {cents(sm)}): the call still won {won:.0%} · selling now gets ~{cents(sb)}\n👉 {act}.", 4)
+        elif wild_now(tk) and sb >= 0.90 and "fav" not in vw:
+            vw.append("fav"); won, tp = VOL_FAV[0 if tl < 3 else 1 if tl < 6 else 2]
+            notify(f"🌪️ {c} wild market · your {d} call sells for {cents(sb)} now",
+                   f"Price swinging far more than normal ({round(tl)} min left). In past wild markets calls at this point still won {won:.0%}.\n"
+                   f"👉 Holding has paid ~{max(won - tp, 0) * 100:.0f}¢ more than taking profit. Take profit only to lock it in "
+                   f"(you give up a little to remove the {1 - won:.0%} chance of losing it).", 3)
+
+
 def arrow(q, up):
-    """Kalshi's last-3-min move read toward the pick: ↗ +12 its way, ↘ −6 against, → flat, ⚡ fast (past, not a forecast)."""
-    k = q.get("dmid3", 0.0) * 100
-    if abs(k) < 2: return "→"
-    return ("↗" if (k > 0) == up else "↘") + ("⚡" if abs(k) >= 8 else "")
+    """Kalshi's last-3-min move read toward the pick: ↗ +12 its way, ↘ −6 against, → flat, ⚡ fast (past, not a forecast); 🌪️ wild market."""
+    k = q.get("dmid3", 0.0) * 100; w = " 🌪️" if wild_now(q.get("tk")) else ""
+    if abs(k) < 2: return "→" + w
+    return ("↗" if (k > 0) == up else "↘") + ("⚡" if abs(k) >= 8 else "") + w
 
 
 def board_c(L_, R, preds, b, closed=(), res=None):
@@ -1991,6 +2048,7 @@ def live():
                 if now >= x["until"] or x["best"] >= x["tgt"] - 1e-9:
                     x.update(open=False, hit=int(x["best"] >= x["tgt"] - 1e-9)); fl = f"{DATA}/scalp_calls.csv.gz"; os.makedirs(DATA, exist_ok=True)
                     pd.DataFrame([{k_: v for k_, v in x.items() if k_ != "open"}]).to_csv(fl, mode="ab", index=False, header=not os.path.exists(fl), compression="gzip")
+            vol_watch(L_, now)
             for tk_, sh_ in L_.shown.items():   # best price each locked call's side was sellable at after the call (take-profit check)
                 f_ = sh_.get("first")
                 if f_ and f_.get("best") is not None and now < sh_.get("t1", 0):
