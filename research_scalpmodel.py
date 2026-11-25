@@ -9,6 +9,8 @@ P = lambda *a: print(*a, flush=True)
 kd = K.kcols(pd.concat([K.load_k(m) for m in K.COMMS], ignore_index=True)).sort_values(["ticker", "ts"]).reset_index(drop=True)
 kd = kd[(kd.tl >= 1.5) & (kd.tl <= 14.6)].copy()
 kd["kvz"] = kd.groupby(kd.ticker.map(K.comm_of)).kvol.transform(lambda v: (v - v.median()) / (v.std() + 1e-9))
+for c_ in ("spx", "ssv", "strike", "sr1", "sr3", "sr5", "svz", "sgap"):   # commodities: no spot feed → Kalshi-only model
+    if c_ not in kd: kd[c_] = np.nan
 h = np.sqrt((kd.tl - 0.5).clip(lower=0.25)); Kst = pd.to_numeric(kd.strike, errors="coerce")
 kd["zd"] = (np.log(kd.spx.astype(float) / Kst) / (kd.ssv.astype(float).clip(lower=1e-5) * h)).replace([np.inf, -np.inf], np.nan)
 out = []
@@ -21,9 +23,9 @@ for up in (True, False):
                           m1=kd.dmid1 * s, m3=kd.dmid3 * s, m5=kd.dmid5 * s, am3=kd.dmid3.abs(), am5=kd.dmid5.abs(), spread=kd.ask - kd.bid,
                           kvz=kd.kvz, s1=kd.sr1 * s, s3=kd.sr3 * s, s5=kd.sr5 * s, svz=kd.svz, sg=kd.sgap * s, az=kd.zd.abs(), sz=kd.zd * s))
     out.append(d[(d.ask >= 0.03) & (d.ask <= 0.35)])
-D = pd.concat(out).dropna(subset=["hi5", "az"]).reset_index(drop=True)
+D = pd.concat(out).dropna(subset=["hi5"] + (["az"] if K.CRYPTO else [])).reset_index(drop=True)
 D["hit"] = (D.hi5 >= D.ask + 0.10 - 1e-9).astype(int)
-F = ["ask", "tl", "m1", "m3", "m5", "am3", "am5", "spread", "kvz", "s1", "s3", "s5", "svz", "sg", "az", "sz"]
+F = ["ask", "tl", "m1", "m3", "m5", "am3", "am5", "spread", "kvz"] + (["s1", "s3", "s5", "svz", "sg", "az", "sz"] if K.CRYPTO else [])
 D[F] = D[F].astype(float).fillna(0)
 wins = D.sort_values("cl").tk.drop_duplicates().tolist(); cut = set(wins[int(len(wins) * .7):])
 TR, TE = D[~D.tk.isin(cut)], D[D.tk.isin(cut)]
