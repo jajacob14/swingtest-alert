@@ -877,21 +877,18 @@ class Live:
         pre = ((k.mid_at(t0 - 1) or m_before) - (k.mid_at(t0 - 600) or m_before)) * sd * 100
         if abs(pre) >= 3: L.append(f"They're {'chasing: the price already moved' if pre > 0 else 'betting against the move: the price went'} "
                                    f"{abs(pre):.0f}¢ {'their way' if pre > 0 else 'the other way'} in the last 10 min")
-        w = self.wstats.get(comm)
-        if w and w[0] >= 15:
-            a15, a60 = w[1] / w[0] * 100, w[2] / w[0] * 100
-            L.append(f"After past {comm} whales the price " + (f"barely moved ({a15:+.1f}¢ in 15 min, {a60:+.1f}¢ in 1 h) → not a signal to copy"
-                     if max(abs(a15), abs(a60)) < 1.5 else f"moved {a15:+.1f}¢ their way in 15 min and {a60:+.1f}¢ in 1 h on average")
-                     + f" ({w[0]:,} whales)")
-        if u[0] >= 20 and u[1]:
-            fr = u[1] / u[0]; frt = next((t for v, t in ((0.15, "1 in 7"), (0.22, "1 in 5"), (0.29, "1 in 4"), (0.4, "1 in 3"), (0.6, "1 in 2"))
-                                          if fr < v), "most")
-            L.append(f"About {frt} times another whale bets the other way ~{u[2] / u[1]:.0f} min later (likely cashing out)")
+        tl = ((meta.get("close") or 0) - t1) / 60 if meta.get("close") else 7.0
+        mid_now = k.mid(t1) if hasattr(k, "mid") else None; pnow = (mid_now if sd > 0 else 1 - mid_now) if mid_now is not None else px
+        we = whale_edge(comm, px, tl)
+        if we:
+            wn, n_, ap, lab = we; wr = wn / n_; shr = n_ / (n_ + 200); edge = (wr - ap) * shr; est = min(max(pnow + edge, 0.01), 0.99)
+            L.append(f"📊 Past {comm} whales buying {lab}: their side won {wr:.0%} vs {ap:.0%} priced ({n_:,} whales)")
+            L.append(f"👉 ~{est:.0%} chance {comm} ends {d_} (Kalshi now {pnow:.0%}) · "
+                     + (f"whales like this beat the price by {edge * 100:+.0f} pts: lean with them only if the ⭐ call agrees" if edge >= 0.03 else
+                        f"whales like this did worse than the price ({edge * 100:+.0f} pts): don't copy" if edge <= -0.03 else
+                        "no real edge: they win about as often as the price says, so bet the ⭐ calls"))
+        else: L.append(f"📊 Not enough settled {comm} whales at this price yet to rate this one · bet the ⭐ calls")
         L.append(f"Whale money on {comm}: " + self.flow_txt(comm, plain=True))
-        a15 = (w[1] / w[0] * 100) if w and w[0] >= 200 else 0.0
-        L.append(f"👉 Whales on {comm} have tended to be right (+{a15:.1f}¢ their way in 15 min): leans {d_}. Buy only if the ⭐ call agrees."
-                 if a15 >= 1.5 else f"👉 Whales on {comm} have tended to be wrong ({a15:+.1f}¢ in 15 min): don't copy this one."
-                 if a15 <= -1.5 else "👉 What to do: nothing on this alone. Copying whales hasn't paid here; bet only on the ⭐ calls.")
         sh = (getattr(self, "shown", None) or {}).get(tk) or {}; f_ = sh.get("first")
         if f_ and bull:
             L.append(f"⭐ This window's call is {'UP' if f_['up'] else 'DOWN'}: the whale is betting {'the same way' if f_['up'] == (bull > 0) else 'AGAINST it'}")
@@ -1225,9 +1222,42 @@ def lean_build():
                  for px, won in ((C.mid, up), (1 - C.mid, 1 - up))]
         g = pd.concat(parts).groupby("k").w.agg(["sum", "size"])
         _LEAN.update(T={k: [int(r["sum"]), int(r["size"])] for k, r in g.iterrows()}, t=time.time())
+        try: _LEAN["W"] = whale_edge_build(D)
+        except Exception as e: print("whale_edge_build:", e, flush=True)
         print(f"lean record: {len(_LEAN['T'])} cells from {C.ticker.nunique()} windows", flush=True)
     except Exception as e: print("lean_build:", e, flush=True); _LEAN["t"] = time.time()
     finally: _LEAN["busy"] = False
+
+
+def wband(px): return "0-20" if px < .2 else "20-40" if px < .4 else "40-60" if px < .6 else "60-80" if px < .8 else "80-90" if px < .9 else "90+"
+def wtb(tl): return "late" if tl < 4 else "mid" if tl < 8 else "early"
+WTB_TXT = {"late": "under 4 min left", "mid": "4-8 min left", "early": "8+ min left"}
+
+
+def whale_edge_build(D):
+    """Every past whale on a 15-min window joined to how that window settled: per market × price paid × time left,
+    how often the whale's side won vs the price they paid. Rebuilt with the lean record every 6 h."""
+    W = read_gz(f"{DATA}/c_whales.csv.gz")
+    if not len(W): return {}
+    o = D.groupby("ticker").agg(up=("up", "first"), cl=("cl", "first"))
+    W = W[W.tk.isin(o.index)].copy()
+    if not len(W): return {}
+    W["up"] = pd.to_numeric(W.tk.map(o.up), errors="coerce"); W["cl"] = W.tk.map(o.cl); W = W.dropna(subset=["up", "px"])
+    W["won"] = ((W.sd > 0) == (W.up == 1)).astype(int); W["mkt"] = W.tk.map(comm_of); W["tl"] = (W.cl - W.t) / 60
+    W["b"] = W.px.map(wband); W["tb"] = W.tl.map(wtb); T = {}
+    for keys in (["mkt", "b", "tb"], ["mkt", "b"]):
+        for k, g in W.groupby(keys): T["|".join(k)] = [int(g.won.sum()), int(len(g)), round(float(g.px.sum()), 3)]
+    print(f"whale record: {len(W):,} settled whales", flush=True)
+    return T
+
+
+def whale_edge(c, px, tl):
+    """(wins, n, avg price paid, label) for whales like this one, most specific bucket with ≥60 cases; else None."""
+    T = _LEAN.get("W") or {}
+    for k, lab in ((f"{c}|{wband(px)}|{wtb(tl)}", f"at {wband(px)}¢ with {WTB_TXT[wtb(tl)]}"), (f"{c}|{wband(px)}", f"at {wband(px)}¢")):
+        r = T.get(k)
+        if r and r[1] >= 60: return r[0], r[1], r[2] / r[1], lab
+    return None
 
 
 def lean_rec(c, tl, price):
@@ -1390,6 +1420,13 @@ def trend_txt(sh, p, mid):
 
 def with_trend(txt, tr):
     return txt.replace("\n", tr + "\n", 1) if "\n" in txt else txt + tr
+
+
+def scoreboard(L_):
+    """The report tallies, on every call sheet: calls, leans, scalps, per-market W/L."""
+    _, line = wl_line(L_)
+    out = [x for x in [line, lean_line(L_), scalpc_txt(L_)] + market_wl(L_) if x]
+    return ["━━ 📊 Scorecard ━━"] + out if out else []
 
 
 def lean_line(L_):
@@ -1557,7 +1594,7 @@ def board_c(L_, R, preds, b, closed=(), res=None):
     if not rows and not nob and not swb: return
     R_ = results_c(L_, b - 900, res, send=False) if res else None
     rec, line = wl_line(L_)
-    head = [x for x in (last_line(L_), line) if x] if not R_ else \
+    head = ([x for x in [last_line(L_)] if x] + scoreboard(L_) if SELECT else [x for x in (last_line(L_), line) if x]) if not R_ else \
         [f"🎯 Last window {et(b - 1800)}–{et(b - 900)}: " + (f"{R_[0]}/{R_[1]} {'calls ' if SELECT else ''}right" if R_[1] else "no calls")] + R_[2] + [""] + R_[3] + ["", f"━━ 📈 Calls for the {et(b)} window ━━"]
     pass
     if nob: rows.append("🚫 Don't buy: " + ", ".join(nob))
@@ -1775,6 +1812,7 @@ def update9_c(L_, R, upd, b):
     m = f"{round(left)} min left" if left is not None else ""
     if SELECT:
         head = ("🔒 " + ", ".join(calls)) if calls else "don't buy yet"
+        sb_ = scoreboard(L_); rows = rows + ([""] + sb_ if sb_ else [])
         if newc: notify(f"⭐ BUY {', '.join(newc)} · {m} · {et(b)}", "\n".join(rows + ["", LEGEND]), 5, link)   # lock-screen first: urgent
         else: notify(f"🔄 {et(b)} · {m} · {head}" + (f" · 🚨 {nflip} reversal" if nflip else ""), "\n".join(rows + ["", LEGEND]), 4 if nflip else 2)
     else:
@@ -1926,7 +1964,7 @@ def final_c(L_, R, fin, b):
     if not rows: return
     if swf: rows += ["", SCALP_HEAD] + swf
     rec, line = wl_line(L_); u5 = u5_txt(L_)
-    tail = [x for x in ("" if SELECT else (f"Final calls today: {u5}" if u5 else ""), line) if x]
+    tail = scoreboard(L_) if SELECT else [x for x in ((f"Final calls today: {u5}" if u5 else ""), line) if x]
     pick = (("🔒 " if SELECT else "⭐ ") + ", ".join(strong)) if strong else ("don't buy" if SELECT else "no strong picks")
     if SELECT: tail = tail + ["", LEGEND]
     notify((f"⭐ BUY {', '.join(newf)} · " if newf else "") + f"🏁 Final {et(b)} · {pick} · {'3-4' if COMPACT else '5'} min left",
