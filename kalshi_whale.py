@@ -870,15 +870,25 @@ class Live:
         self.pend_w.append(dict(t=t0, tk=tk, comm=comm, sd=sd, usd=round(usd, 2), px=px, m1=k.mid(t1)))
         print(f"WHALE {money(usd):>8} {'YES' if sd > 0 else 'NO '} @{cents(px):>4} x{nprints:<3} {meta.get('title', tk)[:70]}", flush=True)
         if not alert or usd < ALERT_WHALE or not is15(tk, comm) or not on("whales", comm) or not self.allow("whale", tk, 600, 6): return
-        side = "YES" if sd > 0 else "NO"
-        L = [label15(meta, tk), f"{side} @ {cents(px)} · {nprints} prints merged" + (f" · {'BULLISH' if bull > 0 else 'BEARISH'} {comm}" if bull else "")]
+        side = "YES" if sd > 0 else "NO"; d_ = "UP" if bull > 0 else "DOWN" if bull < 0 else side
+        tg = re.search(r"Target Price:\s*([^\]]+)", meta.get("title") or ""); tg = tg.group(1).strip() if tg else None
+        ends = (f"ends {'above' if bull > 0 else 'below'} {tg}" if tg and bull else f"goes {d_}")
+        L = [f"Someone bet {money(usd)} that {comm} {ends} this window (paid {cents(px)} a contract · {nprints} trades)"]
         pre = ((k.mid_at(t0 - 1) or m_before) - (k.mid_at(t0 - 600) or m_before)) * sd * 100
-        if abs(pre) >= 3: L.append(f"{'Chasing' if pre > 0 else 'Fading'}: price moved {pre:+.0f}¢ {'their way' if pre > 0 else 'against them'} in the last 10m")
+        if abs(pre) >= 3: L.append(f"They're {'chasing: the price already moved' if pre > 0 else 'betting against the move: the price went'} "
+                                   f"{abs(pre):.0f}¢ {'their way' if pre > 0 else 'the other way'} in the last 10 min")
         w = self.wstats.get(comm)
-        if w and w[0] >= 15: L.append(f"Past {comm} whales: {w[1] / w[0] * 100:+.1f}¢ after 15m, {w[2] / w[0] * 100:+.1f}¢ after 1h (n={w[0]})")
-        if u[0] >= 20 and u[1]: L.append(f"{u[1] / u[0]:.0%} of {comm} whales see an opposite whale (likely cash-out) ~{u[2] / u[1]:.0f}m later, avg {u[3] / u[1] * 100:+.1f}¢")
-        L.append("Whale flow: " + self.flow_txt(comm))
-        notify(f"🐋 {money(usd)} {side} · {comm}", "\n".join(L), 4 if usd >= 4 * ALERT_WHALE else 3, meta.get("link"))
+        if w and w[0] >= 15:
+            a15, a60 = w[1] / w[0] * 100, w[2] / w[0] * 100
+            L.append(f"After past {comm} whales the price " + (f"barely moved ({a15:+.1f}¢ in 15 min, {a60:+.1f}¢ in 1 h) → not a signal to copy"
+                     if max(abs(a15), abs(a60)) < 1.5 else f"moved {a15:+.1f}¢ their way in 15 min and {a60:+.1f}¢ in 1 h on average")
+                     + f" ({w[0]:,} whales)")
+        if u[0] >= 20 and u[1]:
+            fr = u[1] / u[0]; frt = next((t for v, t in ((0.15, "1 in 7"), (0.22, "1 in 5"), (0.29, "1 in 4"), (0.4, "1 in 3"), (0.6, "1 in 2"))
+                                          if fr < v), "most")
+            L.append(f"About {frt} times another whale bets the other way ~{u[2] / u[1]:.0f} min later (likely cashing out)")
+        L.append(f"Whale money on {comm}: " + self.flow_txt(comm, plain=True))
+        notify(f"🐋 {money(usd)} bet on {comm} {d_} · {cents(px)}", "\n".join(L), 4 if usd >= 4 * ALERT_WHALE else 3, meta.get("link"))
 
     def spike(self, tk, k, ts, a, m):
         meta = self.meta.get(tk) or {}; comm = meta.get("comm") or comm_of(tk)
@@ -893,9 +903,12 @@ class Live:
         if time.time() - self.cool.get((kind, tk), 0) < cool or self.sent_h[(kind, hr)] >= cap: return False
         self.cool[(kind, tk)] = time.time(); self.sent_h[(kind, hr)] += 1; return True
 
-    def flow_txt(self, comm):
+    def flow_txt(self, comm, plain=False):
         h = int(time.time() // 3600); f = self.flow.get(comm, {})
         f1 = sum(v for k, v in f.items() if int(k) >= h); f24 = sum(v for k, v in f.items() if int(k) > h - 24)
+        if plain:   # 'net $81,827 more on DOWN over 24 h'
+            pt = lambda x, w: f"{money(abs(x))} more on {'UP' if x > 0 else 'DOWN'} {w}" if x else f"even {w}"
+            return f"{pt(f1, 'this hour')} · {pt(f24, 'over 24 h')}"
         tag = lambda x: f"{'+' if x >= 0 else '−'}{money(abs(x))}{' bullish' if x > 0 else ' bearish' if x < 0 else ''}"
         return f"{tag(f1)} this hour · {tag(f24)} 24h"
 
@@ -1070,9 +1083,10 @@ SCALP_P, SCALP_TLMIN_C = E("KW_SCALP_P", 0.45), E("KW_SCALP_TL", 4.0)   # flag �
 def scalp_prob(R, c, q, up, ask, spread):
     """Spike odds for one side from everything at this minute: price, time left, Kalshi 1/3/5-min moves, spread, volume,
     spot 1/3/5-min moves, spot volatility, spot vs Kalshi, and how close spot is to the target in σ units."""
-    if not _SCM or None in (q.get("spx"), q.get("ssv"), q.get("strike")): return None
+    spot = "az" in (_SCM or {}).get("F", [])          # crypto model uses the coin's live price; commodity model is Kalshi-only
+    if not _SCM or (spot and None in (q.get("spx"), q.get("ssv"), q.get("strike"))): return None
     s_ = 1 if up else -1; vm, vsd = (((R or {}).get("setups") or {}).get("vol") or {}).get(c, (q.get("kvol") or 0.0, 1.0))
-    zd = math.log(q["spx"] / q["strike"]) / (max(q["ssv"], 1e-5) * math.sqrt(max(q["tl"] - 0.5, 0.25)))
+    zd = math.log(q["spx"] / q["strike"]) / (max(q["ssv"], 1e-5) * math.sqrt(max(q["tl"] - 0.5, 0.25))) if spot else 0.0
     x = dict(ask=ask, tl=q["tl"], m1=q.get("dmid1", 0) * s_, m3=q.get("dmid3", 0) * s_, m5=q.get("dmid5", 0) * s_, am3=abs(q.get("dmid3", 0)),
              am5=abs(q.get("dmid5", 0)), spread=spread, kvz=((q.get("kvol") or vm) - vm) / (vsd + 1e-9), s1=(q.get("sr1") or 0) * s_,
              s3=(q.get("sr3") or 0) * s_, s5=(q.get("sr5") or 0) * s_, svz=q.get("svz") or 0.0, sg=(q.get("sgap") or 0) * s_, az=abs(zd), sz=zd * s_)
@@ -1082,7 +1096,7 @@ def scalp_prob(R, c, q, up, ask, spread):
 
 def scalp_call(L_, R, c, q, tk):  # noqa
     """Flag a scalp (once per coin per window) when the cheap side's spike odds are high; returns the push line or ''."""
-    if not CRYPTO or q["tl"] < SCALP_TLMIN_C or any(x["tk"] == tk for x in L_.scalpc): return ""
+    if not _SCM or q["tl"] < SCALP_TLMIN_C or any(x["tk"] == tk for x in L_.scalpc): return ""
     yb, ya = live_book(tk) or (q["bid"], q["ask"]); up = ya <= 1 - yb; ask = ya if up else 1 - yb
     if not (0.03 <= ask <= 0.35): return ""
     p = scalp_prob(R, c, q, up, ask, ya - yb)
@@ -1302,8 +1316,8 @@ LEGEND = ("Key: ⭐ buy · 🔒 holding · 🚨 sell · 🚫 don't buy (leans �
           + "🧪 46/50 won = past calls with this same setup (last 2 weeks), how many were right · "
           + ("🔮 price each side reaches about half the time before the close (* = 1 in 4) · " if CRYPTO else "")
           + "↗/↘ Kalshi price moving your way/against (⚡ fast) · " + ("" if CRYPTO else "58¢→66¢ = the leaning side's price at the opening push → now · ")
-          + ("💸 scalp: cheap side likely to pop +10¢ soon — buy, set the sell, out by the time shown (graded separately) · "
-             "send 'all' (9 markets) or 'core' (5 coins) to this topic to switch channel" if CRYPTO else "limit only = wide spread"))
+          + "💸 scalp: cheap side likely to pop +10¢ soon — buy, set the sell, out by the time shown (graded separately) · "
+          + ("send 'all' (9 markets) or 'core' (5 coins) to this topic to switch channel" if CRYPTO else "limit only = wide spread"))
 
 
 def switch_txt(w):
@@ -1412,7 +1426,7 @@ def board_c(L_, R, preds, b, closed=(), res=None):
                     txt += f"\n   💵 ≤{cents(bp)}" + sell_plan(bp, q["tl"], q["t1"]) + spread_note(q) + tested(L_.shown[q["tk"]].get("setup"))
                 if txt: rows.append(txt)
                 else: rows.append(f"{c} · 🚫 don't buy · leans {'↑UP' if p >= 0.5 else '↓DOWN'} {arrow(q, p >= 0.5)}" + (gated_txt(L_.shown[q["tk"]], p) if q.get("tk") else ""))
-                if CRYPTO and q.get("tk") and (sl := scalp_call(L_, R, c, q, q["tk"])): swb.append(sl)
+                if q.get("tk") and (sl := scalp_call(L_, R, c, q, q["tk"])): swb.append(sl.replace("💸 SCALP ", "💸 "))
                 if txt and (fn := flow_note(flow_of(L_, c, q.get("tk")), up)): rows.append(fn)
                 elif not txt: flow_of(L_, c, q.get("tk"))
                 continue
@@ -1629,7 +1643,7 @@ def update9_c(L_, R, upd, b):
                 newc.append(f"{c} {d} ≤{cents(bp)}"); link = link or f"{WEB}/{K15[c].lower()}"
             if txt: rows.append(with_trend(txt, trend_txt(sh, p, mid))); nch += int(ev_ == "new"); nflip += int(kind == "warn")
             else: rows.append(f"{c} · 🚫 don't buy · leans {'↑UP' if p >= 0.5 else '↓DOWN'} {arrow(q, p >= 0.5)}" + trend_txt(sh, p, mid) + gated_txt(sh, p))
-            if CRYPTO and (sl := scalp_call(L_, R, c, q, q["tk"])): swl.append(sl)
+            if (sl := scalp_call(L_, R, c, q, q["tk"])): swl.append(sl.replace("💸 SCALP ", "💸 "))
             if go and not go0: rows.append(f"🟢 {c} now BET ≤ {cents(ask)}")
             continue
         if flip:
@@ -1786,7 +1800,7 @@ def final_c(L_, R, fin, b):
             if f: strong.append(f"{c} {'UP' if f['up'] else 'DOWN'}" + (" 🚨" if kind == "warn" else ""))
             tr = trend_txt(L_.shown[tk], p, mid)
             rows.append(with_trend(txt, tr) if txt else f"{c} · 🚫 don't buy · leans {'↑UP' if p >= 0.5 else '↓DOWN'} {arrow(q, p >= 0.5)}" + tr + gated_txt(L_.shown[tk], p))
-            if CRYPTO and (sl := scalp_call(L_, R, c, q, tk)): swf.append(sl)
+            if (sl := scalp_call(L_, R, c, q, tk)): swf.append(sl.replace("💸 SCALP ", "💸 "))
             if (fn := flow_note(flow_of(L_, c, tk), up)): rows.append(fn)
             continue
         rows.append(f"{mark(ps)} {c} {d} {ps:.0%} · K {kp:.0%} {arrow(q, up)}" + (" · toss-up" if TIERS and ps < TOSS else "") + ch)
