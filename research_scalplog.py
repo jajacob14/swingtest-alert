@@ -21,3 +21,17 @@ if len(d):
         if len(x) >= 10:
             h = (x.jump >= .12 - 1e-9); c_ = x.entry + fee(x.entry); pn = np.where(h, x.entry + .12 - fee(x.entry + .12), x.won) - c_
             P(f"  {nm:28s} n={len(x):4d} · reached +12¢ {h.mean():5.1%} · result {pn.sum() / c_.sum():+6.1%}")
+    if "hr" in d:   # by ET hour band, and the best-looking combined filter (needs ≥40 setups and +5% margin to count)
+        d["hb"] = pd.cut(pd.to_numeric(d.hr, errors="coerce"), [-1, 2, 8, 12, 16, 20, 23], labels=["0-2", "3-8", "9-12", "13-16", "17-20", "21-23"])
+        for b, x in d.groupby("hb", observed=True):
+            h = (x.jump >= .12 - 1e-9); c_ = x.entry + fee(x.entry); pn = np.where(h, x.entry + .12 - fee(x.entry + .12), x.won) - c_
+            P(f"  hour {b:6s} n={len(x):4d} · reached +12¢ {h.mean():5.1%} · result {pn.sum() / c_.sum():+6.1%}")
+    best = []
+    for e_ in (.08, .15):
+        for t_ in (0, 6, 9):
+            for s_ in (0, .3, .4, .5):
+                x = d[(d.entry <= e_) & (d.tl >= t_) & (d.sim >= s_)]
+                if len(x) >= 40:
+                    h = (x.jump >= .12 - 1e-9); c_ = x.entry + fee(x.entry); pn = np.where(h, x.entry + .12 - fee(x.entry + .12), x.won) - c_
+                    best.append((pn.sum() / c_.sum(), len(x), f"entry ≤{e_ * 100:.0f}¢, ≥{t_} min left, sim ≥{s_:.0%}", h.mean()))
+    for r_, n_, nm, hh in sorted(best, reverse=True)[:5]: P(f"  best filter: {nm:34s} n={n_:4d} · reached +12¢ {hh:5.1%} · result {r_:+6.1%}")
