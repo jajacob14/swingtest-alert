@@ -36,14 +36,14 @@ CRYPTO = PROFILE in ("crypto", "crypto9")             # crypto9 = second crypto 
 DIR = E("KW_DIR", {"crypto": "kcrypto", "crypto9": "kcrypto9"}.get(PROFILE, "kwhale")); DATA = f"{DIR}/data"   # data/ lives in the Actions cache; model.json + report.md go in git
 OLD_CACHE = "data"                                   # commodity bot's 3-week Kalshi cache (read only)
 if PROFILE == "crypto9":
-    COMMS = ("ETH", "BTC", "SOL", "XRP", "NEAR", "HYPE", "DOGE", "BNB", "ZEC")   # Kalshi's on-screen order
-    SHOW = COMMS
+    COMMS = ("ETH", "BTC", "SOL", "XRP", "NEAR", "HYPE", "DOGE", "BNB", "ZEC")   # the model's order (feature columns): don't reorder
+    SHOW = ("DOGE", "XRP", "ETH", "BTC", "SOL", "NEAR", "HYPE", "BNB", "ZEC")    # Kalshi's on-screen order (display only)
     KEYS = {c: (c,) for c in COMMS}
     SPOT = {c: f"{c}-USD" for c in COMMS}                  # Coinbase; a coin it doesn't list falls back to Kalshi-only features
     LBL, lbl, TOPIC_ENV = "Crypto all", "crypto", "KC_NTFY_TOPIC"   # same ntfy topic as the core crypto bot; the channel switch decides who pushes
 elif CRYPTO:
-    COMMS = ("BTC", "ETH", "SOL", "XRP", "DOGE")             # the markets on your Kalshi (BNB, HYPE dropped)
-    SHOW = COMMS
+    COMMS = ("BTC", "ETH", "SOL", "XRP", "DOGE")             # the markets on your Kalshi (BNB, HYPE dropped); model order
+    SHOW = ("DOGE", "XRP", "ETH", "BTC", "SOL")              # Kalshi's on-screen order (display only)
     KEYS = {c: (c,) for c in COMMS}
     SPOT = {"BTC": "BTC-USD", "ETH": "ETH-USD", "SOL": "SOL-USD", "XRP": "XRP-USD", "DOGE": "DOGE-USD"}
     LBL, lbl, TOPIC_ENV = "Crypto", "crypto", "KC_NTFY_TOPIC"
