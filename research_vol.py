@@ -51,3 +51,12 @@ if len(F):
         for t, y in x.groupby(pd.cut(x.tl, [0, 3, 6, 15], labels=["<3 min", "3-6 min", "6+ min"]), observed=True):
             if len(y) >= 30: P(f"  {nm:11s} {t:7s} n={len(y):5,} · went on to win {y.won.mean():.1%} · TP now {y.sell.mean() * 100:.0f}¢ · "
                                f"{'HOLD' if y.edge.mean() > 0.005 else 'TP' if y.edge.mean() < -0.005 else 'even'} ({y.edge.mean() * 100:+.1f}¢ hold vs TP)")
+
+# calls made while the market was ALREADY wild (known at call time — no look-ahead)
+C2 = C.assign(px=np.minimum(np.where(C.mid >= .5, C.ask, 1 - C.bid), .99), won=((C.mid >= .5) == (C.up == 1)).astype(int))
+C2["co"] = C2.px + fee(C2.px); C2["pl"] = C2.won - C2.co
+P("\n== wild AT CALL TIME (3-min churn already in the top 10%) vs calm ==")
+for nm, x in (("calm at call", C2[~C2.wild]), ("wild at call", C2[C2.wild])):
+    P(f"  {nm:12s} n={len(x):6,} ({len(x) / len(C2):.0%}) · won {x.won.mean():.1%} · paid {x.px.mean() * 100:.0f}¢ · P&L {x.pl.mean() * 100:+.2f}¢/contract")
+    for b, y in x.groupby(pd.cut(x.px, [0, .85, .9, .95, 1]), observed=True):
+        if len(y) >= 50: P(f"      paid {b}: n={len(y):5,} won {y.won.mean():.1%} · P&L {y.pl.mean() * 100:+.2f}¢")
