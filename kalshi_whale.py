@@ -1466,6 +1466,21 @@ def churn3(tk):
 def wild_now(tk): return bool(tk) and churn3(tk) >= WILD_THR
 
 
+# research_late.py (commodities, minute closes = lower bound): a 20-35¢ side popped +10¢ before the close this often
+LATE_POP = {"wild": ((2, 0.22), (3, 0.29)), "calm": ((2, 0.16), (3, 0.20))}
+
+
+def late_watch(c, q, tk):
+    """Commodities only, 2-4.5 min left, market wild right now: the cheap side still has a real (but money-losing on
+    average) chance to pop before the close. Shown with its honest odds; not a 💸 call and not graded as one."""
+    if CRYPTO or not 2 <= q["tl"] <= 4.5 or not wild_now(tk): return ""
+    yb, ya = live_book(tk) or (q["bid"], q["ask"]); up = ya <= 1 - yb; ask = ya if up else 1 - yb
+    if not 0.20 <= ask <= 0.35: return ""
+    w = next(v for t_, v in reversed(LATE_POP["wild"]) if q["tl"] >= t_); n = next(v for t_, v in reversed(LATE_POP["calm"]) if q["tl"] >= t_)
+    return (f"⚠️ {c} late pop possible: {'UP' if up else 'DOWN'} {cents(ask)} → {cents(ask + 0.10)} · ~{w:.0%} before the close "
+            f"(🌪️ wild; calm {n:.0%}) · usually expires at 0¢ — tiny size only")
+
+
 def vol_watch(L_, now):
     """Open ⭐ calls in a wild market: one push per call per situation, with hold / sell / take-profit backed by history."""
     for tk, sh in L_.shown.items():
@@ -1667,8 +1682,8 @@ def book_loop():
                 b = parse_book(r.json()) if r.status_code == 200 else None
                 if b and b[0] is not None and b[1] is not None:
                     now = time.time(); _BOOK[tk] = (now, *b)
-                    if CRYPTO: sp = _LSPOT.get(c); _TICKS.append((round(now, 1), c, tk, b[0], b[1], int(b[2]), int(b[3]),
-                                                             sp[1] if sp and now - sp[0] < 10 else None))
+                    sp = _LSPOT.get(c); _TICKS.append((round(now, 1), c, tk, b[0], b[1], int(b[2]), int(b[3]),   # commodities too:
+                                                       sp[1] if sp and now - sp[0] < 10 else None))  # second-level late-pop research
             except Exception as e: print("book:", tk, e, flush=True); time.sleep(1)
         time.sleep(max(0.2, BOOK_EVERY - (time.time() - t0)))
 
@@ -1903,6 +1918,7 @@ def final_c(L_, R, fin, b):
             tr = trend_txt(L_.shown[tk], p, mid)
             rows.append(with_trend(txt, tr) if txt else f"🚫 {c} · don't buy · {'↑UP' if p >= 0.5 else '↓DOWN'} {arrow(q, p >= 0.5)}" + tr + gated_txt(L_.shown[tk], p, mid, q["tl"], c))
             if (sl := scalp_call(L_, R, c, q, tk)): swf.append(sl.replace("💸 SCALP ", "💸 "))
+            elif (lw := late_watch(c, q, tk)): swf.append(lw)
             if (fn := flow_note(flow_of(L_, c, tk), up)): rows.append(fn)
             continue
         rows.append(f"{mark(ps)} {c} {d} {ps:.0%} · K {kp:.0%} {arrow(q, up)}" + (" · toss-up" if TIERS and ps < TOSS else "") + ch)
@@ -2181,7 +2197,7 @@ def live():
             if E("KW_SCORECARD", 0) == 1 and datetime.now(ET).hour >= 8 and L_.__dict__.setdefault("score_day", st.get("score_day")) != dk:
                 L_.score_day = dk; sc_ = daily_scorecard()
                 if sc_: notify(f"📊 Daily scorecard · {LBL}", "\n".join(sc_), 3)
-            if CRYPTO and now - ticks_t > 60: flush_ticks(); ticks_t = now
+            if now - ticks_t > 60: flush_ticks(); ticks_t = now
             if CRYPTO:
                 ch_, chg = channel()
                 if chg and ch_ == CHAN_ME:
