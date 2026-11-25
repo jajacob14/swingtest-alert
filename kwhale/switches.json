@@ -15,7 +15,7 @@
   "edge_calls": true,
   "results": true,
   "whales": true,
-  "spikes": true,
+  "spikes": false,
   "digest": true,
   "open_close": true,
   "low_spikes": true,

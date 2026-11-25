@@ -2034,6 +2034,7 @@ def live():
     threading.Thread(target=book_loop, daemon=True).start()            # live order book for the open windows
     if CRYPTO: threading.Thread(target=spot_stream, daemon=True).start()   # live coin prices
     while time.time() - t0 < maxmin * 60:
+        if _NTFY["bail"]: print("ntfy keeps rejecting this runner (429): ending the run so the chain restarts on a fresh runner", flush=True); break
         loop0 = time.time()
         try:
             for r in trades_since(last_ts - 5):
@@ -2345,6 +2346,27 @@ def channel():
     return v, changed
 
 
+_NTFY = {"fails": 0, "t0": 0.0, "bail": False}   # ntfy.sh rate-limits by IP; GitHub runners share IPs with other users
+
+
+def ntfy_post(j):
+    """Send; on 429 retry once after a short pause. 3+ rejections over ≥60 s = this runner's IP is blocked: flag the run to
+    end cleanly so the workflow chains a fresh run on a new runner (new IP) instead of silently dropping calls."""
+    url = os.getenv("KW_NTFY_SERVER", "https://ntfy.sh").rstrip("/") + "/"
+    for attempt in (0, 1):
+        try:
+            r = requests.post(url, json=j, timeout=15)
+            if r.status_code == 429 and attempt == 0: time.sleep(4); continue
+            r.raise_for_status(); _NTFY.update(fails=0); return True
+        except Exception as e:
+            print("ntfy failed:", e, flush=True)
+            if "429" in str(e):
+                now = time.time(); _NTFY["t0"] = _NTFY["t0"] if _NTFY["fails"] else now; _NTFY["fails"] += 1
+                if _NTFY["fails"] >= 3 and now - _NTFY["t0"] >= 60: _NTFY["bail"] = True
+            return False
+    return False
+
+
 def notify(title, body, prio=3, click=None):
     print(f"\n=== {title}\n{body}", flush=True)
     if CRYPTO and channel()[0] != CHAN_ME: print("  (other channel is active: not pushed)", flush=True); return
@@ -2357,8 +2379,7 @@ def notify(title, body, prio=3, click=None):
     if noise and sum(x[1] for x in _PUSHED) >= E("KW_NOISE_PUSH", 70): print("  (noise budget used: not pushed)", flush=True); return
     if len(_PUSHED) >= E("KW_DAILY_PUSH", 240): print("  (daily ceiling: not pushed)", flush=True); return
     j = {"topic": t, "title": title, "message": body[:3900], "priority": prio, **({"click": click} if click else {})}
-    try: requests.post(os.getenv("KW_NTFY_SERVER", "https://ntfy.sh").rstrip("/") + "/", json=j, timeout=15).raise_for_status(); _PUSHED.append((now, noise))
-    except Exception as e: print("ntfy failed:", e, flush=True)
+    if ntfy_post(j): _PUSHED.append((now, noise))
 
 
 def persist(msg="kwhale: model"):

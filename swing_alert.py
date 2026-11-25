@@ -804,6 +804,9 @@ def events(now=None, hours=3):
 
 
 # ---------------- notify ----------------
+_NTFY = {"fails": 0, "t0": 0.0, "bail": False}
+
+
 def notify(title, body, priority="default", mkt=None):
     dot, tag, hexc = COLOR.get(mkt, ("⚪", "white_circle", 0x9E9E9E))
     if "🟩" in title: hexc = 0x2E7D32
@@ -811,10 +814,18 @@ def notify(title, body, priority="default", mkt=None):
     title = f"{dot} {title}" if mkt else title
     print(f"\n=== {title}\n{body}")
     if t := os.getenv("NTFY_TOPIC"):
-        try:
-            requests.post("https://ntfy.sh/", timeout=15, json={"topic": t, "title": title, "message": body,
-                          "priority": {"low": 2, "default": 3, "high": 4, "urgent": 5}[priority]}).raise_for_status()
-        except Exception as e: print("ntfy failed:", e)
+        j = {"topic": t, "title": title, "message": body, "priority": {"low": 2, "default": 3, "high": 4, "urgent": 5}[priority]}
+        for attempt in (0, 1):   # ntfy.sh rate-limits by IP (shared GitHub runners): retry once, then flag the run to restart elsewhere
+            try:
+                r = requests.post("https://ntfy.sh/", timeout=15, json=j)
+                if r.status_code == 429 and attempt == 0: time.sleep(4); continue
+                r.raise_for_status(); _NTFY.update(fails=0); break
+            except Exception as e:
+                print("ntfy failed:", e)
+                if "429" in str(e):
+                    now = time.time(); _NTFY["t0"] = _NTFY["t0"] if _NTFY["fails"] else now; _NTFY["fails"] += 1
+                    if _NTFY["fails"] >= 3 and now - _NTFY["t0"] >= 60: _NTFY["bail"] = True
+                break
     if (tok := os.getenv("TELEGRAM_TOKEN")) and (cid := os.getenv("TELEGRAM_CHAT_ID")):
         requests.post(f"https://api.telegram.org/bot{tok}/sendMessage", json={"chat_id": cid, "text": f"{title}\n{body}"}, timeout=15)
     if w := os.getenv("DISCORD_WEBHOOK"):
@@ -2602,6 +2613,7 @@ def live():
         return changed
 
     while (time.time() - t0) / 60 < maxmin:
+        if _NTFY["bail"]: print("ntfy keeps rejecting this runner (429): ending the run so the chain restarts on a fresh runner"); break
         now = dt.datetime.now(ET)
         try: pause = pd.Timestamp(open("pause_until").read().strip())
         except Exception: pause = None
