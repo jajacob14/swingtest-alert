@@ -1503,19 +1503,20 @@ def churn3(tk):
 def wild_now(tk): return bool(tk) and churn3(tk) >= WILD_THR
 
 
-# research_late.py (commodities, minute closes = lower bound): a 20-35¢ side popped +10¢ before the close this often
-LATE_POP = {"wild": ((2, 0.22), (3, 0.29)), "calm": ((2, 0.16), (3, 0.20))}
+# research_latetick.py, commodity order-book ticks (second resolution, 2026-11-26, 534 windows): a 20-35¢ side in a
+# 🌪️ wild market with 2-4 min left popped +10¢ before the close 55% of the time (n=207), yet buying those lost 34% per $
+# (the misses expire at 0¢). Final minute: wild 37% vs calm 14% (crypto 36% vs 34%: no difference there).
+LATE_POP = dict(p=0.55, pl=-0.34, n=207)
 
 
 def late_watch(c, q, tk):
-    """Commodities only, 2-4.5 min left, market wild right now: the cheap side still has a real (but money-losing on
-    average) chance to pop before the close. Shown with its honest odds; not a 💸 call and not graded as one."""
+    """Commodities only, 2-4.5 min left, market wild right now: the cheap side still often pops before the close,
+    but on average it loses. Shown with its honest odds; not a 💸 call and not graded as one."""
     if CRYPTO or not 2 <= q["tl"] <= 4.5 or not wild_now(tk): return ""
     yb, ya = live_book(tk) or (q["bid"], q["ask"]); up = ya <= 1 - yb; ask = ya if up else 1 - yb
     if not 0.20 <= ask <= 0.35: return ""
-    w = next(v for t_, v in reversed(LATE_POP["wild"]) if q["tl"] >= t_); n = next(v for t_, v in reversed(LATE_POP["calm"]) if q["tl"] >= t_)
-    return (f"⚠️ {c} late pop possible: {'UP' if up else 'DOWN'} {cents(ask)} → {cents(ask + 0.10)} · ~{w:.0%} before the close "
-            f"(🌪️ wild; calm {n:.0%}) · usually expires at 0¢ — tiny size only")
+    return (f"⚠️ {c} late pop possible: {'UP' if up else 'DOWN'} {cents(ask)} → {cents(ask + 0.10)} · ~{LATE_POP['p']:.0%} pop before the close "
+            f"(🌪️ wild) · but buying these lost {abs(LATE_POP['pl']):.0%} per $ overall — sell the moment it pops, tiny size only")
 
 
 def vol_watch(L_, now):
