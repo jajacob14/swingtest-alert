@@ -3051,6 +3051,9 @@ FAV_T = float(os.getenv("FAV_T") or 0.80)            # Kalshi must already favor
 FAV_GATE = float(os.getenv("FAV_GATE") or 0.88)      # ...and the same setup must have won this often in the live log
 FAV_DAYS = int(os.getenv("FAV_DAYS") or 14)          # live-log lookback
 FAV_MAX_ASK = 0.95                                   # never pay more than this
+# which checks may call: 12-min calls won 83% live (258 calls, lost money) vs 93% at 9/6 min; walk-forward agreed
+# (dropping 12: 90.3% → 91.6% right, ROI -0.92% → -0.51%). Daily review 2026-11-26.
+FAV_LEFTS = tuple(int(x) for x in (os.getenv("FAV_LEFTS") or "9,6").split(","))
 _FAVT = {"t": 0, "T": {}, "prior": 0.88}
 
 
@@ -3082,7 +3085,7 @@ def fav_call(st, mkt, a, lv, px):
     if not FAV_ON or a.get("p_up") is None or "T" not in a: return False
     T = a["T"]; left = 12 if 10.8 < T <= 12.6 else 9 if 7.8 < T <= 9.6 else 6 if 4.8 < T <= 6.6 else None
     W = st.setdefault("favwhy", {})
-    if left is None: W[mkt] = "waits for the 12/9/6-min checks"; return False
+    if left is None or left not in FAV_LEFTS: W[mkt] = f"waits for the {'/'.join(map(str, FAV_LEFTS))}-min checks"; return False
     mid = a["p_up"]; up = mid >= 0.5; conf = max(mid, 1 - mid)
     if conf < FAV_T: W[mkt] = f"no side is {FAV_T:.0%}K yet"; return False
     if conf >= 0.99: W[mkt] = "already decided"; return False
