@@ -38,15 +38,17 @@ def scan(col, label, minn=150):
     for k, r in R.iterrows():
         try: n0, n1, e0, e1, u0, u1 = r[("n", "old")], r[("n", "new")], r[("edge", "old")], r[("edge", "new")], r[("up", "old")], r[("up", "new")]
         except KeyError: continue
-        if min(n0, n1) < minn: continue
-        flag = "✅" if np.sign(e0) == np.sign(e1) and min(abs(e0), abs(e1)) >= 0.03 else ""
+        if any(pd.isna(v) for v in (n0, n1, e0, e1)) or min(n0, n1) < minn: continue
+        z0, z1 = e0 / np.sqrt(max(u0 * (1 - u0), .01) / n0), e1 / np.sqrt(max(u1 * (1 - u1), .01) / n1)
+        CELLS[0] += 1
+        flag = "✅" if np.sign(e0) == np.sign(e1) and min(abs(e0), abs(e1)) >= 0.03 and min(abs(z0), abs(z1)) >= 1.5 else ""
         hits.append((k, n0, n1, u0, u1, e0, e1, flag))
     P(f"\n== {label}: UP rate old→new · edge vs Kalshi's 12-min price old→new (✅ = ≥3 pts same sign both halves) ==")
     for k, n0, n1, u0, u1, e0, e1, f in hits:
         P(f"  {str(k):10s} n {int(n0):5,}/{int(n1):5,} · UP {u0:.0%}→{u1:.0%} · edge {e0 * 100:+5.1f}→{e1 * 100:+5.1f} pts {f}")
     return [h for h in hits if h[-1]]
 
-found = []
+found = []; CELLS = [0]
 found += [("hour", h) for h in scan("hour", "hour of day (ET, window start)")]
 found += [("slot", h) for h in scan("slot", "quarter-hour slot (:00 :15 :30 :45)")]
 found += [("dow", h) for h in scan("dow", "weekday")]
@@ -70,6 +72,7 @@ for h, x in C.groupby("hour"):
     flag = "⚠️" if a.pl.mean() < -0.02 and b.pl.mean() < -0.02 else ""
     if flag: bad.append(h)
     P(f"  {h:02d}:00  n {len(a):5,}/{len(b):5,} · won {a.won.mean():.1%}→{b.won.mean():.1%} · P&L {a.pl.mean() * 100:+.1f}→{b.pl.mean() * 100:+.1f}¢ {flag}")
-P(f"\nSUMMARY {K.PROFILE}: patterns beating Kalshi's price ≥3 pts in BOTH halves: {len(found)}"
+P(f"\nSUMMARY {K.PROFILE}: {CELLS[0]} pattern cells tested · expected to pass by pure chance ≈ {CELLS[0] * 2 * 0.0668 ** 2:.1f}"
+  f"\npatterns beating Kalshi's price ≥3 pts AND z≥1.5 in BOTH halves: {len(found)}"
   + "".join(f"\n  {t}: {h[0]} (UP {h[3]:.0%}/{h[4]:.0%}, edge {h[5] * 100:+.1f}/{h[6] * 100:+.1f} pts, n {int(h[1])}/{int(h[2])})" for t, h in found)
   + f"\n  hours where ⭐-style calls lost >2¢ in both halves: {bad or 'none'}")
