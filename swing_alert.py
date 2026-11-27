@@ -3083,7 +3083,7 @@ def fav_call(st, mkt, a, lv, px):
     """⭐ BUY the side Kalshi already favors ≥80% at the 12/9/6-min check, when that exact setup (market, minutes left,
     price band, model agreeing) has won ≥88% in the live log. Fewer surprises, smaller payouts."""
     if not FAV_ON or a.get("p_up") is None or "T" not in a: return False
-    T = a["T"]; left = 12 if 10.8 < T <= 12.6 else 9 if 7.8 < T <= 9.6 else 6 if 4.8 < T <= 6.6 else None
+    T = a["T"]; left = 12 if 10.8 < T <= 12.0 else 9 if 7.8 < T <= 9.0 else 6 if 4.8 < T <= 6.0 else None   # same moment as the tested snapshots (T ≤ checkpoint): calls fired up to 0.6 min early won 84% vs 88%+
     W = st.setdefault("favwhy", {})
     if left is None or left not in FAV_LEFTS: W[mkt] = f"waits for the {'/'.join(map(str, FAV_LEFTS))}-min checks"; return False
     mid = a["p_up"]; up = mid >= 0.5; conf = max(mid, 1 - mid)
