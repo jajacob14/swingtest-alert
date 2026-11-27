@@ -1458,8 +1458,7 @@ def with_trend(txt, tr):
 PATTERNS = ([dict(m=("BTC",), h=9, w="59-60%", px=49, n=244, roi="+15%"),
              dict(m=("ETH", "SOL", "XRP", "DOGE"), h=9, w="55%", px=50, n=1193, roi="+5%")] if CRYPTO else
             [dict(m=("PALLADIUM",), h=9, w="55-57%", px=49, n=153, roi="+9-13%"), dict(m=("PALLADIUM",), h=10, w="55-66%", px=50, n=150, roi="+14-19%"),
-             dict(m=("PLATINUM",), h=2, w="60-64%", px=53, n=169, roi="+12%"), dict(m=("PLATINUM",), h=19, w="60-63%", px=53, n=169, roi="+10-12%"),
-             dict(m=("WTI",), h=20, w="58-61%", px=50, n=260, roi="+13-15%")])
+             dict(m=("PLATINUM",), h=2, w="60-64%", px=53, n=169, roi="+12%"), dict(m=("PLATINUM",), h=19, w="60-63%", px=53, n=169, roi="+10-12%")])   # WTI 8 PM removed 2026-11-27: no longer passes both halves
 PAT_MAXPX = 0.60     # the edge was measured near even money: skip once DOWN already costs more than this
 
 
@@ -1573,7 +1572,7 @@ def wild_now(tk): return bool(tk) and churn3(tk) >= WILD_THR
 # research_latetick.py, commodity order-book ticks (second resolution, 2026-11-26, 534 windows): a 20-35¢ side in a
 # 🌪️ wild market with 2-4 min left popped +10¢ before the close 55% of the time (n=207), yet buying those lost 34% per $
 # (the misses expire at 0¢). Final minute: wild 37% vs calm 14% (crypto 36% vs 34%: no difference there).
-LATE_POP = dict(p=0.55, pl=-0.34, n=207)
+LATE_POP = dict(p=0.59, pl=-0.30, n=517)   # refreshed 2026-11-27 (was 55% / -34% on 207)
 
 
 def late_watch(c, q, tk):
