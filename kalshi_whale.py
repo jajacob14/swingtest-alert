@@ -1152,18 +1152,29 @@ def path_line(q, tk):
     return ("🔮 highs before close: " + " | ".join(out)) if out else ""
 
 
-SPIKE_BASE = ((10, 0.39), (6, 0.33), (4, 0.26), (0, 0.15))   # how often a cheap side pops +10¢ in 5 min, by minutes left
+SPIKE_BASE = (((10, 0.39), (6, 0.33), (4, 0.26), (0, 0.15)) if CRYPTO else    # how often a cheap side pops +10¢ in 5 min, by minutes left
+              ((10, 0.35), (6, 0.29), (4, 0.20), (0, 0.12)))                     # commodities: research_scalpmodel.py 2026-11-25
+
+
+def scalp_row(L_, R, c, q, tk, final=False):
+    """One scalp line per market on every card: a 💸 call, else (final card) the ⚠️ late-pop watch, else the spike read."""
+    if not tk: return ""
+    if (sl := scalp_call(L_, R, c, q, tk)): return sl.replace("💸 SCALP ", "💸 ")
+    if final and (lw := late_watch(c, q, tk)): return lw
+    em, rest = spike_read(L_, R, c, q, tk).split(" ", 1)
+    return f"{em} {c} · {rest}"
 
 
 def spike_read(L_, R, c, q, tk):
     """Spike / no-spike read for the cheap side (spike model), vs what's normal at this point in the window."""
     yb, ya = live_book(tk) or (q["bid"], q["ask"]); up = ya <= 1 - yb; ask = ya if up else 1 - yb
     base = next(v for t_, v in SPIKE_BASE if q["tl"] >= t_)
-    if not (0.03 <= ask <= 0.35): return "➖ no spike read (no cheap side)"
+    if ask > 0.35: return f"➖ no cheap side to scalp (both sides {cents(min(ya, 1 - yb))}-{cents(max(ya, 1 - yb))})"
+    if ask < 0.03: return "➖ no scalp: already decided (cheap side under 3¢)"
     p = scalp_prob(R, c, q, up, ask, ya - yb)
     if p is None: return "➖ spike read: waiting for data"
     d = "UP" if up else "DOWN"
-    if q["tl"] < SCALP_TLMIN_C: return f"➖ late in the window: prices barely move now ({p:.0%} chance of a +10¢ pop {d})"
+    if q["tl"] < SCALP_TLMIN_C: return f"➖ late: {p:.0%} chance of a +10¢ pop {d} · late pops are brief and lose money on average"
     if p >= SCALP_P: return f"⚡ SPIKE {d} likely: {p:.0%} (normally {base:.0%})"
     if p >= base * 1.25: return f"⚠️ spike {d} possible: {p:.0%} (normally {base:.0%})"
     return f"➖ no spike expected: {p:.0%} (normally {base:.0%})"
@@ -1581,7 +1592,7 @@ def board_c(L_, R, preds, b, closed=(), res=None):
                     txt += f"\n   ↳ 💵 ≤{cents(bp)}" + sell_plan(bp, q["tl"], q["t1"]) + spread_note(q) + tested(L_.shown[q["tk"]].get("setup"))
                 if txt: rows.append(txt)
                 else: rows.append(f"🚫 {c} · don't buy · {'↑UP' if p >= 0.5 else '↓DOWN'} {arrow(q, p >= 0.5)}" + gated_txt(L_.shown.get(q.get("tk")) or {}, p, mid, q["tl"], c))
-                if q.get("tk") and (sl := scalp_call(L_, R, c, q, q["tk"])): swb.append(sl.replace("💸 SCALP ", "💸 "))
+                if (sl := scalp_row(L_, R, c, q, q.get("tk"))): swb.append(sl)
                 if txt and (fn := flow_note(flow_of(L_, c, q.get("tk")), up)): rows.append(fn)
                 elif not txt: flow_of(L_, c, q.get("tk"))
                 continue
@@ -1798,7 +1809,7 @@ def update9_c(L_, R, upd, b):
                 newc.append(f"{c} {d} ≤{cents(bp)}"); link = link or f"{WEB}/{K15[c].lower()}"
             if txt: rows.append(with_trend(txt, trend_txt(sh, p, mid))); nch += int(ev_ == "new"); nflip += int(kind == "warn")
             else: rows.append(f"🚫 {c} · don't buy · {'↑UP' if p >= 0.5 else '↓DOWN'} {arrow(q, p >= 0.5)}" + trend_txt(sh, p, mid) + gated_txt(sh, p, mid, q["tl"], c))
-            if (sl := scalp_call(L_, R, c, q, q["tk"])): swl.append(sl.replace("💸 SCALP ", "💸 "))
+            if (sl := scalp_row(L_, R, c, q, q.get("tk"))): swl.append(sl)
             if go and not go0: rows.append(f"🟢 {c} now BET ≤ {cents(ask)}")
             continue
         if flip:
@@ -1956,8 +1967,7 @@ def final_c(L_, R, fin, b):
             if f: strong.append(f"{c} {'UP' if f['up'] else 'DOWN'}" + (" 🚨" if kind == "warn" else ""))
             tr = trend_txt(L_.shown[tk], p, mid)
             rows.append(with_trend(txt, tr) if txt else f"🚫 {c} · don't buy · {'↑UP' if p >= 0.5 else '↓DOWN'} {arrow(q, p >= 0.5)}" + tr + gated_txt(L_.shown[tk], p, mid, q["tl"], c))
-            if (sl := scalp_call(L_, R, c, q, tk)): swf.append(sl.replace("💸 SCALP ", "💸 "))
-            elif (lw := late_watch(c, q, tk)): swf.append(lw)
+            if (sl := scalp_row(L_, R, c, q, tk, final=True)): swf.append(sl)
             if (fn := flow_note(flow_of(L_, c, tk), up)): rows.append(fn)
             continue
         rows.append(f"{mark(ps)} {c} {d} {ps:.0%} · K {kp:.0%} {arrow(q, up)}" + (" · toss-up" if TIERS and ps < TOSS else "") + ch)
