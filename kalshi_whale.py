@@ -1158,6 +1158,22 @@ SPIKE_BASE = (((10, 0.39), (6, 0.33), (4, 0.26), (0, 0.15)) if CRYPTO else    # 
               ((10, 0.35), (6, 0.29), (4, 0.20), (0, 0.12)))                     # commodities: research_scalpmodel.py 2026-11-25
 
 
+CALLS_HEAD = "━━ 📈 CALLS ━━"
+
+
+def scalp_first(sw):
+    """Scalps lead every card: 💸 calls first, then ⚠️/⚡ watches, then ➖ reads; the calls section follows."""
+    if not sw: return []
+    rank = lambda x: 0 if x.startswith("💸") else 1 if x.startswith(("⚠️", "⚡")) else 2
+    return [SCALP_HEAD] + sorted(sw, key=rank) + ["", CALLS_HEAD]
+
+
+def scalp_title(sw):
+    """'💸 SCALP COPPER DOWN ≤32¢ · ' for the push title when there are live scalp calls, so they hit the lock screen first."""
+    live = [x[2:].split(" → ")[0].strip() for x in sw if x.startswith("💸 ")]
+    return ("💸 SCALP " + ", ".join(live) + " · ") if live else ""
+
+
 def scalp_row(L_, R, c, q, tk, final=False):
     """One scalp line per market on every card: a 💸 call, else (final card) the ⚠️ late-pop watch, else the spike read."""
     if not tk: return ""
@@ -1648,10 +1664,10 @@ def board_c(L_, R, preds, b, closed=(), res=None):
     R_ = results_c(L_, b - 900, res, send=False) if res else None
     rec, line = wl_line(L_)
     head = ([x for x in [last_line(L_)] if x] + scoreboard(L_) if SELECT else [x for x in (last_line(L_), line) if x]) if not R_ else \
-        [f"🎯 Last window {et(b - 1800)}–{et(b - 900)}: " + (f"{R_[0]}/{R_[1]} {'calls ' if SELECT else ''}right" if R_[1] else "no calls")] + R_[2] + [""] + R_[3] + ["", f"━━ 📈 Calls for the {et(b)} window ━━"]
+        [f"🎯 Last window {et(b - 1800)}–{et(b - 900)}: " + (f"{R_[0]}/{R_[1]} {'calls ' if SELECT else ''}right" if R_[1] else "no calls")] + R_[2] + [""] + R_[3] + ["", f"━━ ⏱ {et(b)} window ━━"]
     pass
     if nob: rows.append("🚫 Don't buy: " + ", ".join(nob))
-    if swb: rows += ["", SCALP_HEAD] + swb
+    rows = scalp_first(swb) + rows
     if closed: rows.append("Closed: " + ", ".join(closed))
     tail = [(f"⭐ CALL = ≥{STRONG:.0%} sure (backtest ~87% right, ~92% at the final call) · ⏸ = under {STRONG:.0%}, no call · " if SELECT else
              f"⭐ ≥{STRONG:.0%} sure (~87% right) · 🔹 {TOSS:.0%}-{STRONG:.0%} · ⚪ toss-up · " if TIERS else "% = chance it settles that way · ")
@@ -1659,7 +1675,8 @@ def board_c(L_, R, preds, b, closed=(), res=None):
     pick = ("🟢 BET " + ", ".join(bets)) if bets else ("⭐ BUY " + ", ".join(strong)) if strong else ("don't buy yet" if SELECT else "no strong picks")
     lead = ((f"{'✅' if R_[0] == R_[1] else '🎯'} {R_[0]}/{R_[1]} {'calls ' if SELECT else ''}last · " if R_[1] else "no calls last · ") if R_ else "")
     if SELECT: tail = [LEGEND]
-    notify(f"{lead}📈 {et(b)} calls · {pick}" + (f" · today {rec}" if rec else "") + f" ({SESS_NAME[session(time.time())]})", "\n".join(head + ([""] if head else []) + rows + [""] + tail), 2)
+    notify(scalp_title(swb) + f"{lead}📈 {et(b)} calls · {pick}" + (f" · today {rec}" if rec else "") + f" ({SESS_NAME[session(time.time())]})",
+           "\n".join(head + ([""] if head else []) + rows + [""] + tail), 4 if scalp_title(swb) else 2)
 
 
 SCALP_MAX, SCALP_EDGE = E("KW_SCALP_MAX", 0.15), E("KW_SCALP_EDGE", 0.05)   # side at ≤15¢ that live spot says is worth 5¢+ more
@@ -1862,13 +1879,14 @@ def update9_c(L_, R, upd, b):
         else: same.append(f"{c} {d} {ps:.0%}")
     if not rows and not same: return
     if same: rows.append(("🚫 Don't buy: " if SELECT else "Same: ") + (", " if SELECT else " · ").join(same))
-    if swl: rows += ["", SCALP_HEAD] + swl
+    rows = scalp_first(swl) + rows
     m = f"{round(left)} min left" if left is not None else ""
     if SELECT:
         head = ("🔒 " + ", ".join(calls)) if calls else "don't buy yet"
         sb_ = scoreboard(L_); rows = rows + ([""] + sb_ if sb_ else [])
-        if newc: notify(f"⭐ BUY {', '.join(newc)} · {m} · {et(b)}", "\n".join(rows + ["", LEGEND]), 5, link)   # lock-screen first: urgent
-        else: notify(f"🔄 {et(b)} · {m} · {head}" + (f" · 🚨 {nflip} reversal" if nflip else ""), "\n".join(rows + ["", LEGEND]), 4 if nflip else 2)
+        st_ = scalp_title(swl)
+        if newc: notify(st_ + f"⭐ BUY {', '.join(newc)} · {m} · {et(b)}", "\n".join(rows + ["", LEGEND]), 5, link)   # lock-screen first: urgent
+        else: notify(st_ + f"🔄 {et(b)} · {m} · {head}" + (f" · 🚨 {nflip} reversal" if nflip else ""), "\n".join(rows + ["", LEGEND]), 4 if (nflip or st_) else 2)
     else:
         notify(f"🔄 {et(b)} window · " + (f"{nflip} flipped" if nflip else f"{nch} changed" if nch else "no changes") + f" ({m})", "\n".join(rows), 2)
 
@@ -2016,13 +2034,13 @@ def final_c(L_, R, fin, b):
         rows.append(f"{mark(ps)} {c} {d} {ps:.0%} · K {kp:.0%} {arrow(q, up)}" + (" · toss-up" if TIERS and ps < TOSS else "") + ch)
         if (fn := flow_note(flow_of(L_, c, tk), up)): rows.append(fn)
     if not rows: return
-    if swf: rows += ["", SCALP_HEAD] + swf
+    rows = scalp_first(swf) + rows
     rec, line = wl_line(L_); u5 = u5_txt(L_)
     tail = scoreboard(L_) if SELECT else [x for x in ((f"Final calls today: {u5}" if u5 else ""), line) if x]
     pick = (("🔒 " if SELECT else "⭐ ") + ", ".join(strong)) if strong else ("don't buy" if SELECT else "no strong picks")
     if SELECT: tail = tail + ["", LEGEND]
-    notify((f"⭐ BUY {', '.join(newf)} · " if newf else "") + f"🏁 Final {et(b)} · {pick} · {'3-4' if COMPACT else '5'} min left",
-           "\n".join(rows + ([""] + tail if tail else [])), 5 if newf else 3, f"{WEB}/{K15[list(fin)[0]].lower()}" if fin else None)
+    notify(scalp_title(swf) + (f"⭐ BUY {', '.join(newf)} · " if newf else "") + f"🏁 Final {et(b)} · {pick} · {'3-4' if COMPACT else '5'} min left",
+           "\n".join(rows + ([""] + tail if tail else [])), 5 if newf else 4 if scalp_title(swf) else 3, f"{WEB}/{K15[list(fin)[0]].lower()}" if fin else None)
 
 
 def u5_txt(L_):
