@@ -14,6 +14,7 @@ def at(t):  # Kalshi mid at ~t min left, per window
     x = D[D.tlr == t].sort_values("tl").groupby("ticker").mid.first(); return x
 W = D.groupby("ticker").agg(mkt=("mkt", "first"), cl=("cl", "first"), up=("up", "first"))
 for t in (14, 12, 9, 6): W[f"m{t}"] = at(t)
+_r12 = D[D.tlr == 12].sort_values("tl").groupby("ticker")[["bid", "ask"]].first(); W = W.join(_r12)
 W = W.dropna(subset=["m12"]).sort_values(["mkt", "cl"])
 st = pd.to_datetime(W.cl - 900, unit="s", utc=True).dt.tz_convert("America/New_York")
 W["hour"], W["slot"], W["dow"] = st.dt.hour, st.dt.minute, st.dt.day_name().str[:3]
@@ -76,3 +77,12 @@ P(f"\nSUMMARY {K.PROFILE}: {CELLS[0]} pattern cells tested · expected to pass b
   f"\npatterns beating Kalshi's price ≥3 pts AND z≥1.5 in BOTH halves: {len(found)}"
   + "".join(f"\n  {t}: {h[0]} (UP {h[3]:.0%}/{h[4]:.0%}, edge {h[5] * 100:+.1f}/{h[6] * 100:+.1f} pts, n {int(h[1])}/{int(h[2])})" for t, h in found)
   + f"\n  hours where ⭐-style calls lost >2¢ in both halves: {bad or 'none'}")
+
+# can you actually trade them? buy the side the pattern favors at the 12-min-left ASK + fee, hold to settlement
+COLS = {"hour": "hour", "slot": "slot", "dow": "dow", "prev": "prevs", "streak": "streak", "mkt×hour": "mh", "mkt×prev": "ms"}
+P("\n== trading test: buy the favored side at 12 min left (ask + fee), hold to the close · old half → new half ==")
+for t, h in found:
+    x = W[W[COLS[t]] == h[0]].dropna(subset=["bid", "ask"]); down = h[5] < 0
+    px = (1 - x.bid if down else x.ask).clip(.01, .99); won = (x.up == (0 if down else 1)).astype(float); pl = won - px - fee(px)
+    r = [f"won {won[x.half == k].mean():.0%} paid {px[x.half == k].mean() * 100:.0f}¢ ROI {pl[x.half == k].sum() / (px[x.half == k] + fee(px[x.half == k])).sum():+.1%}" for k in ("old", "new")]
+    P(f"  {t}: {h[0]} → buy {'DOWN' if down else 'UP'}: {r[0]}  →  {r[1]}")
