@@ -331,7 +331,7 @@ def harvest():
     out = pd.concat([read_gz(f"{DATA}/c_whales.csv.gz")] + wh, ignore_index=True) if wh else read_gz(f"{DATA}/c_whales.csv.gz")
     if len(out): out.drop_duplicates(["t", "tk", "sd"]).to_csv(f"{DATA}/c_whales.csv.gz", index=False, compression="gzip")
     for p in glob.glob(f"{DATA}/*"):
-        if not os.path.basename(p).startswith(("k15_", "c_whales", "meta", "state", "live_preds", "spot_", "flow_log", "scalp_log", "ticks", "calls_log", "scalp_calls")): os.remove(p)
+        if not os.path.basename(p).startswith(("k15_", "c_whales", "meta", "state", "live_preds", "spot_", "flow_log", "scalp_log", "ticks", "calls_log", "scalp_calls", "pat_log")): os.remove(p)
     print(f"HARVEST: {len(out)} commodity whale events kept · {n_marks} commodity snapshots seen", flush=True)
     return out
 
@@ -813,6 +813,7 @@ class Live:
         self.res_pend = st.get("res_pend", {})    # window close -> graded rows waiting to be sent together
         self.shown = st.get("shown", {})          # ticker -> exactly what the board showed (graded at settlement)
         self.scalps = st.get("scalps", [])        # scalp alerts: entry, best price traded since, outcome at the close
+        self.pat = st.get("pat", [])              # ⏰ time-pattern picks: graded at settlement, tallied separately
         self.lw = st.get("lw", [])                # lean record per window: [t1, market, right] (right only if EVERY lean shown was right)
         self.scalpc = st.get("scalpc", [])        # 💸 scalp CALLS shown to the user (graded: did it pop +10¢ within 5 min)
         self.waves = st.get("waves", [])          # wave alerts: buy pushed, waiting for the cash-out / settlement
@@ -928,7 +929,8 @@ class Live:
                     waves=[w for w in self.waves if w["t1"] > time.time() - 3 * 86400],
                     scalps=[x for x in self.scalps if x["t1"] > time.time() - 3 * 86400],
                     scalpc=[x for x in self.scalpc if x["t1"] > time.time() - 7 * 86400],
-                    lw=[x for x in self.lw if x[0] > time.time() - 7 * 86400])
+                    lw=[x for x in self.lw if x[0] > time.time() - 7 * 86400],
+                    pat=[x for x in self.pat if x["t1"] > time.time() - 7 * 86400])
 
 
 # ---------------- live: 15-min predictions ----------------
@@ -1303,6 +1305,7 @@ def coin_block(L_, R, c, p, mid, q, ev_, sh):
     else:
         line = f"🚫 {c} · don't buy · {'↓DOWN' if not up else '↑UP'} {arrow(q, up)}" + gated_txt(sh, p, mid, q["tl"], c)
     yb, ya = live_book(tk) or (q["bid"], q["ask"])
+    if (pn := pattern_note(L_, c, q, tk)): sub.append(pn)
     if 0.12 <= (yb + ya) / 2 <= 0.88 and (pb := path_brief(q, tk)): sub.append(pb)   # forecast range only while it's still open
     sl = scalp_call(L_, R, c, q, tk)
     em, rest = spike_read(L_, R, c, q, tk).split(" ", 1)
@@ -1402,7 +1405,7 @@ LEGEND = ("Key: ⭐ buy · 🔒 holding · 🚨 sell · 🚫 don't buy (↑UP/�
           + "🧪 412/600 won = last 2 weeks in this market: how often that side won from this price & time left (on ⭐/🔒: past calls with the same setup) · "
           + ("🔮 price each side reaches about half the time before the close (* = 1 in 4) · " if CRYPTO else "")
           + "↗/↘ Kalshi price moving your way/against (⚡ fast) · 🌪️ wild: swinging far more than normal (calls stay as accurate; don't panic-sell) · " + ("" if CRYPTO else "58¢→66¢ = the leaning side's price at the opening push → now · ")
-          + "💸 scalp: cheap side likely to pop +10¢ soon — buy, set the sell, out by the time shown (graded separately) · "
+          + "⏰ time pattern: this market/hour's DOWN side has beaten its price in 3 months of tests (own tally) · 💸 scalp: cheap side likely to pop +10¢ soon — buy, set the sell, out by the time shown (graded separately) · "
           + ("send 'all' (9 markets) or 'core' (5 coins) to this topic to switch channel" if CRYPTO else "limit only = wide spread"))
 
 
@@ -1433,10 +1436,47 @@ def with_trend(txt, tr):
     return txt.replace("\n", tr + "\n", 1) if "\n" in txt else txt + tr
 
 
+# ⏰ time patterns (research_timepat.py, 2026-11-27, 101 days, split old 70% / new 30% of days): the DOWN side at
+# ~12 min left won more often than Kalshi priced it, in BOTH halves, and buying it at the ask + fee made money in both.
+# Picked on the same data, so they are tracked live as their own ⏰ tally (not ⭐ calls) to prove themselves.
+PATTERNS = ([dict(m=("BTC",), h=9, w="59-60%", px=49, n=244, roi="+15%"),
+             dict(m=("ETH", "SOL", "XRP", "DOGE"), h=9, w="55%", px=50, n=1193, roi="+5%")] if CRYPTO else
+            [dict(m=("PALLADIUM",), h=9, w="55-57%", px=49, n=153, roi="+9-13%"), dict(m=("PALLADIUM",), h=10, w="55-66%", px=50, n=150, roi="+14-19%"),
+             dict(m=("PLATINUM",), h=2, w="60-64%", px=53, n=169, roi="+12%"), dict(m=("PLATINUM",), h=19, w="60-63%", px=53, n=169, roi="+10-12%"),
+             dict(m=("WTI",), h=20, w="58-61%", px=50, n=260, roi="+13-15%")])
+PAT_MAXPX = 0.60     # the edge was measured near even money: skip once DOWN already costs more than this
+
+
+def hr_txt(h): return f"{(h % 12) or 12} {'AM' if h < 12 else 'PM'}"
+
+
+def pattern_note(L_, c, q, tk):
+    """'⏰ BTC at 9 AM ET: DOWN won 59-60% …' under the market on the opening push and check-ins of a matching window;
+    the first sighting at 9-13.5 min left (DOWN ≤60¢) is logged as a ⏰ pick and graded at the close."""
+    if not tk or not q.get("t1"): return ""
+    h = datetime.fromtimestamp(q["t1"] - 900, ET).hour
+    pt = next((x for x in PATTERNS if c in x["m"] and x["h"] == h), None)
+    if not pt: return ""
+    yb, ya = live_book(tk) or (q["bid"], q["ask"]); dpx = 1 - yb
+    txt = f"⏰ {c} at {hr_txt(h)} ET: DOWN won {pt['w']} at ~{pt['px']}¢ in both test halves ({pt['n']:,} windows, {pt['roi']} after fees)"
+    if dpx > PAT_MAXPX: return txt + f" · DOWN already {cents(dpx)}: edge gone, skip"
+    if 9 <= q["tl"] <= 13.5 and not any(x["tk"] == tk for x in L_.pat):
+        L_.pat.append(dict(t1=q["t1"], c=c, tk=tk, side=0, px=round(dpx, 2), h=h))
+    return txt + f" → ⏰ buy DOWN ≤{cents(PAT_MAXPX)}, hold to close"
+
+
+def pat_txt(L_):
+    g = [x for x in L_.pat if "won" in x]
+    if not g: return ""
+    t = [x for x in g if x["t1"] > _today()]; w7 = [x for x in g if x["t1"] > time.time() - 7 * 86400]
+    k, k7 = sum(x["won"] for x in t), sum(x["won"] for x in w7)
+    return (f"⏰ Patterns today: {k}-{len(t) - k}" if t else "⏰ Patterns today: none") + (f" · 7d {k7}-{len(w7) - k7}" if len(w7) > len(t) else "")
+
+
 def scoreboard(L_):
     """The report tallies, on every call sheet: calls, leans, scalps, per-market W/L."""
     _, line = wl_line(L_)
-    out = [x for x in [line, lean_line(L_), scalpc_txt(L_)] + market_wl(L_) if x]
+    out = [x for x in [line, lean_line(L_), scalpc_txt(L_), pat_txt(L_)] + market_wl(L_) if x]
     return ["━━ 📊 Scorecard ━━"] + out if out else []
 
 
@@ -1592,6 +1632,7 @@ def board_c(L_, R, preds, b, closed=(), res=None):
                     txt += f"\n   ↳ 💵 ≤{cents(bp)}" + sell_plan(bp, q["tl"], q["t1"]) + spread_note(q) + tested(L_.shown[q["tk"]].get("setup"))
                 if txt: rows.append(txt)
                 else: rows.append(f"🚫 {c} · don't buy · {'↑UP' if p >= 0.5 else '↓DOWN'} {arrow(q, p >= 0.5)}" + gated_txt(L_.shown.get(q.get("tk")) or {}, p, mid, q["tl"], c))
+                if (pn := pattern_note(L_, c, q, q.get("tk"))): rows.append("   ↳ " + pn)
                 if (sl := scalp_row(L_, R, c, q, q.get("tk"))): swb.append(sl)
                 if txt and (fn := flow_note(flow_of(L_, c, q.get("tk")), up)): rows.append(fn)
                 elif not txt: flow_of(L_, c, q.get("tk"))
@@ -1809,6 +1850,7 @@ def update9_c(L_, R, upd, b):
                 newc.append(f"{c} {d} ≤{cents(bp)}"); link = link or f"{WEB}/{K15[c].lower()}"
             if txt: rows.append(with_trend(txt, trend_txt(sh, p, mid))); nch += int(ev_ == "new"); nflip += int(kind == "warn")
             else: rows.append(f"🚫 {c} · don't buy · {'↑UP' if p >= 0.5 else '↓DOWN'} {arrow(q, p >= 0.5)}" + trend_txt(sh, p, mid) + gated_txt(sh, p, mid, q["tl"], c))
+            if (pn := pattern_note(L_, c, q, q.get("tk"))): rows.append("   ↳ " + pn)
             if (sl := scalp_row(L_, R, c, q, q.get("tk"))): swl.append(sl)
             if go and not go0: rows.append(f"🟢 {c} now BET ≤ {cents(ask)}")
             continue
@@ -1875,7 +1917,8 @@ def results_c(L_, t1, rows, send=True):
               + (" · settled its way" if x.get("won") else "") for x in sw_]
         L += [f"💸 {x['c']} {'UP' if x['up'] else 'DOWN'} {cents(x['entry'])} → {cents(x['tgt'])} {'✅ popped' if x['hit'] else '❌ no pop'}"
               for x in L_.scalpc if not x.get("open") and int(round(x["t1"])) == int(t1)]
-        tail = [line, lean_line(L_), scalpc_txt(L_)] + market_wl(L_) + ["", LEGEND]
+        L += [f"⏰ {x['c']} DOWN {cents(x['px'])} ({hr_txt(x['h'])} pattern) {'✅' if x['won'] else '❌'}" for x in L_.pat if "won" in x and int(round(x["t1"])) == int(t1)]
+        tail = [line, lean_line(L_), scalpc_txt(L_), pat_txt(L_)] + market_wl(L_) + ["", LEGEND]
         if not send: return n, k, L, [x for x in tail if x and x != LEGEND]   # bundled push adds the key once, at the bottom
         notify((f"{'✅' if n == k else '🎯'} {n}/{k} calls right" if k else "no calls") + f" · {et(t1 - 900)}–{et(t1)}" + (f" · today {rec}" if rec else ""),
                "\n".join(L + [""] + [x for x in tail if x]), 2)
@@ -2269,6 +2312,10 @@ def settle(L_):
         res = (get(f"/markets/{tk}").get("market") or {}).get("result")
         if res not in ("yes", "no"): continue
         up = res == "yes"
+        for x in L_.pat:
+            if x["tk"] == tk and "won" not in x:
+                x["won"] = int((x["side"] == 1) == up); fl = f"{DATA}/pat_log.csv.gz"; os.makedirs(DATA, exist_ok=True)
+                pd.DataFrame([x]).to_csv(fl, mode="ab", index=False, header=not os.path.exists(fl), compression="gzip")
         for b, (p, mid) in S["cp"].items(): log.append(dict(t=S["t1"], c=S["c"], left=int(b), p=p, mid=mid, up=int(up)))
         for x in L_.scalps:
             if x.get("open") and x["tk"] == tk:
