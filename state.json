@@ -31,7 +31,7 @@
   "PLATINUM": "KXPLATINUM15M-26NOV271445-45",
   "PALLADIUM": "KXPALLADIUM15M-26NOV271445-45"
  },
- "skipslot": "2026-11-28 01:01",
+ "skipslot": "2026-11-28 01:16",
  "lpos": {},
  "skipped": {
   "12:00\u201312:15": [
@@ -940,7 +940,7 @@
   "BRENT": "KXBRENT15M-26NOV022145-45",
   "WTI": "KXWTI15M-26NOV022000-00"
  },
- "scoreslot": "2026-11-28 01:00",
+ "scoreslot": "2026-11-28 01:15",
  "live_min": {
   "BRENT": 239,
   "WTI": 238,
@@ -9656,7 +9656,7 @@
    }
   }
  },
- "boardslot": "01:00",
+ "boardslot": "01:10",
  "kp": {
   "BRENT": {
    "p": 0.884,
